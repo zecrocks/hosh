@@ -1,0 +1,24 @@
+version: '3.8'
+
+services:
+  electrum-server-dump:
+    build: .
+    container_name: electrum-server-dump
+    volumes:
+      - electrum-data:/root/.electrum  # Persistent data storage for the daemon
+    command: >
+      sh -c "
+      electrum daemon -d &&
+      sleep 5 &&
+      electrum --testnet getservers
+      "
+    stdin_open: true
+    tty: true
+    networks:
+      - electrum-network  # Custom network to ensure connectivity
+
+volumes:
+  electrum-data:
+
+networks:
+  electrum-network:
