@@ -12,9 +12,12 @@ electrum daemon -d
 echo "Waiting for daemon to initialize..."
 sleep 5
 
-# Fetch the Electrum servers list and dump to JSON
-echo "Fetching Electrum servers..."
-electrum getservers > /electrum/btc/servers.json
+# # Fetch the Electrum servers list and dump to JSON
+# echo "Fetching Electrum servers..."
+# electrum getservers > /electrum/btc/servers.json
+
+# servers.json can be used to initialize a list of electrum servers
+python api.py
 
 echo "Servers list saved to /electrum/btc/servers.json"
 

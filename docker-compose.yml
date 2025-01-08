@@ -7,15 +7,45 @@ services:
     container_name: btc-monitor
     volumes:
       - btc-data:/root/.electrum  # Persistent data storage for the daemon
-      - ./btc:/electrum/btc       # Mount the 'btc' directory into the container at runtime
+      - ./btc/api.py:/electrum/api.py  # Mount only the Flask app for live updates
     entrypoint: ["/electrum/entrypoint.sh"]  # Use the script
+    ports:
+      - "5000:5000"
     stdin_open: true
     tty: true
     networks:
       - btc-network  # Custom network to ensure connectivity
 
+  dashboard:
+    build: dashboard
+    image: fathomx/dashboard
+    container_name: dashboard
+    ports:
+      - "8050:8050"
+    depends_on:
+      - btc-monitor  # Ensure Flask API starts before Dash app
+    volumes:
+      - ./dashboard:/app
+    networks:
+      - btc-network
+    environment:
+      - PYTHONUNBUFFERED=1  # Ensure logs are printed immediately
+
+  redis:
+    build: redis
+    image: fathmox/redis
+    container_name: redis-db
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: always  # Ensure Redis restarts on failure or reboot
+
 volumes:
   btc-data:
+  redis-data:
 
 networks:
   btc-network:
+
+
