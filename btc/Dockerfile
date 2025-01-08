@@ -1,4 +1,3 @@
-# Dockerfile
 FROM python:3.11-slim
 
 # Set environment variables
@@ -20,7 +19,9 @@ RUN pip install https://download.electrum.org/$ELECTRUM_VERSION/Electrum-$ELECTR
 # Create working directory
 WORKDIR /electrum
 
-# Command to dump peers
-CMD ["sh", "-c", "electrum --testnet -o network getpeers"]
+# Copy entrypoint script
+COPY entrypoint.sh /electrum/entrypoint.sh
+RUN chmod +x /electrum/entrypoint.sh
 
-
+# Use the entrypoint script
+ENTRYPOINT ["/electrum/entrypoint.sh"]

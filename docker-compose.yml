@@ -1,24 +1,21 @@
 version: '3.8'
 
 services:
-  electrum-server-dump:
-    build: .
-    container_name: electrum-server-dump
+  btc-monitor:
+    build: btc
+    image: fathomx/btc-monitor
+    container_name: btc-monitor
     volumes:
-      - electrum-data:/root/.electrum  # Persistent data storage for the daemon
-    command: >
-      sh -c "
-      electrum daemon -d &&
-      sleep 5 &&
-      electrum --testnet getservers
-      "
+      - btc-data:/root/.electrum  # Persistent data storage for the daemon
+      - ./btc:/electrum/btc       # Mount the 'btc' directory into the container at runtime
+    entrypoint: ["/electrum/entrypoint.sh"]  # Use the script
     stdin_open: true
     tty: true
     networks:
-      - electrum-network  # Custom network to ensure connectivity
+      - btc-network  # Custom network to ensure connectivity
 
 volumes:
-  electrum-data:
+  btc-data:
 
 networks:
-  electrum-network:
+  btc-network:
