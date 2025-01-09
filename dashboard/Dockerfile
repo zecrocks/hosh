@@ -19,7 +19,8 @@ RUN pip install --no-cache-dir \
     pandas \
     dash \
     dash-bootstrap-components \
-    requests
+    requests \
+    redis  # Added Redis support
 
 # Expose the default port for the Dash app
 EXPOSE 8050

@@ -1,10 +1,10 @@
 version: '3.8'
 
 services:
-  btc-monitor:
+  btc-worker:
     build: btc
-    image: fathomx/btc-monitor
-    container_name: btc-monitor
+    image: fathomx/btc-worker
+    container_name: btc-worker
     volumes:
       - btc-data:/root/.electrum  # Persistent data storage for the daemon
       - ./btc/api.py:/electrum/api.py  # Mount only the Flask app for live updates
@@ -13,28 +13,40 @@ services:
       - "5000:5000"
     stdin_open: true
     tty: true
-    networks:
-      - btc-network  # Custom network to ensure connectivity
 
   dashboard:
     build: dashboard
     image: fathomx/dashboard
-    container_name: dashboard
+    container_name: data-dashboard
     ports:
       - "8050:8050"
-    depends_on:
-      - btc-monitor  # Ensure Flask API starts before Dash app
     volumes:
       - ./dashboard:/app
-    networks:
-      - btc-network
     environment:
-      - PYTHONUNBUFFERED=1  # Ensure logs are printed immediately
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+
+  collector:
+    build: collector
+    image: fathomx/data-collector
+    container_name: data-collector
+    environment:
+      BTC_WORKER: http://btc-worker:5000
+      STALE_THRESHOLD_SECONDS: 120 # 5 minutes
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./collector:/app
+    depends_on:
+      - redis
+      - btc-worker
+    entrypoint: ["/wait-for-it.sh", "btc-worker:5000", "--", "python", "collector.py"]
 
   redis:
     build: redis
     image: fathmox/redis
-    container_name: redis-db
     ports:
       - "6379:6379"
     volumes:
@@ -45,7 +57,5 @@ volumes:
   btc-data:
   redis-data:
 
-networks:
-  btc-network:
 
 
