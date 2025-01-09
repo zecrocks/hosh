@@ -1,24 +1,61 @@
 version: '3.8'
 
 services:
-  electrum-server-dump:
-    build: .
-    container_name: electrum-server-dump
+  btc-worker:
+    build: btc
+    image: fathomx/btc-worker
+    container_name: btc-worker
     volumes:
-      - electrum-data:/root/.electrum  # Persistent data storage for the daemon
-    command: >
-      sh -c "
-      electrum daemon -d &&
-      sleep 5 &&
-      electrum --testnet getservers
-      "
+      - btc-data:/root/.electrum  # Persistent data storage for the daemon
+      - ./btc/api.py:/electrum/api.py  # Mount only the Flask app for live updates
+    entrypoint: ["/electrum/entrypoint.sh"]  # Use the script
+    ports:
+      - "5000:5000"
     stdin_open: true
     tty: true
-    networks:
-      - electrum-network  # Custom network to ensure connectivity
+
+  dashboard:
+    build: dashboard
+    image: fathomx/dashboard
+    container_name: data-dashboard
+    ports:
+      - "8050:8050"
+    volumes:
+      - ./dashboard:/app
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      - redis
+
+  collector:
+    build: collector
+    image: fathomx/data-collector
+    container_name: data-collector
+    environment:
+      BTC_WORKER: http://btc-worker:5000
+      STALE_THRESHOLD_SECONDS: 120 # 5 minutes
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    volumes:
+      - ./collector:/app
+    depends_on:
+      - redis
+      - btc-worker
+    entrypoint: ["/wait-for-it.sh", "btc-worker:5000", "--", "python", "collector.py"]
+
+  redis:
+    build: redis
+    image: fathmox/redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    restart: always  # Ensure Redis restarts on failure or reboot
 
 volumes:
-  electrum-data:
+  btc-data:
+  redis-data:
 
-networks:
-  electrum-network:
+
+
