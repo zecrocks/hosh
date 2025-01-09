@@ -1,0 +1,25 @@
+version: '3'
+
+services:
+  nats:
+    image: nats:alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--http_port", "8222"]
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      start_period: 2s
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  rust-echo:
+    build: .
+    environment:
+      - NATS_ADDR=nats:4222
+      - NATS_SUBJECT=echo
+    depends_on:
+      nats:
+        condition: service_healthy
+
