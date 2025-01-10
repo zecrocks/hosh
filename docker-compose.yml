@@ -13,6 +13,11 @@ services:
       - "5000:5000"
     stdin_open: true
     tty: true
+    depends_on:
+      - tor  # Ensure Tor starts before btc-worker
+    environment:
+      TOR_PROXY_HOST: "tor"
+      TOR_PROXY_PORT: 9050
 
   dashboard:
     build: dashboard
@@ -46,16 +51,23 @@ services:
 
   redis:
     build: redis
-    image: fathmox/redis
+    image: fathomx/redis
     ports:
       - "6379:6379"
     volumes:
       - redis-data:/data
     restart: always  # Ensure Redis restarts on failure or reboot
 
+  tor:
+    image: dperson/torproxy  # Lightweight Tor proxy
+    container_name: tor
+    ports:
+      - "9050:9050"  # Expose Tor's SOCKS proxy port
+    restart: always
+    command: "-p 9050"  # Run the SOCKS proxy on port 9050
+
 volumes:
   btc-data:
   redis-data:
-
 
 

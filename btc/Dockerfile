@@ -4,10 +4,11 @@ FROM python:3.11-slim
 # Set environment variables
 ENV ELECTRUM_VERSION=4.5.2 
 
-# Install dependencies
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     wget \
     libsecp256k1-dev \
+    curl \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
@@ -16,7 +17,8 @@ RUN pip install --no-cache-dir \
     pycryptodomex \
     cryptography \
     flask \
-    flasgger
+    flasgger \
+    pysocks  # Install pysocks for SOCKS proxy support
 
 # Install Electrum
 RUN pip install --no-cache-dir https://download.electrum.org/$ELECTRUM_VERSION/Electrum-$ELECTRUM_VERSION.tar.gz

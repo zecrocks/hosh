@@ -6,6 +6,25 @@ import socket
 import ssl
 import time
 import re
+import struct
+import binascii
+import datetime
+import logging
+import socks
+import socket
+import os
+
+# Configure Tor SOCKS proxy from environment variables
+TOR_PROXY_HOST = os.environ.get("TOR_PROXY_HOST", "tor")
+TOR_PROXY_PORT = int(os.environ.get("TOR_PROXY_PORT", 9050))
+
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,  # Set the logging level
+    format='%(asctime)s - %(levelname)s - %(message)s'
+)
+
 
 app = Flask(__name__)
 
@@ -82,7 +101,13 @@ def sort_priority(host):
     return (3, host)  # Unknown (lowest priority)
 
 
-def query_electrumx_server(host, ports, method, params=[]):
+
+
+def query_electrumx_server(host, ports, method=None, params=[]):
+    # Use a default method if none is provided
+    if not method:
+        method = "blockchain.headers.subscribe"
+
     methods = [
         {"method": method, "params": params},
         {"method": "server.features", "params": []},
@@ -98,6 +123,38 @@ def query_electrumx_server(host, ports, method, params=[]):
     else:
         connection_options.append({"port": int(ports), "use_ssl": False})
 
+    # Check if the host is a .onion address
+    use_tor_proxy = host.endswith(".onion")
+
+    # First, check server reachability
+    reachable = False
+    for connection in connection_options:
+        try:
+            if use_tor_proxy:
+                # Set up a socket using the Tor proxy
+                socks.set_default_proxy(socks.SOCKS5, TOR_PROXY_HOST, TOR_PROXY_PORT)
+                socket.socket = socks.socksocket
+
+            # Attempt to connect to the server
+            with socket.create_connection((host, connection["port"]), timeout=5):
+                reachable = True
+                break  # Exit loop if one connection succeeds
+        except Exception as e:
+            logging.error(f"Error connecting to {host}:{connection['port']}: {e}")
+        finally:
+            if use_tor_proxy:
+                # Reset the proxy and restore default socket behavior
+                socks.set_default_proxy(None)
+                socket.socket = socket.create_connection
+
+    if not reachable:
+        return {
+            "error": "Server is unreachable",
+            "host": host,
+            "ports": ports,
+        }
+
+    # Proceed with querying the server if reachable
     for connection in connection_options:
         for method_config in methods:
             try:
@@ -108,6 +165,12 @@ def query_electrumx_server(host, ports, method, params=[]):
                 }) + "\n"
 
                 start_time = time.time()
+
+                if use_tor_proxy:
+                    # Set up a socket using the Tor proxy
+                    socks.set_default_proxy(socks.SOCKS5, TOR_PROXY_HOST, TOR_PROXY_PORT)
+                    socket.socket = socks.socksocket
+
                 with socket.create_connection((host, connection["port"]), timeout=10) as sock:
                     if connection["use_ssl"]:
                         context = ssl.create_default_context()
@@ -145,11 +208,16 @@ def query_electrumx_server(host, ports, method, params=[]):
                     }
 
             except ssl.SSLError as e:
-                print(f"SSL error on {host}:{connection['port']} using {method_config['method']}: {e}")
+                logging.error(f"SSL error on {host}:{connection['port']} using {method_config['method']}: {e}")
                 continue
             except Exception as e:
-                print(f"Error on {host}:{connection['port']} using {method_config['method']}: {e}")
+                logging.error(f"Error on {host}:{connection['port']} using {method_config['method']}: {e}")
                 continue
+            finally:
+                if use_tor_proxy:
+                    # Reset the proxy and restore default socket behavior
+                    socks.set_default_proxy(None)
+                    socket.socket = socket.create_connection
 
     return {
         "error": "All methods failed or server is unreachable",
@@ -158,6 +226,48 @@ def query_electrumx_server(host, ports, method, params=[]):
     }
 
 
+
+def resolve_hostname_to_ips(hostname):
+    if hostname.endswith(".onion"):
+        # Skip resolution for .onion addresses
+        return []
+
+    try:
+        addresses = socket.getaddrinfo(hostname, None)
+        ip_addresses = {result[4][0] for result in addresses}  # Extract unique IPs
+        print(f"{hostname} resolved to: {', '.join(ip_addresses)}")
+        return list(ip_addresses)
+    except socket.gaierror as e:
+        print(f"Error resolving {hostname}: {e}")
+        return []
+
+
+
+def parse_block_header(header_hex):
+    # Convert hex to bytes
+    header = bytes.fromhex(header_hex)
+
+    # Unpack the header fields
+    version = struct.unpack('<I', header[0:4])[0]
+    prev_block = header[4:36][::-1].hex()  # Reverse bytes for little-endian
+    merkle_root = header[36:68][::-1].hex()  # Reverse bytes for little-endian
+    timestamp = struct.unpack('<I', header[68:72])[0]
+    bits = struct.unpack('<I', header[72:76])[0]
+    nonce = struct.unpack('<I', header[76:80])[0]
+
+    # Convert timestamp to human-readable date
+    timestamp_human = datetime.datetime.utcfromtimestamp(timestamp)
+
+    # Return parsed data
+    return {
+        "version": version,
+        "prev_block": prev_block,
+        "merkle_root": merkle_root,
+        "timestamp": timestamp,
+        "timestamp_human": timestamp_human,
+        "bits": bits,
+        "nonce": nonce
+    }
 
 ### API Endpoints ###
 
@@ -222,57 +332,77 @@ def electrum_query():
         required: false
         default: 50002
         description: "Server port number (default SSL 50002)."
-      - name: method
-        in: query
-        type: string
-        required: false
-        default: blockchain.headers.subscribe
-        description: "JSON-RPC method to call."
     responses:
       200:
-        description: Server response with version, ping time, and result.
+        description: Flattened server response with host and resolved IPs.
         schema:
           type: object
           properties:
+            host:
+              type: string
+              description: "The hostname provided."
+            resolved_ips:
+              type: array
+              items:
+                type: string
+              description: "List of resolved IP addresses for the hostname."
             ping:
               type: number
               description: "Ping time in milliseconds."
-            response:
-              type: object
-              description: "JSON response from Electrum server."
-            version:
+            block_version:
               type: string
-              description: "Server version if available."
-            method_used:
-              type: string
-              description: "JSON-RPC method used to obtain the result."
+              description: "Renamed block version from the response."
+            <other_flattened_fields>:
+              type: any
+              description: "Flattened fields from the original response."
       400:
         description: "Invalid input."
     """
     # Get query parameters
     server_url = request.args.get('url', '')
-    method = request.args.get('method', 'blockchain.headers.subscribe')
     port = int(request.args.get('port', 50002))  # Default SSL port 50002
 
     # Validate input
     if not server_url:
         return jsonify({"error": "Server URL is required"}), 400
 
-    # Query the server features for version
-    version_info = {}
-    try:
-        version_result = query_electrumx_server(server_url, {"s": port}, "server.features")
-        version_info = version_result.get("response", {}).get("result", {})
-    except Exception as e:
-        print(f"Failed to fetch version info for {server_url}: {e}")
+    # Resolve hostname to IPs
+    resolved_ips = resolve_hostname_to_ips(server_url)
 
-    # Query the ElectrumX server for the requested method
-    result = query_electrumx_server(server_url, {"s": port}, method)
+    # Query the ElectrumX server
+    result = query_electrumx_server(server_url, {"s": port}, None)
 
-    # Add version information to the result
-    result["version"] = version_info.get("server_version", "unknown")
+    # Log the raw result returned by the server
+    logging.info(f"Result received from the server: {result}")
 
-    return jsonify(result)
+    # Flatten the nested result
+    flattened_result = {
+        "host": server_url,
+        "resolved_ips": resolved_ips,
+        "ping": result.get("ping"),
+        "method_used": result.get("method_used"),
+        "connection_type": result.get("connection_type"),
+        "self_signed": result.get("self_signed"),
+        "version": result.get("version", "unknown"),
+        "error": result.get("error", ""),
+    }
+
+    if "result" in result:
+        # Flatten nested 'result' fields
+        flattened_result.update(result["result"])
+
+        # Check if 'hex' key is present and parse it
+        if "hex" in result["result"]:
+            try:
+                parsed_hex = parse_block_header(result["result"]["hex"])
+                flattened_result.update(parsed_hex)  # Include parsed hex data
+                flattened_result.pop("hex")
+            except Exception as e:
+                logging.error(f"Error parsing hex: {e}")
+                flattened_result["hex_parse_error"] = str(e)  # Handle hex parsing errors
+
+    return jsonify(flattened_result)
+
 
 
 if __name__ == '__main__':
