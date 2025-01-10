@@ -114,7 +114,7 @@ services:
     restart: always
 
   tor:
-    image: dperson/torproxy
+    image: osminogin/tor-simple
     container_name: tor
     healthcheck:
       test: |
