@@ -19,7 +19,7 @@ services:
 
   btc-worker:
     build: btc
-    image: fathomx/btc-worker
+    image: hosh/btc-worker
     container_name: btc-worker
     volumes:
       - btc-data:/root/.electrum  # Persistent data storage for the daemon
@@ -39,7 +39,7 @@ services:
 
   dashboard:
     build: dashboard
-    image: fathomx/dashboard
+    image: hosh/dashboard
     container_name: data-dashboard
     ports:
       - "8050:8050"
@@ -51,10 +51,10 @@ services:
     depends_on:
       - redis
 
-  collector:
-    build: collector
-    image: fathomx/data-collector
-    container_name: data-collector
+  publisher:
+    build: publisher
+    image: hosh/publisher
+    container_name: publisher
     environment:
       BTC_WORKER: http://btc-worker:5000
       STALE_THRESHOLD_SECONDS: 120
@@ -64,16 +64,34 @@ services:
       NATS_SUBJECT: "hosh.check"
       CHECK_INTERVAL: "300"  # Check servers every 5 minutes
     volumes:
-      - ./collector:/app
+      - ./publisher:/app
     depends_on:
       - redis
       - btc-worker
       - nats
-    entrypoint: ["/wait-for-it.sh", "btc-worker:5000", "--", "python", "collector.py"]
+    entrypoint: ["/wait-for-it.sh", "btc-worker:5000", "--", "python", "publisher.py"]
+
+  worker:
+    build: worker
+    image: hosh/worker
+    container_name: worker
+    environment:
+      BTC_WORKER: http://btc-worker:5000
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NATS_URL: "nats://nats:4222"
+      NATS_SUBJECT: "hosh.check"
+    volumes:
+      - ./worker:/app
+    depends_on:
+      - redis
+      - btc-worker
+      - nats
+    entrypoint: ["/wait-for-it.sh", "btc-worker:5000", "--", "python", "worker.py"]
 
   redis:
     build: redis
-    image: fathomx/redis
+    image: hosh/redis
     ports:
       - "6379:6379"
     volumes:
