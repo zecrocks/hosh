@@ -3,7 +3,6 @@ import json
 import time
 import requests
 import os
-from utils import parse_block_header
 import datetime
 
 # Environment Variables
@@ -45,78 +44,33 @@ def fetch_servers():
 
 
 # Query data from a single Electrum server
-def query_server_data(host, port=50002, version="unknown"):
+def query_server_data(host, port=50002, electrum_version="unknown"):
     url = f"{BTC_WORKER}/electrum/query"
     params = {
         "url": host,
         "method": "blockchain.headers.subscribe",
         "port": port
     }
-    try:
-        # Query the API
-        response = requests.get(url, params=params, timeout=10)
 
-        # Validate response
-        if response.status_code != 200:
-            raise Exception(f"HTTP {response.status_code}")
+    # Query the API
+    response = requests.get(url, params=params, timeout=10)
 
-        # Parse JSON response
-        data = response.json()
+    # Validate response
+    if response.status_code != 200:
+        raise Exception(f"HTTP {response.status_code}")
 
-        # Extract ping, self_signed status, and result
-        ping = data.get("ping", "N/A")
-        self_signed = data.get("self_signed", False)  # Add self_signed field
-        result = data.get("response", {}).get("result", {})
+    # Parse JSON response
+    data = response.json()
 
-        # Check if required fields exist
-        if "hex" not in result.get("result", {}):
-            return {
-                "Ping": ping,
-                "error": "Malformed response: missing 'hex' field",
-                "host": host,
-                "port": port,
-                "version": version,
-                "LastUpdated": datetime.datetime.utcnow().isoformat(),
-                "response_details": data  # Include full response details
-            }
+    # Add metadata fields and return the result
+    data.update({
+        "host": host,
+        "port": port,
+        "electrum_version": electrum_version,
+        "LastUpdated": datetime.datetime.utcnow().isoformat()
+    })
+    return data
 
-
-        # Parse block header
-        parsed_header = parse_block_header(result.get("hex", ""))
-
-        # Combine data
-        return {
-            "Ping": ping,
-            "self_signed": self_signed,  # Include self_signed status
-            "Height": result.get("height", "N/A"),
-            "Timestamp": parsed_header.get("timestamp_human", "N/A"),
-            "Difficulty Bits": parsed_header.get("bits", "N/A"),
-            "Nonce": parsed_header.get("nonce", "N/A"),
-            "host": host,
-            "port": port,
-            "version": version,  # Include version
-            "LastUpdated": datetime.datetime.utcnow().isoformat()
-        }
-    except requests.exceptions.Timeout:
-        return {
-            "Ping": "Timeout",
-            "self_signed": False,  # Default to False in case of timeout
-            "error": "Timeout while querying server",
-            "host": host,
-            "port": port,
-            "version": version,  # Include version
-            "LastUpdated": datetime.datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        return {
-            "Ping": "N/A",
-            "self_signed": False,  # Default to False in case of failure
-            "error": f"All methods failed or server is unreachable: {str(e)}",
-            "host": host,
-            "port": port,
-            "version": version,  # Include version
-            "LastUpdated": datetime.datetime.utcnow().isoformat()
-        }
 
 
 # Check if a key is stale
@@ -149,8 +103,11 @@ def main_loop():
             continue
 
         for host, details in servers.items():
+            if '.onion' in host:
+                # skip tor for now
+                continue
             port = details.get("s", 50002)  # Default to SSL port if not specified
-            version = details.get("version", "unknown")
+            electrum_version = details.get("version", "unknown")
 
             # Check if the key is stale or doesn't exist
             if redis_client.exists(host) and not is_stale(host):
@@ -158,7 +115,11 @@ def main_loop():
                 continue
 
             print(f"Processing server: {host}")
-            server_data = query_server_data(host, port, version)
+            try:
+                server_data = query_server_data(host, port, electrum_version)
+            except:
+                print(f"could not fetch from {BTC_WORKER}")
+                continue
             server_data = make_json_serializable(server_data)
 
             try:
@@ -176,5 +137,4 @@ def main_loop():
 
 if __name__ == "__main__":
     main_loop()
-
 
