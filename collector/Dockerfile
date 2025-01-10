@@ -17,14 +17,14 @@ RUN pip install --no-cache-dir \
     requests \
     redis \
     pycryptodomex \
-    cryptography
+    cryptography \
+    nats-py
 
 # Create working directory
 WORKDIR /app
 
 # Copy application files
 COPY collector.py /app/collector.py
-COPY utils.py /app/utils.py
 
 # Add the wait-for-it script to the root directory so it doesn't get overwritten when mounting
 COPY wait-for-it.sh /wait-for-it.sh

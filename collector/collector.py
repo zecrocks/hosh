@@ -4,11 +4,15 @@ import time
 import requests
 import os
 import datetime
+import asyncio
+import nats
+from nats.errors import ConnectionClosedError, TimeoutError, NoServersError
 
 # Environment Variables
-BTC_WORKER = os.environ.get('BTC_WORKER', 'http://btc-worker:5000')  # assume docker compose stack if not specified
-SERVER_REFRESH_INTERVAL_SECONDS = int(os.environ.get('SERVER_REFRESH_INTERVAL_SECONDS', 5 * 60))  # how often to refresh servers
-UPDATE_INTERVAL_SECONDS = int(os.environ.get('UPDATE_INTERVAL', 10))  # how often to check for server refresh
+BTC_WORKER = os.environ.get('BTC_WORKER', 'http://btc-worker:5000')
+SERVER_REFRESH_INTERVAL_SECONDS = int(os.environ.get('CHECK_INTERVAL', 300))  # 5 minutes default
+NATS_URL = os.environ.get('NATS_URL', 'nats://nats:4222')
+NATS_SUBJECT = os.environ.get('NATS_SUBJECT', 'hosh.check')
 
 # Redis Configuration
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
@@ -17,7 +21,6 @@ REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 # Connect to Redis
 try:
     redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=0, socket_timeout=5)
-    # Verify connection
     redis_client.ping()
     print("Connected to Redis successfully!")
 except redis.exceptions.ConnectionError as e:
@@ -93,48 +96,93 @@ def is_stale(key):
         return True
 
 
-# Main loop to collect data and store in Redis
-def main_loop():
-    while True:
-        servers = fetch_servers()
-        if not servers:
-            print(f"No servers found. Sleeping for {UPDATE_INTERVAL_SECONDS} seconds...")
-            time.sleep(UPDATE_INTERVAL_SECONDS)
-            continue
+async def process_check_request(msg):
+    """Handle incoming check requests from NATS"""
+    try:
+        data = json.loads(msg.data.decode())
+        host = data['host']
+        port = data.get('port', 50002)
+        electrum_version = data.get('version', 'unknown')
 
-        for host, details in servers.items():
-            if '.onion' in host:
-                # skip tor for now
-                continue
-            port = details.get("s", 50002)  # Default to SSL port if not specified
-            electrum_version = details.get("version", "unknown")
+        print(f"Processing check request for server: {host}")
+        
+        # Skip if data is fresh
+        if redis_client.exists(host) and not is_stale(host):
+            print(f"Skipping server {host}: data is fresh in Redis")
+            return
 
-            # Check if the key is stale or doesn't exist
-            if redis_client.exists(host) and not is_stale(host):
-                print(f"Skipping server {host}: data is fresh in Redis")
-                continue
-
-            print(f"Processing server: {host}")
-            try:
-                server_data = query_server_data(host, port, electrum_version)
-            except:
-                print(f"could not fetch from {BTC_WORKER}")
-                continue
+        try:
+            server_data = query_server_data(host, port, electrum_version)
             server_data = make_json_serializable(server_data)
+            
+            # Save to Redis
+            redis_client.set(host, json.dumps(server_data))
+            print(f"Data for server {host} saved to Redis.")
+            
+        except Exception as e:
+            print(f"Error processing server {host}: {e}")
 
-            try:
-                # Publish to Redis
-                redis_client.set(host, json.dumps(server_data))
-                print(f"Data for server {host} saved to Redis.")
-            except redis.exceptions.ConnectionError as e:
-                print(f"Redis connection error while saving data for {host}: {e}")
-            except Exception as e:
-                print(f"Unexpected error saving data for {host}: {e}")
+    except Exception as e:
+        print(f"Error processing message: {e}")
 
-        print(f"Finished one cycle. Sleeping for {UPDATE_INTERVAL_SECONDS} seconds...")
-        time.sleep(UPDATE_INTERVAL_SECONDS)
+async def schedule_checks(nc):
+    """Periodically fetch server list and schedule checks"""
+    while True:
+        try:
+            servers = fetch_servers()
+            if servers:
+                current_time = datetime.datetime.utcnow()
+                
+                for host, details in servers.items():
+                    if '.onion' in host:
+                        continue  # Skip .onion addresses for now
+                    
+                    # Check if server was recently checked using Redis
+                    if redis_client.exists(host) and not is_stale(host):
+                        print(f"Skipping server {host}: recently checked")
+                        continue
+                        
+                    check_data = {
+                        'host': host,
+                        'port': details.get('s', 50002),
+                        'version': details.get('version', 'unknown')
+                    }
+                    
+                    # Publish check request to NATS
+                    await nc.publish(NATS_SUBJECT, json.dumps(check_data).encode())
+                    print(f"Published check request for {host}")
+                    
+            else:
+                print("No servers found")
+                
+        except Exception as e:
+            print(f"Error in schedule_checks: {e}")
+            
+        await asyncio.sleep(SERVER_REFRESH_INTERVAL_SECONDS)
 
+async def main():
+    # Connect to NATS
+    try:
+        nc = await nats.connect(NATS_URL)
+        print("Connected to NATS successfully!")
+        
+        # Subscribe to check requests
+        sub = await nc.subscribe(NATS_SUBJECT, cb=process_check_request)
+        print(f"Subscribed to {NATS_SUBJECT}")
+        
+        # Start the scheduler
+        scheduler = asyncio.create_task(schedule_checks(nc))
+        
+        # Keep the main task running
+        while True:
+            await asyncio.sleep(1)
+            
+    except Exception as e:
+        print(f"Error in main: {e}")
+        if 'nc' in locals():
+            await nc.close()
+        exit(1)
 
 if __name__ == "__main__":
-    main_loop()
+    asyncio.run(main())
 

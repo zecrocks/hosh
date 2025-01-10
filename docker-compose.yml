@@ -1,6 +1,22 @@
 version: '3.8'
 
 services:
+  nats:
+    image: nats:alpine
+    ports:
+      - "4222:4222"
+      - "8222:8222"
+    command: ["--http_port", "8222"]
+    environment:
+      - NATS_SERVER_NAME=hosh-nats
+      - NATS_CLUSTER_NAME=hosh-cluster
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8222/healthz"]
+      start_period: 2s
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
   btc-worker:
     build: btc
     image: fathomx/btc-worker
@@ -14,10 +30,12 @@ services:
     stdin_open: true
     tty: true
     depends_on:
-      - tor  # Ensure Tor starts before btc-worker
+      - tor
+      - nats
     environment:
       TOR_PROXY_HOST: "tor"
       TOR_PROXY_PORT: 9050
+      NATS_URL: "nats://nats:4222"
 
   dashboard:
     build: dashboard
@@ -39,14 +57,18 @@ services:
     container_name: data-collector
     environment:
       BTC_WORKER: http://btc-worker:5000
-      STALE_THRESHOLD_SECONDS: 120 # 5 minutes
+      STALE_THRESHOLD_SECONDS: 120
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      NATS_URL: "nats://nats:4222"
+      NATS_SUBJECT: "hosh.check"
+      CHECK_INTERVAL: "300"  # Check servers every 5 minutes
     volumes:
       - ./collector:/app
     depends_on:
       - redis
       - btc-worker
+      - nats
     entrypoint: ["/wait-for-it.sh", "btc-worker:5000", "--", "python", "collector.py"]
 
   redis:
