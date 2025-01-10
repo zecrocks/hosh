@@ -41,13 +41,13 @@ services:
       TOR_PROXY_PORT: 9050
 
   dashboard:
-    build: dashboard
+    build: contrib/dashboard
     image: hosh/dashboard
     container_name: data-dashboard
     ports:
       - "8050:8050"
     volumes:
-      - ./dashboard:/app
+      - ./contrib/dashboard:/app
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
@@ -99,8 +99,7 @@ services:
     command: ["python", "worker.py"]
 
   redis:
-    build: redis
-    image: hosh/redis
+    image: redis:7.2-alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -111,6 +110,7 @@ services:
     volumes:
       - redis-data:/data
     restart: always
+    command: redis-server --appendonly yes
 
   tor:
     image: osminogin/tor-simple

@@ -1,0 +1,8 @@
+[package]
+name = "electrum-latest-block"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+electrum-client = "0.22.0"
+
