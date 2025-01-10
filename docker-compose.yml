@@ -21,21 +21,25 @@ services:
     build: btc
     image: hosh/btc-worker
     container_name: btc-worker
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
     volumes:
-      - btc-data:/root/.electrum  # Persistent data storage for the daemon
-      - ./btc/api.py:/electrum/api.py  # Mount only the Flask app for live updates
-    entrypoint: ["/electrum/entrypoint.sh"]  # Use the script
+      - btc-data:/root/.electrum
+      - ./btc/api.py:/electrum/api.py
     ports:
       - "5000:5000"
-    stdin_open: true
-    tty: true
     depends_on:
-      - tor
-      - nats
+      nats:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
     environment:
-      TOR_PROXY_HOST: "tor"
+      TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
-      NATS_URL: "nats://nats:4222"
 
   dashboard:
     build: dashboard
@@ -62,14 +66,17 @@ services:
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
       NATS_SUBJECT: "hosh.check"
-      CHECK_INTERVAL: "300"  # Check servers every 5 minutes
+      CHECK_INTERVAL: "300"
     volumes:
       - ./publisher:/app
     depends_on:
-      - redis
-      - btc-worker
-      - nats
-    entrypoint: ["/wait-for-it.sh", "btc-worker:5000", "--", "python", "publisher.py"]
+      btc-worker:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    command: ["python", "publisher.py"]
 
   worker:
     build: worker
@@ -84,30 +91,52 @@ services:
     volumes:
       - ./worker:/app
     depends_on:
-      - redis
-      - btc-worker
-      - nats
-    entrypoint: ["/wait-for-it.sh", "btc-worker:5000", "--", "python", "worker.py"]
+      btc-worker:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+    command: ["python", "worker.py"]
 
   redis:
     build: redis
     image: hosh/redis
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
     ports:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    restart: always  # Ensure Redis restarts on failure or reboot
+    restart: always
 
   tor:
-    image: dperson/torproxy  # Lightweight Tor proxy
+    image: dperson/torproxy
     container_name: tor
+    healthcheck:
+      test: |
+        CMD-SHELL
+        curl --fail --socks5-hostname localhost:9050 -s https://check.torproject.org/ | grep -qm1 Congratulations
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+    environment:
+      - TOR_NewCircuitPeriod=300
+      - TOR_MaxCircuitDirtiness=600
     ports:
-      - "9050:9050"  # Expose Tor's SOCKS proxy port
-    restart: always
-    command: "-p 9050"  # Run the SOCKS proxy on port 9050
+      - "9050:9050"
+    restart: on-failure:5
+    deploy:
+      restart_policy:
+        condition: on-failure
+        delay: 10s
+        max_attempts: 5
+        window: 120s
 
 volumes:
   btc-data:
   redis-data:
-
-

@@ -101,8 +101,6 @@ def sort_priority(host):
     return (3, host)  # Unknown (lowest priority)
 
 
-
-
 def query_electrumx_server(host, ports, method=None, params=[]):
     # Use a default method if none is provided
     if not method:
@@ -403,6 +401,40 @@ def electrum_query():
 
     return jsonify(flattened_result)
 
+
+@app.route('/healthz', methods=['GET'])
+def healthz():
+    """
+    Health check endpoint
+    ---
+    responses:
+      200:
+        description: Service is healthy
+      500:
+        description: Service is unhealthy
+    """
+    status = {
+        "status": "unhealthy",
+        "components": {
+            "electrum": "unknown",
+            "tor": "unknown"
+        }
+    }
+    
+    try:
+        # Try to execute a simple command to verify Electrum is working
+        # TODO: Also check Tor health here or who cares?
+        subprocess.run(["electrum", "getinfo"], capture_output=True, check=True)
+        status["components"]["electrum"] = "healthy"
+        
+        if status["components"]["electrum"] == "healthy":
+            status["status"] = "healthy"
+            return jsonify(status), 200
+            
+    except Exception as e:
+        status["error"] = str(e)
+        
+    return jsonify(status), 500
 
 
 if __name__ == '__main__':
