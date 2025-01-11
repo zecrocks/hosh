@@ -14,10 +14,10 @@ COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src && \
     echo "fn main() {println!(\"dummy\");}" > src/main.rs && \
     cargo build --release && \
-    # Only remove the dummy source and binary, keep the deps!
-    rm -rf src target/release/checker-zec
+    rm -rf src target/release/hosh-web*
 
-# Now copy the real source code and rebuild
+# Copy templates and real source code
+COPY templates ./templates
 COPY src ./src
 
 # Break the Cargo cache, build
@@ -33,10 +33,11 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the binary from builder
-COPY --from=builder /usr/src/app/target/release/checker-zec /app/checker-zec
+# Copy the binary and templates from builder
+COPY --from=builder /usr/src/app/target/release/hosh-web /app/hosh-web
+COPY --from=builder /usr/src/app/templates /app/templates
 
 # Set the binary as executable
-RUN chmod +x /app/checker-zec
+RUN chmod +x /app/hosh-web
 
-CMD ["/app/checker-zec"]
+CMD ["/app/hosh-web"]

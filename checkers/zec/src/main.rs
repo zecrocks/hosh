@@ -18,7 +18,7 @@ struct CheckRequest {
 struct CheckResult {
     host: String,
     port: u16,
-    block_height: u64,
+    height: u64,
     status: String,
     error: Option<String>,
     #[serde(rename = "LastUpdated")]
@@ -83,7 +83,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 CheckResult {
                     host: check_request.host.clone(),
                     port: check_request.port,
-                    block_height: height,
+                    height: height,
                     status: "success".to_owned(),
                     error: None,
                     last_updated: Utc::now(),
@@ -104,7 +104,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 CheckResult {
                     host: check_request.host.clone(),
                     port: check_request.port,
-                    block_height: 0,
+                    height: 0,
                     status: "error".to_owned(),
                     error: Some(e.to_string()),
                     last_updated: Utc::now(),
