@@ -11,7 +11,6 @@ from nats.errors import ConnectionClosedError, TimeoutError, NoServersError
 BTC_WORKER = os.environ.get('BTC_WORKER', 'http://btc-worker:5000')
 NATS_URL = os.environ.get('NATS_URL', 'nats://nats:4222')
 NATS_SUBJECT_CHECK = os.environ.get('NATS_SUBJECT', 'hosh.check')  # For receiving check requests
-NATS_SUBJECT_RESULT = os.environ.get('NATS_SUBJECT_RESULT', 'hosh.health')  # For publishing results
 
 # Redis Configuration
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
@@ -77,10 +76,6 @@ async def process_check_request(nc, msg):
             redis_client.set(host, json.dumps(server_data))
             print(f"Data for server {host} saved to Redis.")
 
-            # Publish to NATS
-            await nc.publish(NATS_SUBJECT_RESULT, json.dumps(server_data).encode())
-            print(f"Published health data for {host} to {NATS_SUBJECT_RESULT}")
-
         except Exception as e:
             print(f"Error processing server {host}: {e}")
 
@@ -117,3 +112,4 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+

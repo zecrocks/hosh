@@ -12,8 +12,8 @@ use chrono::{TimeZone, Utc};
 use electrum_client::{Client, ElectrumApi};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::{
-    collections::HashMap,
     net::SocketAddr,
     sync::Arc,
     time::Instant,
@@ -80,35 +80,60 @@ async fn health_check(_state: Arc<AppState>) -> Json<HealthCheckResponse> {
 }
 
 
-
-async fn get_servers(_state: Arc<AppState>) -> Result<Json<Vec<ServerResponse>>, String> {
-    // Define the URL for the servers.json file
+async fn get_servers(_state: Arc<AppState>) -> Result<Json<serde_json::Value>, String> {
     let url = "https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/electrum/servers.json";
 
-    // Create an HTTP client
     let http_client = HttpClient::new();
-
-    // Fetch the JSON file from the URL
-    let response = http_client.get(url)
+    let response = http_client
+        .get(url)
         .send()
         .await
         .map_err(|e| format!("Failed to fetch server list: {}", e))?
-        .json::<HashMap<String, HashMap<String, Option<u16>>>>()
+        .json::<HashMap<String, HashMap<String, serde_json::Value>>>()
         .await
         .map_err(|e| format!("Failed to parse server list JSON: {}", e))?;
 
-    // Parse the server data
-    let mut servers = Vec::new();
-    for (host, port_info) in response {
-        servers.push(ServerResponse {
-            host,
-            ports: port_info,
-            version: "unknown".to_string(), // Replace with actual version if needed
+    let mut servers = serde_json::Map::new();
+
+    for (host, details) in response {
+        let s_port = details
+            .get("s")
+            .and_then(|v| v.as_u64())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| "null".to_string());
+
+        let t_port = details
+            .get("t")
+            .and_then(|v| v.as_u64())
+            .map(|t| t.to_string())
+            .unwrap_or_else(|| "null".to_string());
+
+        let version = details
+            .get("version")
+            .and_then(|v| v.as_str())
+            .unwrap_or("unknown")
+            .to_string();
+
+        let pruning = details
+            .get("pruning")
+            .and_then(|v| v.as_str())
+            .unwrap_or("-")
+            .to_string();
+
+        let server_entry = serde_json::json!({
+            "pruning": pruning,
+            "s": if s_port == "null" { serde_json::Value::Null } else { serde_json::Value::String(s_port) },
+            "t": if t_port == "null" { serde_json::Value::Null } else { serde_json::Value::String(t_port) },
+            "version": version
         });
+
+        servers.insert(host, server_entry);
     }
 
-    Ok(Json(servers))
+    Ok(Json(serde_json::json!({ "servers": servers })))
 }
+
+
 
 
 async fn electrum_query(
@@ -183,6 +208,7 @@ struct ApiDescription {
     description: String,
     endpoints: Vec<EndpointInfo>,
 }
+
 
 #[derive(Serialize)]
 struct EndpointInfo {
@@ -278,7 +304,7 @@ async fn api_info() -> Json<ApiDescription> {
     Json(api_info)
 }
 
-
+// Main function and router setup remain the same.
 #[tokio::main]
 async fn main() {
     let electrum_client = Client::new("ssl://electrum.blockstream.info:50002")
@@ -289,14 +315,14 @@ async fn main() {
     });
 
     let app = Router::new()
-        .route("/", get(api_info)) // New endpoint
+        .route("/", get(api_info))
         .route("/healthz", get({
             let state = Arc::clone(&state);
             move || health_check(state)
         }))
         .route("/electrum/servers", get({
             let state = Arc::clone(&state);
-            move || get_servers(state)
+            move || async { get_servers(state).await }
         }))
         .route("/electrum/query", get({
             let state = Arc::clone(&state);
@@ -310,5 +336,4 @@ async fn main() {
         .await
         .unwrap();
 }
-
 

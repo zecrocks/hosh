@@ -62,10 +62,7 @@ async def publish_checks(nc):
             if servers:
                 current_time = datetime.datetime.utcnow()
                 
-                for host, details in servers.items():
-                    if '.onion' in host:
-                        continue  # Skip .onion addresses for now
-                    
+                for host, details in servers.items():                    
                     # Check if server was recently checked using Redis
                     if redis_client.exists(host) and not is_stale(host):
                         print(f"Skipping server {host}: recently checked")
