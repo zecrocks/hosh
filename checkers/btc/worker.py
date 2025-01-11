@@ -11,7 +11,7 @@ from nats.errors import ConnectionClosedError, TimeoutError, NoServersError
 # Environment Variables
 BTC_WORKER = os.environ.get('BTC_WORKER', 'http://btc-worker:5000')
 NATS_URL = os.environ.get('NATS_URL', 'nats://nats:4222')
-NATS_SUBJECT = os.environ.get('NATS_SUBJECT', 'hosh.check')
+NATS_SUBJECT = os.environ.get('NATS_SUBJECT', 'hosh.check.btc')
 
 # Redis Configuration
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')

@@ -12,7 +12,7 @@ from nats.errors import ConnectionClosedError, TimeoutError, NoServersError
 BTC_WORKER = os.environ.get('BTC_WORKER', 'http://btc-worker:5000')
 SERVER_REFRESH_INTERVAL_SECONDS = int(os.environ.get('CHECK_INTERVAL', 300))  # 5 minutes default
 NATS_URL = os.environ.get('NATS_URL', 'nats://nats:4222')
-NATS_SUBJECT = os.environ.get('NATS_SUBJECT', 'hosh.check')
+NATS_SUBJECT = os.environ.get('NATS_SUBJECT', 'hosh.check.btc')
 
 # Redis Configuration
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
@@ -67,11 +67,13 @@ async def publish_checks(nc):
                         continue  # Skip .onion addresses for now
                     
                     # Check if server was recently checked using Redis
-                    if redis_client.exists(host) and not is_stale(host):
+                    redis_key = f"btc:{host}"  # Add btc prefix to Redis keys
+                    if redis_client.exists(redis_key) and not is_stale(redis_key):
                         print(f"Skipping server {host}: recently checked")
                         continue
                         
                     check_data = {
+                        'type': 'btc',  # Add type field to identify BTC checks
                         'host': host,
                         'port': details.get('s', 50002),
                         'version': details.get('version', 'unknown')
@@ -79,10 +81,10 @@ async def publish_checks(nc):
                     
                     # Publish check request to NATS
                     await nc.publish(NATS_SUBJECT, json.dumps(check_data).encode())
-                    print(f"Published check request for {host}")
+                    print(f"Published BTC check request for {host}")
                     
             else:
-                print("No servers found")
+                print("No BTC servers found")
                 
         except Exception as e:
             print(f"Error in publish_checks: {e}")
