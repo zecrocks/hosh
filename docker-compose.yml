@@ -99,7 +99,7 @@ services:
     command: ["python", "worker.py"]
 
   redis:
-    image: redis:7.2-alpine
+    image: redis:alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -109,8 +109,8 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    restart: always
     command: redis-server --appendonly yes
+    restart: always
 
   tor:
     image: osminogin/tor-simple
