@@ -1,17 +1,24 @@
 use axum::{
-    routing::{get},
     extract::Query,
     response::Json,
+    routing::get,
     Router,
 };
+use bitcoin::{
+    blockdata::block::Header as BlockHeader,
+    consensus::encode::{deserialize, serialize},
+};
+use chrono::{TimeZone, Utc};
 use electrum_client::{Client, ElectrumApi};
+use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use std::{collections::HashMap, net::SocketAddr, sync::Arc};
+use std::{
+    collections::HashMap,
+    net::SocketAddr,
+    sync::Arc,
+    time::Instant,
+};
 use tokio::sync::Mutex;
-
-use bitcoin::blockdata::block::Header as BlockHeader;
-use bitcoin::consensus::encode::deserialize;
-use bitcoin::consensus::encode::serialize;
 
 
 fn parse_block_header(header_hex: &str) -> Result<serde_json::Value, String> {
@@ -23,11 +30,9 @@ fn parse_block_header(header_hex: &str) -> Result<serde_json::Value, String> {
         "merkle_root": header.merkle_root.to_string(),
         "time": header.time,
         "bits": header.bits,
-        "nonce": header.nonce
+        "nonce": header.nonce as u32  // Explicitly cast to u32
     }))
 }
-
-
 
 
 #[derive(Clone)]
@@ -75,46 +80,36 @@ async fn health_check(_state: Arc<AppState>) -> Json<HealthCheckResponse> {
 }
 
 
-async fn get_servers(state: Arc<AppState>) -> Result<Json<Vec<ServerResponse>>, String> {
-    let client = state.electrum_client.lock().await;
 
-    // Use raw_call to query peers
-    let peers: serde_json::Value = client
-        .raw_call("server.peers.subscribe", vec![])
-        .map_err(|e| e.to_string())?;
+async fn get_servers(_state: Arc<AppState>) -> Result<Json<Vec<ServerResponse>>, String> {
+    // Define the URL for the servers.json file
+    let url = "https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/electrum/servers.json";
 
+    // Create an HTTP client
+    let http_client = HttpClient::new();
+
+    // Fetch the JSON file from the URL
+    let response = http_client.get(url)
+        .send()
+        .await
+        .map_err(|e| format!("Failed to fetch server list: {}", e))?
+        .json::<HashMap<String, HashMap<String, Option<u16>>>>()
+        .await
+        .map_err(|e| format!("Failed to parse server list JSON: {}", e))?;
+
+    // Parse the server data
     let mut servers = Vec::new();
-
-    // Parse the returned JSON
-    if let Some(peer_list) = peers.as_array() {
-        for peer in peer_list {
-            if let Some(host) = peer.get(1).and_then(|h| h.as_str()) {
-                let mut ports = HashMap::new();
-
-                // Extract SSL and TCP ports
-                if let Some(port_info) = peer.get(2).and_then(|p| p.as_object()) {
-                    if let Some(ssl_port) = port_info.get("s").and_then(|p| p.as_u64()) {
-                        ports.insert("s".to_string(), Some(ssl_port as u16));
-                    }
-                    if let Some(tcp_port) = port_info.get("t").and_then(|p| p.as_u64()) {
-                        ports.insert("t".to_string(), Some(tcp_port as u16));
-                    }
-                }
-
-                servers.push(ServerResponse {
-                    host: host.to_string(),
-                    ports,
-                    version: "unknown".to_string(), // Replace with actual version if available
-                });
-            }
-        }
+    for (host, port_info) in response {
+        servers.push(ServerResponse {
+            host,
+            ports: port_info,
+            version: "unknown".to_string(), // Replace with actual version if needed
+        });
     }
 
     Ok(Json(servers))
 }
 
-
-use std::time::Instant;
 
 async fn electrum_query(
     Query(params): Query<QueryParams>,
@@ -150,8 +145,6 @@ async fn electrum_query(
     };
 
 
-    use chrono::{TimeZone, Utc};
-
     // Convert timestamp to human-readable format
     let timestamp = parsed_header["time"]
         .as_i64()
@@ -185,6 +178,106 @@ async fn electrum_query(
     Ok(Json(response))
 }
 
+#[derive(Serialize)]
+struct ApiDescription {
+    description: String,
+    endpoints: Vec<EndpointInfo>,
+}
+
+#[derive(Serialize)]
+struct EndpointInfo {
+    method: String,
+    path: String,
+    description: String,
+    example_response: serde_json::Value,
+}
+
+async fn api_info() -> Json<ApiDescription> {
+    let api_info = ApiDescription {
+        description: "This is an Electrum-based API.".to_string(),
+        endpoints: vec![
+            EndpointInfo {
+                method: "GET".to_string(),
+                path: "/".to_string(),
+                description: "Provides information about this API.".to_string(),
+                example_response: serde_json::json!({
+                    "description": "This is an Electrum-based API.",
+                    "endpoints": [
+                        {
+                            "method": "GET",
+                            "path": "/",
+                            "description": "Provides information about this API."
+                        }
+                    ]
+                }),
+            },
+            EndpointInfo {
+                method: "GET".to_string(),
+                path: "/healthz".to_string(),
+                description: "Checks the health of the service.".to_string(),
+                example_response: serde_json::json!({
+                    "status": "healthy",
+                    "components": {
+                        "electrum": "healthy"
+                    }
+                }),
+            },
+            EndpointInfo {
+                method: "GET".to_string(),
+                path: "/electrum/servers".to_string(),
+                description: "Fetches the list of Electrum servers.".to_string(),
+                example_response: serde_json::json!({
+                    "servers": {
+                        "104.198.149.61": {
+                            "pruning": "-",
+                            "s": "50002",
+                            "t": "50001",
+                            "version": "1.4.2"
+                        },
+                        "104.248.139.211": {
+                            "pruning": "-",
+                            "s": "50002",
+                            "t": "50001",
+                            "version": "1.4.2"
+                        },
+                        "128.0.190.26": {
+                            "pruning": "-",
+                            "s": "50002",
+                            "t": null,
+                            "version": "1.4.2"
+                        }
+                    }
+                }),
+            },
+            EndpointInfo {
+                method: "GET".to_string(),
+                path: "/electrum/query".to_string(),
+                description: "Queries blockchain headers for a specific server.".to_string(),
+                example_response: serde_json::json!({
+                    "bits": 386043996,
+                    "connection_type": "SSL",
+                    "error": "",
+                    "height": 878812,
+                    "host": "electrum.blockstream.info",
+                    "merkle_root": "9c37963b9e67a138ef18595e21eae9b5517abdaf4f500584ac88c2a7d15589a7",
+                    "method_used": "blockchain.headers.subscribe",
+                    "nonce": 4216690212u32,  // Annotate as u32
+                    "ping": 157.55,
+                    "prev_block": "00000000000000000000bd9001ebe6182a864943ce8b04338b81986ee2b0ebf3",
+                    "resolved_ips": [
+                        "34.36.93.230"
+                    ],
+                    "self_signed": true,
+                    "timestamp": 1736622010,
+                    "timestamp_human": "Sat, 11 Jan 2025 19:00:10 GMT",
+                    "version": 828039168
+                }),
+            },
+        ],
+    };
+    Json(api_info)
+}
+
 
 #[tokio::main]
 async fn main() {
@@ -196,6 +289,7 @@ async fn main() {
     });
 
     let app = Router::new()
+        .route("/", get(api_info)) // New endpoint
         .route("/healthz", get({
             let state = Arc::clone(&state);
             move || health_check(state)
@@ -216,4 +310,5 @@ async fn main() {
         .await
         .unwrap();
 }
+
 

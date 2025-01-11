@@ -1,0 +1,44 @@
+# Ignore target directory in Rust projects
+**/target
+
+# Ignore Python virtual environments
+**/venv
+**/.venv
+
+# Ignore Python compiled files
+**/*.pyc
+**/*.pyo
+**/__pycache__/
+
+# Ignore Cargo artifacts
+**/.cargo/
+
+# Ignore test results
+**/test-results/
+**/coverage/
+
+# Ignore IDE/editor-specific files
+**/.idea/
+**/.vscode/
+**/*.swp
+**/*~
+
+# Ignore logs and temporary files
+**/*.log
+**/*.tmp
+**/.DS_Store
+**/Thumbs.db
+
+# Ignore Docker-specific files
+docker-compose.override.yml
+Dockerfile.*
+
+# Ignore unnecessary build artifacts
+build/
+dist/
+
+# Ignore any secrets (customize as needed)
+**/secrets/
+**/*.key
+**/*.pem
+**/.env
