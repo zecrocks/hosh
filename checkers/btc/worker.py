@@ -10,7 +10,7 @@ from nats.errors import ConnectionClosedError, TimeoutError, NoServersError
 # Environment Variables
 BTC_WORKER = os.environ.get('BTC_WORKER', 'http://btc-worker:5000')
 NATS_URL = os.environ.get('NATS_URL', 'nats://nats:4222')
-NATS_SUBJECT_CHECK = os.environ.get('NATS_SUBJECT', 'hosh.check')  # For receiving check requests
+NATS_SUBJECT = os.environ.get('NATS_SUBJECT', 'hosh.check.btc')
 
 # Redis Configuration
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
@@ -73,7 +73,7 @@ async def process_check_request(nc, msg):
             server_data = make_json_serializable(server_data)
 
             # Save to Redis
-            redis_client.set(host, json.dumps(server_data))
+            redis_client.set(f"btc:{host}", json.dumps(server_data))
             print(f"Data for server {host} saved to Redis.")
 
         except Exception as e:
@@ -94,8 +94,8 @@ async def main():
         async def subscription_handler(msg):
             await process_check_request(nc, msg)
 
-        await nc.subscribe(NATS_SUBJECT_CHECK, cb=subscription_handler)
-        print(f"Subscribed to {NATS_SUBJECT_CHECK}")
+        await nc.subscribe(NATS_SUBJECT, cb=subscription_handler)
+        print(f"Subscribed to {NATS_SUBJECT}")
 
         # Keep the event loop running
         while True:
@@ -111,5 +111,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
-
+    asyncio.run(main()) 

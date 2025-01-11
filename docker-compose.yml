@@ -95,7 +95,6 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
-      NATS_SUBJECT: "hosh.check"
       CHECK_INTERVAL: "300"
     volumes:
       - ./publisher:/app
@@ -106,18 +105,16 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
-    command: ["python", "publisher.py"]
 
   checker-btc:
     build: checkers/btc
-    image: hosh/btc-checker
+    image: hosh/checker-btc
     container_name: checker-btc
     environment:
       BTC_WORKER: http://btc-backend:5000
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
-      NATS_SUBJECT: "hosh.check"
     volumes:
       - ./checkers/btc:/app
     depends_on:
@@ -127,10 +124,24 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
-    command: ["python", "worker.py"]
+
+  checker-zec:
+    build: checkers/zec
+    image: hosh/checker-zec
+    container_name: checker-zec
+    environment:
+      NATS_HOST: nats
+      NATS_PORT: 4222
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   redis:
-    image: redis:7.2-alpine
+    image: redis:alpine
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
@@ -140,8 +151,8 @@ services:
       - "6379:6379"
     volumes:
       - redis-data:/data
-    restart: always
     command: redis-server --appendonly yes
+    restart: always
 
   tor:
     image: osminogin/tor-simple
@@ -166,6 +177,24 @@ services:
         delay: 10s
         max_attempts: 5
         window: 120s
+
+  web:
+    build: web
+    image: hosh/web
+    container_name: electrum-web
+    ports:
+      - "8080:8080"
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
 
 volumes:
   btc-data:
