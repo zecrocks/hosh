@@ -64,7 +64,7 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
-      NATS_SUBJECT: "hosh.check.btc"
+      NATS_PREFIX: "hosh."
       CHECK_INTERVAL: "300"
     volumes:
       - ./publisher:/app
@@ -75,18 +75,17 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
-    command: ["python", "publisher.py"]
 
   checker-btc:
     build: checkers/btc
-    image: hosh/btc-checker
+    image: hosh/checker-btc
     container_name: checker-btc
     environment:
       BTC_WORKER: http://btc-backend:5000
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
-      NATS_SUBJECT: "hosh.check.btc"
+      NATS_PREFIX: "hosh."
     volumes:
       - ./checkers/btc:/app
     depends_on:
@@ -96,7 +95,21 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
-    command: ["python", "worker.py"]
+
+  checker-zec:
+    build: checkers/zec
+    image: hosh/checker-zec
+    container_name: checker-zec
+    environment:
+      NATS_HOST: nats
+      NATS_PORT: 4222
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
 
   redis:
     image: redis:alpine

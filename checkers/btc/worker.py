@@ -68,7 +68,7 @@ async def process_check_request(msg):
             server_data = make_json_serializable(server_data)
             
             # Save to Redis
-            redis_client.set(host, json.dumps(server_data))
+            redis_client.set(f"btc:{host}", json.dumps(server_data))
             print(f"Data for server {host} saved to Redis.")
             
         except Exception as e:

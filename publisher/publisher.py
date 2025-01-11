@@ -12,7 +12,19 @@ from nats.errors import ConnectionClosedError, TimeoutError, NoServersError
 BTC_WORKER = os.environ.get('BTC_WORKER', 'http://btc-worker:5000')
 SERVER_REFRESH_INTERVAL_SECONDS = int(os.environ.get('CHECK_INTERVAL', 300))  # 5 minutes default
 NATS_URL = os.environ.get('NATS_URL', 'nats://nats:4222')
-NATS_SUBJECT = os.environ.get('NATS_SUBJECT', 'hosh.check.btc')
+NATS_PREFIX = os.environ.get('NATS_PREFIX', 'hosh.')
+
+NATS_BTC_SUBJECT = f"{NATS_PREFIX}check.btc"
+NATS_ZEC_SUBJECT = f"{NATS_PREFIX}check.zec"
+
+# Static ZEC server configuration for now
+ZEC_SERVERS = [
+    {'host': 'zec.rocks', 'port': 443},
+    {'host': 'na.zec.rocks', 'port': 443},
+    {'host': 'sa.zec.rocks', 'port': 443},
+    {'host': 'ap.zec.rocks', 'port': 443},
+    {'host': 'me.zec.rocks', 'port': 443},
+]
 
 # Redis Configuration
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
@@ -58,6 +70,7 @@ async def publish_checks(nc):
     """Periodically fetch server list and publish check requests"""
     while True:
         try:
+            # Publish BTC checks
             servers = fetch_servers()
             if servers:
                 current_time = datetime.datetime.utcnow()
@@ -80,11 +93,20 @@ async def publish_checks(nc):
                     }
                     
                     # Publish check request to NATS
-                    await nc.publish(NATS_SUBJECT, json.dumps(check_data).encode())
+                    await nc.publish(NATS_BTC_SUBJECT, json.dumps(check_data).encode())
                     print(f"Published BTC check request for {host}")
-                    
             else:
                 print("No BTC servers found")
+
+            # Publish ZEC checks every time for now
+            for server in ZEC_SERVERS:
+                zec_check_data = {
+                    'type': 'zec',
+                    'host': server['host'],
+                    'port': server['port']
+                }
+                await nc.publish(NATS_ZEC_SUBJECT, json.dumps(zec_check_data).encode())
+                print(f"Published ZEC check request for {server['host']}")
                 
         except Exception as e:
             print(f"Error in publish_checks: {e}")
