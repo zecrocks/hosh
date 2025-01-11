@@ -1,40 +1,34 @@
-# Use Python 3.11-slim as the base image
-FROM python:3.11-slim
+FROM rust:1.72
 
-# Set environment variables
-ENV ELECTRUM_VERSION=4.5.2 
+WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    wget \
-    libsecp256k1-dev \
-    curl \
-    && apt-get clean \
-    && rm -rf /var/lib/apt/lists/*
+# Update rustup and Cargo to ensure compatibility with lock file version 4
+RUN rustup update && rustup show
 
-# Install Python dependencies
-RUN pip install --no-cache-dir \
-    pycryptodomex \
-    cryptography \
-    flask \
-    flasgger \
-    pysocks  # Install pysocks for SOCKS proxy support
+# Copy dependency files to cache dependencies
+COPY Cargo.toml Cargo.lock ./
 
-# Install Electrum
-RUN pip install --no-cache-dir https://download.electrum.org/$ELECTRUM_VERSION/Electrum-$ELECTRUM_VERSION.tar.gz
+# Add dummy main.rs to allow `cargo fetch`
+RUN mkdir src && echo "fn main() {}" > src/main.rs
 
-# Create working directory
-WORKDIR /electrum
+# Pre-fetch dependencies
+RUN cargo fetch
 
-# Copy the Flask app code and entrypoint script
-COPY entrypoint.sh /electrum/entrypoint.sh
-COPY api.py /electrum/api.py
+# Copy the rest of the project files (excluding target if needed)
+COPY . .
 
-# Make the entrypoint script executable
-RUN chmod +x /electrum/entrypoint.sh
+# Add a build argument to switch between release and debug builds
+ARG BUILD_MODE=release
 
-# Expose Flask API port (default 5000)
+# Print and build the application based on the mode
+RUN echo "Building in $BUILD_MODE mode" && \
+    if [ "$BUILD_MODE" = "release" ]; then \
+      cargo build --release; \
+    else \
+      cargo build; \
+    fi
+
 EXPOSE 5000
 
-# Use the entrypoint script
-ENTRYPOINT ["/electrum/entrypoint.sh"]
+# Run the application based on the mode
+CMD ["sh", "-c", "if [ \"$BUILD_MODE\" = \"release\" ]; then cargo run --release; else cargo run; fi"]

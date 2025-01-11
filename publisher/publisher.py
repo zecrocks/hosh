@@ -75,10 +75,7 @@ async def publish_checks(nc):
             if servers:
                 current_time = datetime.datetime.utcnow()
                 
-                for host, details in servers.items():
-                    if '.onion' in host:
-                        continue  # Skip .onion addresses for now
-                    
+                for host, details in servers.items():                    
                     # Check if server was recently checked using Redis
                     redis_key = f"btc:{host}"  # Add btc prefix to Redis keys
                     if redis_client.exists(redis_key) and not is_stale(redis_key):
