@@ -32,28 +32,24 @@ fn main() -> Result<(), Box<dyn Error>> {
         .install_default()
         .expect("Failed to install rustls crypto provider");
 
-    // Get NATS configuration from environment
+    let nats_prefix = env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".to_string());
     let nats_host = env::var("NATS_HOST").unwrap_or_else(|_| "nats".to_string());
     let nats_port = env::var("NATS_PORT").unwrap_or_else(|_| "4222".to_string());
     let nats_url = format!("nats://{}:{}", nats_host, nats_port);
 
-    // Get Redis configuration from environment
     let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
     let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
     let redis_url = format!("redis://{}:{}", redis_host, redis_port);
 
-    // Connect to Redis
     let redis_client = redis::Client::open(redis_url.as_str())?;
     let mut redis_conn = redis_client.get_connection()?;
     println!("Connected to Redis at {}", redis_url);
 
-    // Connect to NATS
     let nc = nats::connect(&nats_url)?;
     println!("Connected to NATS at {}", nats_url);
 
-    // Subscribe to ZEC check requests
-    let sub = nc.subscribe("hosh.check.zec")?;
-    println!("Subscribed to hosh.check.zec");
+    let sub = nc.subscribe(&format!("{}check.zec", nats_prefix))?;
+    println!("Subscribed to {}check.zec", nats_prefix);
 
     for msg in sub.messages() {
         // Parse the check request

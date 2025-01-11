@@ -64,7 +64,6 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
-      NATS_PREFIX: "hosh."
       CHECK_INTERVAL: "300"
     volumes:
       - ./publisher:/app
@@ -85,7 +84,6 @@ services:
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
-      NATS_PREFIX: "hosh."
     volumes:
       - ./checkers/btc:/app
     depends_on:
