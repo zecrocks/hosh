@@ -1,0 +1,46 @@
+name: Docker Compose Build Test
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    
+    steps:
+    - uses: actions/checkout@v4
+    
+    # Set up Docker Buildx for better caching
+    - name: Set up Docker Buildx
+      uses: docker/setup-buildx-action@v3
+      
+    # Cache Docker layers
+    - name: Cache Docker layers
+      uses: actions/cache@v3
+      with:
+        path: /tmp/.buildx-cache
+        key: ${{ runner.os }}-buildx-${{ github.sha }}
+        restore-keys: |
+          ${{ runner.os }}-buildx-
+
+    # Build with cache
+    - name: Test Docker Compose Build
+      uses: docker/bake-action@v4
+      with:
+        files: |
+          docker-compose.yml
+        set: |
+          *.cache-from=type=local,src=/tmp/.buildx-cache
+          *.cache-to=type=local,dest=/tmp/.buildx-cache-new,mode=max
+    
+    # Move cache to prevent cache growth
+    - name: Move cache
+      run: |
+        rm -rf /tmp/.buildx-cache
+        mv /tmp/.buildx-cache-new /tmp/.buildx-cache
+
+    - name: Verify Images
+      run: docker images 
