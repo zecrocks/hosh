@@ -8,117 +8,19 @@ on:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [ubuntu-latest, arm64]
+    runs-on: ${{ matrix.platform }}
     
     steps:
     - uses: actions/checkout@v4
     
-    # Set up Docker Buildx for better caching
     - name: Set up Docker Buildx
       uses: docker/setup-buildx-action@v3
       
-    # Cache Docker layers for each service
-    - name: Cache Docker layers for btc-backend
-      uses: actions/cache@v3
-      with:
-        path: /tmp/.buildx-cache-btc-backend
-        key: ${{ runner.os }}-buildx-btc-backend-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-btc-backend-
-
-    - name: Cache Docker layers for web
-      uses: actions/cache@v3
-      with:
-        path: /tmp/.buildx-cache-web
-        key: ${{ runner.os }}-buildx-web-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-web-
-
-    - name: Cache Docker layers for discovery
-      uses: actions/cache@v3
-      with:
-        path: /tmp/.buildx-cache-discovery
-        key: ${{ runner.os }}-buildx-discovery-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-discovery-
-
-    # Cache Docker layers for publisher
-    - name: Cache Docker layers for publisher
-      uses: actions/cache@v3
-      with:
-        path: /tmp/.buildx-cache-publisher
-        key: ${{ runner.os }}-buildx-publisher-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-publisher-
-
-    # Cache Docker layers for contrib/btc-backend-py
-    - name: Cache Docker layers for contrib/btc-backend-py
-      uses: actions/cache@v3
-      with:
-        path: /tmp/.buildx-cache-btc-backend-py
-        key: ${{ runner.os }}-buildx-btc-backend-py-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-btc-backend-py-
-
-    # Cache Docker layers for dashboard
-    - name: Cache Docker layers for dashboard
-      uses: actions/cache@v3
-      with:
-        path: /tmp/.buildx-cache-dashboard
-        key: ${{ runner.os }}-buildx-dashboard-${{ github.sha }}
-        restore-keys: |
-          ${{ runner.os }}-buildx-dashboard-
-
-    # Build with cache for all services
-    - name: Test Docker Compose Build
-      uses: docker/bake-action@v4
-      with:
-        files: |
-          docker-compose.yml
-        set: |
-          btc-backend.cache-from=type=local,src=/tmp/.buildx-cache-btc-backend
-          btc-backend.cache-to=type=local,dest=/tmp/.buildx-cache-btc-backend-new,mode=max
-          web.cache-from=type=local,src=/tmp/.buildx-cache-web
-          web.cache-to=type=local,dest=/tmp/.buildx-cache-web-new,mode=max
-          discovery.cache-from=type=local,src=/tmp/.buildx-cache-discovery
-          discovery.cache-to=type=local,dest=/tmp/.buildx-cache-discovery-new,mode=max
-          publisher.cache-from=type=local,src=/tmp/.buildx-cache-publisher
-          publisher.cache-to=type=local,dest=/tmp/.buildx-cache-publisher-new,mode=max
-          contrib/btc-backend-py.cache-from=type=local,src=/tmp/.buildx-cache-btc-backend-py
-          contrib/btc-backend-py.cache-to=type=local,dest=/tmp/.buildx-cache-btc-backend-py-new,mode=max
-          dashboard.cache-from=type=local,src=/tmp/.buildx-cache-dashboard
-          dashboard.cache-to=type=local,dest=/tmp/.buildx-cache-dashboard-new,mode=max
+    - name: Build Docker Compose Services
+      run: docker compose build
     
-    # Move cache to prevent cache growth for each service
-    - name: Move cache for btc-backend
-      run: |
-        rm -rf /tmp/.buildx-cache-btc-backend
-        mv /tmp/.buildx-cache-btc-backend-new /tmp/.buildx-cache-btc-backend
-
-    - name: Move cache for web
-      run: |
-        rm -rf /tmp/.buildx-cache-web
-        mv /tmp/.buildx-cache-web-new /tmp/.buildx-cache-web
-
-    - name: Move cache for discovery
-      run: |
-        rm -rf /tmp/.buildx-cache-discovery
-        mv /tmp/.buildx-cache-discovery-new /tmp/.buildx-cache-discovery
-
-    - name: Move cache for publisher
-      run: |
-        rm -rf /tmp/.buildx-cache-publisher
-        mv /tmp/.buildx-cache-publisher-new /tmp/.buildx-cache-publisher
-    
-    - name: Move cache for contrib/btc-backend-py
-      run: |
-        rm -rf /tmp/.buildx-cache-btc-backend-py
-        mv /tmp/.buildx-cache-btc-backend-py-new /tmp/.buildx-cache-btc-backend-py
-    
-    - name: Move cache for dashboard
-      run: |
-        rm -rf /tmp/.buildx-cache-dashboard
-        mv /tmp/.buildx-cache-dashboard-new /tmp/.buildx-cache-dashboard
-
     - name: Verify Images
       run: docker images 
