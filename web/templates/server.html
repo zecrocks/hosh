@@ -4,7 +4,7 @@
 
 {% block content %}
 <a href="/{{ network }}" class="btn btn-secondary mb-3">Back to Dashboard</a>
-<h2>Server Details: {{ host }} ({{ network }})</h2>
+<h2>Server Details: {{ host }} ({{ network|upper }})</h2>
 <div class="card shadow-sm">
     <div class="table-responsive">
         <table class="table table-bordered table-striped mb-0">

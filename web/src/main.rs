@@ -127,6 +127,20 @@ struct ServerTemplate {
     percentile_height: u64,
 }
 
+#[derive(Serialize)]
+struct ApiServerInfo {
+    hostname: String,
+    port: u16,
+    protocol: &'static str,
+    ping: Option<f64>,
+    online: bool,
+}
+
+#[derive(Serialize)]
+struct ApiResponse {
+    servers: Vec<ApiServerInfo>
+}
+
 #[get("/")]
 async fn root() -> Result<Redirect> {
     Ok(Redirect::to("/zec"))
@@ -282,6 +296,70 @@ async fn server_detail(
         .body(html))
 }
 
+#[get("/api/v0/{network}.json")]
+async fn network_api(
+    redis: web::Data<redis::Client>,
+    network: web::Path<String>,
+) -> Result<HttpResponse> {
+    let network = SafeNetwork::from_str(&network)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+    
+    let servers = fetch_network_servers(&redis, network.0).await?;
+    
+    let api_servers: Vec<ApiServerInfo> = servers.into_iter()
+        .map(|server| {
+            let (port, protocol) = match network.0 {
+                "btc" => (server.port.unwrap_or(50002), "ssl"),
+                "zec" => (server.port.unwrap_or(9067), "grpc"),
+                _ => unreachable!(), // SafeNetwork::from_str ensures this
+            };
+            
+            ApiServerInfo {
+                hostname: server.host.clone(),
+                port,
+                protocol,
+                ping: server.ping,
+                online: server.is_online(),
+            }
+        })
+        .collect();
+
+    Ok(HttpResponse::Ok()
+        .content_type("application/json")
+        .json(ApiResponse { servers: api_servers }))
+}
+
+// Helper function to reduce code duplication
+async fn fetch_network_servers(redis: &redis::Client, network: &str) -> Result<Vec<ServerInfo>> {
+    let mut conn = redis.get_connection().map_err(|e| {
+        eprintln!("Redis connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    })?;
+
+    let keys: Vec<String> = conn.keys(format!("{}:*", network)).map_err(|e| {
+        eprintln!("Redis keys error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
+    })?;
+
+    let mut servers = Vec::new();
+    for key in keys {
+        let value: String = conn.get(&key).map_err(|e| {
+            eprintln!("Redis get error for key {}: {}", key, e);
+            actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
+        })?;
+
+        match serde_json::from_str::<ServerInfo>(&value) {
+            Ok(server_info) => servers.push(server_info),
+            Err(e) => {
+                eprintln!("Failed to deserialize JSON for key {}: {}", key, e);
+                println!("Retrieved JSON for key {}: {}", key, value);
+            }
+        }
+    }
+
+    Ok(servers)
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
@@ -299,6 +377,7 @@ async fn main() -> std::io::Result<()> {
             .service(root)
             .service(network_status)
             .service(server_detail)
+            .service(network_api)
             .service(fs::Files::new("/static", "./static"))
     })
     .bind("0.0.0.0:8080")?
