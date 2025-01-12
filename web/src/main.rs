@@ -9,6 +9,7 @@ use serde::{Deserialize, Serialize};
 #[template(path = "index.html")]
 struct IndexTemplate {
     servers: Vec<ServerInfo>,
+    percentile_height: u64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -41,6 +42,11 @@ impl ServerInfo {
     fn is_online(&self) -> bool {
         self.height > 0
     }
+
+    fn is_height_behind(&self, percentile_height: &u64) -> bool {
+        // Consider a server behind if it's more than 3 blocks behind the 90th percentile
+        self.height > 0 && self.height + 3 < *percentile_height
+    }
 }
 
 #[get("/")]
@@ -54,8 +60,6 @@ async fn index(redis: web::Data<redis::Client>) -> Result<HttpResponse> {
         eprintln!("Redis keys error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
     })?;
-
-    println!("Retrieved keys: {:?}", keys);
 
     let mut servers = Vec::new();
 
@@ -74,7 +78,25 @@ async fn index(redis: web::Data<redis::Client>) -> Result<HttpResponse> {
         }
     }
 
-    let template = IndexTemplate { servers };
+    // Calculate 90th percentile of block heights (only for online servers)
+    let mut heights: Vec<u64> = servers
+        .iter()
+        .filter(|s| s.height > 0)
+        .map(|s| s.height)
+        .collect();
+    
+    heights.sort_unstable();
+    let percentile_height = if !heights.is_empty() {
+        let index = (heights.len() as f64 * 0.9).ceil() as usize - 1;
+        heights[index.min(heights.len() - 1)]
+    } else {
+        0
+    };
+
+    let template = IndexTemplate { 
+        servers,
+        percentile_height,
+    };
     let html = template.render().map_err(|e| {
         eprintln!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")

@@ -6,6 +6,7 @@
     <style>
         .status-online { color: #198754 !important; font-weight: bold; }
         .status-offline { color: #dc3545 !important; font-weight: bold; }
+        .height-behind { background-color: #fff3cd !important; }
     </style>
 </head>
 <body class="bg-light">
@@ -16,6 +17,11 @@
                 <div class="text-center mb-3">
                     <a href="/" class="btn btn-primary">Refresh Status</a>
                 </div>
+                {% if percentile_height > 0 %}
+                <div class="text-center text-muted">
+                    <small>90th percentile block height: {{ percentile_height }}</small>
+                </div>
+                {% endif %}
             </div>
         </div>
 
@@ -35,9 +41,14 @@
                             </thead>
                             <tbody>
                                 {% for server in servers %}
-                                <tr>
+                                <tr {% if server.is_height_behind(percentile_height) %}class="height-behind"{% endif %}>
                                     <td>{{ server.host }}</td>
-                                    <td>{{ server.height }}</td>
+                                    <td>
+                                        {{ server.height }}
+                                        {% if server.is_height_behind(percentile_height) %}
+                                        <span class="text-warning" title="Server is behind the majority">⚠️</span>
+                                        {% endif %}
+                                    </td>
                                     <td class="status-{% if server.height > 0 %}online{% else %}offline{% endif %}">
                                         {% if server.height > 0 %}Online{% else %}Offline{% endif %}
                                     </td>
