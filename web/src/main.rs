@@ -19,17 +19,42 @@ struct ServerInfo {
     #[serde(default)]
     host: String,
 
+    #[serde(default, deserialize_with = "deserialize_port")]
+    port: Option<u16>,
+
     #[serde(default)]
     height: u64,
 
     #[serde(rename = "LastUpdated", default)]
-    last_updated: String, // Stored as a string
+    last_updated: String,
 
     #[serde(default)]
     ping: Option<f64>,
 
     #[serde(flatten)]
     extra: HashMap<String, serde_json::Value>,
+}
+
+fn deserialize_port<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    
+    // Always deserialize as Value first to handle any JSON type
+    let value = serde_json::Value::deserialize(deserializer)?;
+    
+    // Convert the value to a string
+    let port_str = match value {
+        serde_json::Value::String(s) => s,
+        serde_json::Value::Number(n) => n.to_string(),
+        _ => return Ok(None),
+    };
+    
+    // Try to parse the string as a number
+    port_str.parse::<u16>()
+        .map(Some)
+        .or_else(|_| Ok(None))
 }
 
 impl ServerInfo {
@@ -48,6 +73,31 @@ impl ServerInfo {
     fn is_height_behind(&self, percentile_height: &u64) -> bool {
         // Consider a server behind if it's more than 3 blocks behind the 90th percentile
         self.height > 0 && self.height + 3 < *percentile_height
+    }
+
+    fn host_with_port(&self) -> String {
+        if let Some(port) = self.port {
+            format!("{}:{}", self.host, port)
+        } else {
+            self.host.clone()
+        }
+    }
+
+    fn is_height_ahead(&self, percentile_height: &u64) -> bool {
+        // Consider a server suspiciously ahead if it's more than 3 blocks ahead of the 90th percentile
+        self.height > 0 && self.height > percentile_height + 3
+    }
+
+    fn get_rank(&self, percentile_height: &u64) -> u8 {
+        if !self.is_online() {
+            0
+        } else if self.is_height_behind(percentile_height) {
+            1
+        } else if self.is_height_ahead(percentile_height) {
+            2
+        } else {
+            3
+        }
     }
 }
 
@@ -108,15 +158,7 @@ async fn network_status(
         }
     }
 
-    // Sort servers by ping (fastest first)
-    servers.sort_by(|a, b| {
-        a.ping
-            .unwrap_or(f64::MAX)
-            .partial_cmp(&b.ping.unwrap_or(f64::MAX))
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-
-    // Calculate 90th percentile of block heights (only for online servers)
+    // Calculate 90th percentile of block heights (only for online servers) FIRST
     let mut heights: Vec<u64> = servers
         .iter()
         .filter(|s| s.height > 0)
@@ -130,6 +172,21 @@ async fn network_status(
     } else {
         0
     };
+
+    // THEN sort servers using the calculated percentile_height
+    servers.sort_by(|a, b| {
+        // First compare by rank
+        b.get_rank(&percentile_height).cmp(&a.get_rank(&percentile_height))
+            // Then by height in reverse order
+            .then_with(|| b.height.cmp(&a.height))
+            // Finally by ping
+            .then_with(|| {
+                a.ping
+                    .unwrap_or(f64::MAX)
+                    .partial_cmp(&b.ping.unwrap_or(f64::MAX))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    });
 
     let template = IndexTemplate { 
         servers,

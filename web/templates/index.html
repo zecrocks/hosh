@@ -7,6 +7,7 @@
         .status-online { color: #198754 !important; font-weight: bold; }
         .status-offline { color: #dc3545 !important; font-weight: bold; }
         .height-behind { background-color: #fff3cd !important; }
+        .height-ahead { background-color: #cfe2ff !important; }
     </style>
 </head>
 <body class="bg-light">
@@ -44,12 +45,14 @@
                             </thead>
                             <tbody>
                                 {% for server in servers %}
-                                <tr {% if server.is_height_behind(percentile_height) %}class="height-behind"{% endif %}>
-                                    <td>{{ server.host }}</td>
+                                <tr {% if server.is_height_behind(percentile_height) %}class="height-behind"{% else if server.is_height_ahead(percentile_height) %}class="height-ahead"{% endif %}>
+                                    <td>{{ server.host_with_port() }}</td>
                                     <td>
                                         {{ server.height }}
                                         {% if server.is_height_behind(percentile_height) %}
                                         <span class="text-warning" title="Server is behind the majority">⚠️</span>
+                                        {% else if server.is_height_ahead(percentile_height) %}
+                                        <span class="text-primary" title="Server is ahead of the majority">ℹ️</span>
                                         {% endif %}
                                     </td>
                                     <td class="status-{% if server.height > 0 %}online{% else %}offline{% endif %}">
