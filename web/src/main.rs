@@ -5,6 +5,7 @@ use actix_files as fs;
 use askama::Template;
 use redis::Commands;
 use serde::{Deserialize, Serialize};
+use serde_json::Value;
 
 #[derive(Template)]
 #[template(path = "index.html")]
@@ -39,8 +40,6 @@ fn deserialize_port<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    use serde::de::Error;
-    
     // Always deserialize as Value first to handle any JSON type
     let value = serde_json::Value::deserialize(deserializer)?;
     
@@ -116,6 +115,14 @@ impl SafeNetwork {
     fn redis_prefix(&self) -> String {
         format!("{}:*", self.0)
     }
+}
+
+#[derive(Template)]
+#[template(path = "server.html")]
+struct ServerTemplate {
+    data: HashMap<String, Value>,
+    host: String,
+    network: String,
 }
 
 #[get("/")]
@@ -204,6 +211,52 @@ async fn network_status(
         .body(html))
 }
 
+#[get("/servers/{network}/{host}")]
+async fn server_detail(
+    redis: web::Data<redis::Client>,
+    path: web::Path<(String, String)>,
+) -> Result<HttpResponse> {
+    let (network, host) = path.into_inner();
+    let prefix = match SafeNetwork::from_str(&network) {
+        Some(n) => n.redis_prefix(),
+        None => {
+            return Err(actix_web::error::ErrorBadRequest("Invalid network"));
+        }
+    };
+    
+    let key = format!("{}:{}", network, host);
+    
+    let mut conn = redis.get_connection().map_err(|e| {
+        eprintln!("Redis connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    })?;
+    
+    let value: String = conn.get(&key).map_err(|e| {
+        eprintln!("Redis get error for key {}: {}", key, e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
+    })?;
+    
+    let data: HashMap<String, Value> = serde_json::from_str(&value).map_err(|e| {
+        eprintln!("JSON deserialization error for key {}: {}", key, e);
+        actix_web::error::ErrorInternalServerError("Failed to parse server data")
+    })?;
+    
+    let template = ServerTemplate {
+        data,
+        host,
+        network,
+    };
+    
+    let html = template.render().map_err(|e| {
+        eprintln!("Template rendering error: {}", e);
+        actix_web::error::ErrorInternalServerError("Template rendering failed")
+    })?;
+    
+    Ok(HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(html))
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
@@ -220,6 +273,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(redis_client.clone()))
             .service(root)
             .service(network_status)
+            .service(server_detail)
             .service(fs::Files::new("/static", "./static"))
     })
     .bind("0.0.0.0:8080")?

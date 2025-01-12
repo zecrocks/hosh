@@ -1,0 +1,36 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Server Details - {{ host }}</title>
+    <link href="/static/bootstrap.css" rel="stylesheet">
+    <style>
+        .table-key {
+            width: 30%;
+            font-weight: bold;
+        }
+        .table-value {
+            width: 70%;
+        }
+    </style>
+</head>
+<body class="bg-light">
+    <div class="container py-4">
+        <a href="/" class="btn btn-secondary mb-3">Back to Dashboard</a>
+        <h2>Server Details: {{ host }} ({{ network }})</h2>
+        <div class="card shadow-sm">
+            <div class="table-responsive">
+                <table class="table table-bordered table-striped mb-0">
+                    <tbody>
+                        {% for (key, value) in data.iter() %}
+                        <tr>
+                            <td class="table-key">{{ key }}</td>
+                            <td class="table-value">{{ value }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</body>
+</html> 
