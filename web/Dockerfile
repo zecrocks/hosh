@@ -23,6 +23,8 @@ COPY src ./src
 # Break the Cargo cache, build
 RUN touch ./src/main.rs && cargo build --release
 
+COPY static ./static
+
 # Runtime stage
 FROM debian:bullseye-slim
 
@@ -37,6 +39,7 @@ RUN apt-get update && apt-get install -y \
 # Copy the binary and templates from builder
 COPY --from=builder /usr/src/app/target/release/hosh-web /app/hosh-web
 COPY --from=builder /usr/src/app/templates /app/templates
+COPY --from=builder /usr/src/app/static /app/static
 
 # Set the binary as executable
 RUN chmod +x /app/hosh-web

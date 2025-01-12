@@ -1,6 +1,7 @@
 use std::env;
 use std::collections::HashMap;
 use actix_web::{get, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
+use actix_files as fs;
 use askama::Template;
 use redis::Commands;
 use serde::{Deserialize, Serialize};
@@ -154,6 +155,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(redis_client.clone()))
             .service(root)
             .service(network_status)
+            .service(fs::Files::new("/static", "./static"))
     })
     .bind("0.0.0.0:8080")?
     .run()

@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 actix-web = "4.9"
+actix-files = "0.6"
 askama = { version = "0.12" }
 chrono = { version = "0.4", features = ["serde"] }
 redis = { version = "0.28.0", features = ["tokio-comp"] }
