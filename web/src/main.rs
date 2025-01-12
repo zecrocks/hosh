@@ -27,7 +27,7 @@ struct ServerInfo {
     height: u64,
 
     #[serde(rename = "LastUpdated", default)]
-    last_updated: String,
+    last_updated: Option<String>,
 
     #[serde(default)]
     ping: Option<f64>,
@@ -62,6 +62,10 @@ impl ServerInfo {
             Some(p) => format!("{:.2}ms", p),
             None => "-".to_string(),
         }
+    }
+
+    fn formatted_last_updated(&self) -> String {
+        self.last_updated.clone().unwrap_or_else(|| "".to_string())
     }
 
     // TODO: Show status based on something other than height
@@ -173,7 +177,13 @@ async fn network_status(
         })?;
 
         match serde_json::from_str::<ServerInfo>(&value) {
-            Ok(server_info) => servers.push(server_info),
+            Ok(mut server_info) => {
+                // Check if `last_updated` is the default value
+                if server_info.last_updated == Some("0001-01-01T00:00:00".to_string()) {
+                    server_info.last_updated = None;
+                }
+                servers.push(server_info);
+            },
             Err(e) => {
                 eprintln!("Failed to deserialize JSON for key {}: {}", key, e);
                 println!("Retrieved JSON for key {}: {}", key, value);
