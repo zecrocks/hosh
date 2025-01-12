@@ -16,8 +16,8 @@
                 <h1 class="text-center">Server Status</h1>
                 <div class="text-center mb-3">
                     <div class="btn-group mb-3">
-                        <a href="/btc" class="btn btn-outline-primary me-2">Bitcoin</a>
-                        <a href="/zec" class="btn btn-outline-primary">Zcash</a>
+                        <a href="/btc" class="btn btn-{% if current_network == "btc" %}primary{% else %}outline-primary{% endif %} me-2">Bitcoin</a>
+                        <a href="/zec" class="btn btn-{% if current_network == "zec" %}primary{% else %}outline-primary{% endif %}">Zcash</a>
                     </div>
                 </div>
                 {% if percentile_height > 0 %}

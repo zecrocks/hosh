@@ -10,6 +10,7 @@ use serde::{Deserialize, Serialize};
 struct IndexTemplate {
     servers: Vec<ServerInfo>,
     percentile_height: u64,
+    current_network: &'static str,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -124,6 +125,7 @@ async fn network_status(
     let template = IndexTemplate { 
         servers,
         percentile_height,
+        current_network: network.0,
     };
     
     let html = template.render().map_err(|e| {
