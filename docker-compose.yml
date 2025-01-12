@@ -109,6 +109,10 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+      checker-btc:
+        condition: service_started
+      checker-zec:
+        condition: service_started
 
   checker-btc:
     build: checkers/btc
