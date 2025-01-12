@@ -22,8 +22,17 @@ ZEC_SERVERS = [
     {'host': 'zec.rocks', 'port': 443},
     {'host': 'na.zec.rocks', 'port': 443},
     {'host': 'sa.zec.rocks', 'port': 443},
+    {'host': 'eu.zec.rocks', 'port': 443},
     {'host': 'ap.zec.rocks', 'port': 443},
     {'host': 'me.zec.rocks', 'port': 443},
+    {'host': 'lwd1.zcash-infra.com', 'port': 9067},
+    {'host': 'lwd2.zcash-infra.com', 'port': 9067},
+    {'host': 'lwd3.zcash-infra.com', 'port': 9067},
+    {'host': 'lwd4.zcash-infra.com', 'port': 9067},
+    {'host': 'lwd5.zcash-infra.com', 'port': 9067},
+    {'host': 'lwd6.zcash-infra.com', 'port': 9067},
+    {'host': 'lwd7.zcash-infra.com', 'port': 9067},
+    {'host': 'lwd8.zcash-infra.com', 'port': 9067},
 ]
 
 # Redis Configuration
