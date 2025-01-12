@@ -1,34 +1,44 @@
-FROM rust:1.72
+FROM rust:1.84-slim-bullseye as builder
+
+WORKDIR /usr/src/app
+
+RUN apt-get update && apt-get install -y \
+    pkg-config \
+    libssl-dev \
+    git \
+    && rm -rf /var/lib/apt/lists/*
+
+# Dependency caching
+COPY Cargo.toml Cargo.lock ./
+
+RUN mkdir -p src && \
+    echo "fn main() {println!(\"dummy\");}" > src/main.rs && \
+    cargo build --release && \
+    rm -rf src target/release/btc-backend*
+
+# Copy real source code
+COPY src ./src
+
+# Break the Cargo cache, build
+RUN touch ./src/main.rs && cargo build --release
+
+# Runtime stage
+FROM debian:bullseye-slim
 
 WORKDIR /app
 
-# Update rustup and Cargo to ensure compatibility with lock file version 4
-RUN rustup update && rustup show
+# Install runtime dependencies
+RUN apt-get update && apt-get install -y \
+    wget \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-# Copy dependency files to cache dependencies
-COPY Cargo.toml Cargo.lock ./
+# Copy the binary from builder
+COPY --from=builder /usr/src/app/target/release/btc-backend /app/btc-backend
 
-# Add dummy main.rs to allow `cargo fetch`
-RUN mkdir src && echo "fn main() {}" > src/main.rs
-
-# Pre-fetch dependencies
-RUN cargo fetch
-
-# Copy the rest of the project files (excluding target if needed)
-COPY . .
-
-# Add a build argument to switch between release and debug builds
-ARG BUILD_MODE=release
-
-# Print and build the application based on the mode
-RUN echo "Building in $BUILD_MODE mode" && \
-    if [ "$BUILD_MODE" = "release" ]; then \
-      cargo build --release; \
-    else \
-      cargo build; \
-    fi
+# Set the binary as executable
+RUN chmod +x /app/btc-backend
 
 EXPOSE 5000
 
-# Run the application based on the mode
-CMD ["sh", "-c", "if [ \"$BUILD_MODE\" = \"release\" ]; then cargo run --release; else cargo run; fi"]
+CMD ["/app/btc-backend"]

@@ -17,10 +17,7 @@ services:
       retries: 5
 
   btc-backend:
-    build:
-      context: ./btc-backend
-      args:
-        BUILD_MODE: ${BUILD_MODE:-release}  # Use the environment variable or default to "release"
+    build: ./btc-backend
     image: hosh/btc-backend
     container_name: btc-backend
     healthcheck:
@@ -38,38 +35,33 @@ services:
     environment:
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
-      BUILD_MODE: ${BUILD_MODE:-release}  # Pass BUILD_MODE to the container runtime
     volumes:
       - ./btc-backend/src:/app/src
       - ./btc-backend/Cargo.toml:/app/Cargo.toml
       - ./btc-backend/Cargo.lock:/app/Cargo.lock
-    command: >
-      sh -c "if [ \"$BUILD_MODE\" = \"release\" ]; then cargo run --release; else cargo run; fi"
 
-
-
-  btc-backend-py:
-    build: contrib/btc-backend-py
-    image: hosh/btc-backend-py
-    container_name: btc-backend-py
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    volumes:
-      - btc-data:/root/.electrum
-      - ./contrib/btc-backend-py/api.py:/electrum/api.py
-    ports:
-      - "5001:5000"
-    depends_on:
-      nats:
-        condition: service_healthy
-      tor:
-        condition: service_healthy
-    environment:
-      TOR_PROXY_HOST: tor
-      TOR_PROXY_PORT: 9050
+  # btc-backend-py:
+  #   build: contrib/btc-backend-py
+  #   image: hosh/btc-backend-py
+  #   container_name: btc-backend-py
+  #   healthcheck:
+  #     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
+  #     interval: 5s
+  #     timeout: 3s
+  #     retries: 5
+  #   volumes:
+  #     - btc-data:/root/.electrum
+  #     - ./contrib/btc-backend-py/api.py:/electrum/api.py
+  #   ports:
+  #     - "5001:5000"
+  #   depends_on:
+  #     nats:
+  #       condition: service_healthy
+  #     tor:
+  #       condition: service_healthy
+  #   environment:
+  #     TOR_PROXY_HOST: tor
+  #     TOR_PROXY_PORT: 9050
 
   dashboard:
     build: contrib/dashboard
