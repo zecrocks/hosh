@@ -9,111 +9,78 @@ import nats
 from nats.errors import ConnectionClosedError, TimeoutError, NoServersError
 
 # Environment Variables
-BTC_WORKER = os.environ.get('BTC_WORKER', 'http://btc-worker:5000')
 SERVER_REFRESH_INTERVAL_SECONDS = int(os.environ.get('CHECK_INTERVAL', 300))  # 5 minutes default
 NATS_URL = os.environ.get('NATS_URL', 'nats://nats:4222')
 NATS_PREFIX = os.environ.get('NATS_PREFIX', 'hosh.')
-
-NATS_BTC_SUBJECT = f"{NATS_PREFIX}check.btc"
-NATS_ZEC_SUBJECT = f"{NATS_PREFIX}check.zec"
-
-# Static ZEC server configuration for now
-ZEC_SERVERS = [
-    {'host': 'zec.rocks', 'port': 443},
-    {'host': 'na.zec.rocks', 'port': 443},
-    {'host': 'sa.zec.rocks', 'port': 443},
-    {'host': 'eu.zec.rocks', 'port': 443},
-    {'host': 'ap.zec.rocks', 'port': 443},
-    {'host': 'me.zec.rocks', 'port': 443},
-    {'host': 'lwd1.zcash-infra.com', 'port': 9067},
-    {'host': 'lwd2.zcash-infra.com', 'port': 9067},
-    {'host': 'lwd3.zcash-infra.com', 'port': 9067},
-    {'host': 'lwd4.zcash-infra.com', 'port': 9067},
-    {'host': 'lwd5.zcash-infra.com', 'port': 9067},
-    {'host': 'lwd6.zcash-infra.com', 'port': 9067},
-    {'host': 'lwd7.zcash-infra.com', 'port': 9067},
-    {'host': 'lwd8.zcash-infra.com', 'port': 9067},
-]
 
 # Redis Configuration
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
 
-# Connect to Redis
-try:
-    redis_client = redis.StrictRedis(host=REDIS_HOST, port=REDIS_PORT, db=0, socket_timeout=5)
-    redis_client.ping()
-    print("Connected to Redis successfully!")
-except redis.exceptions.ConnectionError as e:
-    print(f"Failed to connect to Redis: {e}")
-    exit(1)
-
-def fetch_servers():
+def is_stale(data):
     try:
-        response = requests.get(f"{BTC_WORKER}/electrum/servers", timeout=10)
-        servers = response.json().get("servers", {})
-        return servers
-    except Exception as e:
-        print(f"Error fetching servers: {e}")
-        return {}
-
-def is_stale(key):
-    raw_data = redis_client.get(key)
-    if not raw_data:
-        return True
-
-    try:
-        data = json.loads(raw_data)
-        last_updated = data.get("LastUpdated", None)
+        last_updated = data.get("LastUpdated")
         if not last_updated:
             return True
 
         last_updated_time = datetime.datetime.fromisoformat(last_updated)
-        age = (datetime.datetime.utcnow() - last_updated_time).total_seconds()
+        # Convert to UTC if it has timezone, or assume UTC if it doesn't
+        if last_updated_time.tzinfo is not None:
+            last_updated_time = last_updated_time.astimezone(datetime.timezone.utc)
+        else:
+            last_updated_time = last_updated_time.replace(tzinfo=datetime.timezone.utc)
+            
+        current_time = datetime.datetime.now(datetime.timezone.utc)
+        age = (current_time - last_updated_time).total_seconds()
         return age > SERVER_REFRESH_INTERVAL_SECONDS
     except Exception as e:
-        print(f"Error parsing timestamp for key {key}: {e}")
+        print(f"Error parsing timestamp for data {data}: {e}")
         return True
 
-async def publish_checks(nc):
-    """Periodically fetch server list and publish check requests"""
+async def publish_checks(nc, redis_client):
+    """Periodically check Redis for servers and publish check requests"""
     while True:
         try:
-            # Publish BTC checks
-            servers = fetch_servers()
-            if servers:
-                current_time = datetime.datetime.utcnow()
+            # Get all keys from Redis
+            for prefix in ['btc:', 'zec:']:
+                keys = redis_client.keys(f"{prefix}*")
                 
-                for host, details in servers.items():                    
-                    # Check if server was recently checked using Redis
-                    redis_key = f"btc:{host}"  # Add btc prefix to Redis keys
-                    if redis_client.exists(redis_key) and not is_stale(redis_key):
-                        print(f"Skipping server {host}: recently checked")
+                for key in keys:
+                    key = key.decode('utf-8')  # Convert bytes to string
+                    raw_data = redis_client.get(key)
+                    if not raw_data:
                         continue
-                        
-                    check_data = {
-                        'type': 'btc',  # Add type field to identify BTC checks
-                        'host': host,
-                        'port': details.get('s', 50002),
-                        'version': details.get('version', 'unknown')
-                    }
-                    
-                    # Publish check request to NATS
-                    await nc.publish(NATS_BTC_SUBJECT, json.dumps(check_data).encode())
-                    print(f"Published BTC check request for {host}")
-            else:
-                print("No BTC servers found")
 
-            # Publish ZEC checks every time for now
-            for server in ZEC_SERVERS:
-                zec_check_data = {
-                    'type': 'zec',
-                    'host': server['host'],
-                    'port': server['port']
-                }
-                await nc.publish(NATS_ZEC_SUBJECT, json.dumps(zec_check_data).encode())
-                print(f"Published ZEC check request for {server['host']}")
-                
+                    try:
+                        data = json.loads(raw_data)
+                        if not is_stale(data):
+                            print(f"Skipping {key}: recently checked")
+                            continue
+
+                        # Extract network type and host from key
+                        network = key[:3]  # 'btc' or 'zec'
+                        host = key[4:]  # everything after 'xxx:'
+                        
+                        check_data = {
+                            'type': network,
+                            'host': host,
+                            'port': data.get('port', 50002 if network == 'btc' else 9067)
+                        }
+
+                        # Add version for BTC servers
+                        if network == 'btc':
+                            check_data['version'] = data.get('version', 'unknown')
+
+                        # Publish check request to NATS
+                        subject = f"{NATS_PREFIX}check.{network}"
+                        await nc.publish(subject, json.dumps(check_data).encode())
+                        print(f"Published {network.upper()} check request for {host}")
+
+                    except json.JSONDecodeError as e:
+                        print(f"Error decoding JSON for {key}: {e}")
+                    except Exception as e:
+                        print(f"Error processing {key}: {e}")
+
         except Exception as e:
             print(f"Error in publish_checks: {e}")
             
@@ -121,11 +88,22 @@ async def publish_checks(nc):
 
 async def main():
     try:
+        # Connect to Redis
+        redis_client = redis.StrictRedis(
+            host=REDIS_HOST, 
+            port=REDIS_PORT, 
+            db=0, 
+            socket_timeout=5
+        )
+        redis_client.ping()
+        print("Connected to Redis successfully!")
+
+        # Connect to NATS
         nc = await nats.connect(NATS_URL)
         print("Connected to NATS successfully!")
         
         # Start the publisher
-        publisher = asyncio.create_task(publish_checks(nc))
+        publisher = asyncio.create_task(publish_checks(nc, redis_client))
         
         # Keep the main task running
         while True:

@@ -1,4 +1,3 @@
-
 services:
   nats:
     image: nats:alpine
@@ -77,6 +76,21 @@ services:
     depends_on:
       - redis
 
+  discovery:
+    build: ./discovery
+    image: hosh/discovery
+    container_name: discovery
+    environment:
+      - REDIS_HOST=redis
+      - BTC_WORKER=http://btc-backend:5000
+      - DISCOVERY_INTERVAL=3600
+      - NATS_URL=nats://nats:4222
+    depends_on:
+      redis:
+        condition: service_healthy
+      btc-backend:
+        condition: service_healthy
+
   publisher:
     build: publisher
     image: hosh/publisher
@@ -91,8 +105,6 @@ services:
     volumes:
       - ./publisher:/app
     depends_on:
-      btc-backend:
-        condition: service_healthy
       redis:
         condition: service_healthy
       nats:
@@ -173,7 +185,7 @@ services:
   web:
     build: web
     image: hosh/web
-    container_name: electrum-web
+    container_name: web
     ports:
       - "8080:8080"
     environment:
