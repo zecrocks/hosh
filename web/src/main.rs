@@ -108,6 +108,14 @@ async fn network_status(
         }
     }
 
+    // Sort servers by ping (fastest first)
+    servers.sort_by(|a, b| {
+        a.ping
+            .unwrap_or(f64::MAX)
+            .partial_cmp(&b.ping.unwrap_or(f64::MAX))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+
     // Calculate 90th percentile of block heights (only for online servers)
     let mut heights: Vec<u64> = servers
         .iter()
