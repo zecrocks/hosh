@@ -140,15 +140,15 @@ async fn electrum_query(
     
     // Instantiate a new Electrum client for the provided server
     let client = Client::new(&server_addr)
-        .map_err(|e| format!("Failed to connect to Electrum server {}: {}", server_addr, e))?;
-    
-    // Execute the blockchain.headers.subscribe method
-    let header_subscribe_result = client.block_headers_subscribe()
-        .map_err(|e| e.to_string())?;
-    
+        .map_err(|e| format!("Failed to connect to Electrum server ({}): {}", server_addr, e))?;
+
     // Calculate ping in milliseconds
     let ping = start_time.elapsed().as_millis() as f64;
-    
+
+    // Execute the blockchain.headers.subscribe method
+    let header_subscribe_result = client.block_headers_subscribe()
+        .map_err(|e| format!("block_headers_subscribe failed ({}): {}", server_addr, e.to_string()))?;
+
     // Serialize the block header to a hexadecimal string
     let block_header_hex = hex::encode(serialize(&header_subscribe_result.header));
     
