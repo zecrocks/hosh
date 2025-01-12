@@ -1,6 +1,6 @@
 use std::env;
 use std::collections::HashMap;
-use actix_web::{get, web, App, HttpResponse, HttpServer, Result};
+use actix_web::{get, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
 use askama::Template;
 use redis::Commands;
 use serde::{Deserialize, Serialize};
@@ -49,14 +49,42 @@ impl ServerInfo {
     }
 }
 
+#[derive(Debug)]
+struct SafeNetwork(&'static str);
+
+impl SafeNetwork {
+    fn from_str(s: &str) -> Option<Self> {
+        match s {
+            "btc" => Some(SafeNetwork("btc")),
+            "zec" => Some(SafeNetwork("zec")),
+            _ => None
+        }
+    }
+    
+    fn redis_prefix(&self) -> String {
+        format!("{}:*", self.0)
+    }
+}
+
 #[get("/")]
-async fn index(redis: web::Data<redis::Client>) -> Result<HttpResponse> {
+async fn root() -> Result<Redirect> {
+    Ok(Redirect::to("/zec"))
+}
+
+#[get("/{network}")]
+async fn network_status(
+    redis: web::Data<redis::Client>,
+    network: web::Path<String>,
+) -> Result<HttpResponse> {
+    let network = SafeNetwork::from_str(&network)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+
     let mut conn = redis.get_connection().map_err(|e| {
         eprintln!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
-    let keys: Vec<String> = conn.keys("*").map_err(|e| {
+    let keys: Vec<String> = conn.keys(network.redis_prefix()).map_err(|e| {
         eprintln!("Redis keys error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
     })?;
@@ -97,6 +125,7 @@ async fn index(redis: web::Data<redis::Client>) -> Result<HttpResponse> {
         servers,
         percentile_height,
     };
+    
     let html = template.render().map_err(|e| {
         eprintln!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")
@@ -121,7 +150,8 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(redis_client.clone()))
-            .service(index)
+            .service(root)
+            .service(network_status)
     })
     .bind("0.0.0.0:8080")?
     .run()
