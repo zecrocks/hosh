@@ -1,73 +1,43 @@
-<!DOCTYPE html>
-<html>
-<head>
-    <title>Hosh: Light Wallet Server Status</title>
-    <link href="/static/bootstrap.css" rel="stylesheet">
-    <style>
-        .status-online { color: #198754 !important; font-weight: bold; }
-        .status-offline { color: #dc3545 !important; font-weight: bold; }
-        .height-behind { background-color: #fff3cd !important; }
-        .height-ahead { background-color: #cfe2ff !important; }
-    </style>
-</head>
-<body class="bg-light">
-    <div class="container py-4">
-        <div class="row mb-4">
-            <div class="col">
-                <h1 class="text-center display-6 mb-4">Hosh: Light Wallet Uptime</h1>
-                <div class="text-center mb-3">
-                    <div class="btn-group mb-3">
-                        <a href="/btc" class="btn btn-{% if current_network == "btc" %}primary{% else %}outline-primary{% endif %} me-2">Bitcoin</a>
-                        <a href="/zec" class="btn btn-{% if current_network == "zec" %}primary{% else %}outline-primary{% endif %}">Zcash</a>
-                    </div>
-                </div>
-                {% if percentile_height > 0 %}
-                <div class="text-center text-muted">
-                    <small>90th percentile block height: {{ percentile_height }}</small>
-                </div>
-                {% endif %}
-            </div>
-        </div>
+{% extends "layout.html" %}
 
-        <div class="row">
-            <div class="col">
-                <div class="card shadow-sm">
-                    <div class="table-responsive">
-                        <table class="table table-hover table-striped mb-0">
-                            <thead class="table-light">
-                                <tr>
-                                    <th>Server</th>
-                                    <th>Block Height</th>
-                                    <th>Status</th>
-                                    <th>Last Checked</th>
-                                    <th>Ping</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {% for server in servers %}
-                                <tr {% if server.is_height_behind(percentile_height) %}class="height-behind"{% else if server.is_height_ahead(percentile_height) %}class="height-ahead"{% endif %}>
-                                    <td><a href="/servers/{{ current_network }}/{{ server.host }}">{{ server.host_with_port() }}</a></td>
-                                    <td>
-                                        {{ server.height }}
-                                        {% if server.is_height_behind(percentile_height) %}
-                                        <span class="text-warning" title="Server is behind the majority">⚠️</span>
-                                        {% else if server.is_height_ahead(percentile_height) %}
-                                        <span class="text-primary" title="Server is ahead of the majority">ℹ️</span>
-                                        {% endif %}
-                                    </td>
-                                    <td class="status-{% if server.height > 0 %}online{% else %}offline{% endif %}">
-                                        {% if server.height > 0 %}Online{% else %}Offline{% endif %}
-                                    </td>
-                                    <td>{{ server.last_updated }}</td>
-                                    <td>{{ server.formatted_ping() }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
+{% block content %}
+<div class="row">
+    <div class="col">
+        <div class="card shadow-sm">
+            <div class="table-responsive">
+                <table class="table table-hover table-striped mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Server</th>
+                            <th>Block Height</th>
+                            <th>Status</th>
+                            <th>Last Checked</th>
+                            <th>Ping</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for server in servers %}
+                        <tr {% if server.is_height_behind(percentile_height) %}class="height-behind"{% else if server.is_height_ahead(percentile_height) %}class="height-ahead"{% endif %}>
+                            <td><a href="/{{ current_network }}/{{ server.host }}">{{ server.host_with_port() }}</a></td>
+                            <td>
+                                {{ server.height }}
+                                {% if server.is_height_behind(percentile_height) %}
+                                <span class="text-warning" title="Server is behind the majority">⚠️</span>
+                                {% else if server.is_height_ahead(percentile_height) %}
+                                <span class="text-primary" title="Server is ahead of the majority">ℹ️</span>
+                                {% endif %}
+                            </td>
+                            <td class="status-{% if server.height > 0 %}online{% else %}offline{% endif %}">
+                                {% if server.height > 0 %}Online{% else %}Offline{% endif %}
+                            </td>
+                            <td>{{ server.last_updated }}</td>
+                            <td>{{ server.formatted_ping() }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
             </div>
         </div>
     </div>
-</body>
-</html>
+</div>
+{% endblock %}

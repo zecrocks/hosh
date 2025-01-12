@@ -123,6 +123,8 @@ struct ServerTemplate {
     data: HashMap<String, Value>,
     host: String,
     network: String,
+    current_network: &'static str,
+    percentile_height: u64,
 }
 
 #[get("/")]
@@ -211,18 +213,14 @@ async fn network_status(
         .body(html))
 }
 
-#[get("/servers/{network}/{host}")]
+#[get("/{network}/{host}")]
 async fn server_detail(
     redis: web::Data<redis::Client>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse> {
     let (network, host) = path.into_inner();
-    let prefix = match SafeNetwork::from_str(&network) {
-        Some(n) => n.redis_prefix(),
-        None => {
-            return Err(actix_web::error::ErrorBadRequest("Invalid network"));
-        }
-    };
+    let safe_network = SafeNetwork::from_str(&network)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
     
     let key = format!("{}:{}", network, host);
     
@@ -241,10 +239,37 @@ async fn server_detail(
         actix_web::error::ErrorInternalServerError("Failed to parse server data")
     })?;
     
+    // Get all servers to calculate percentile height
+    let keys: Vec<String> = conn.keys(safe_network.redis_prefix()).map_err(|e| {
+        eprintln!("Redis keys error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
+    })?;
+
+    let mut heights = Vec::new();
+    for key in keys {
+        if let Ok(value) = conn.get::<_, String>(&key) {
+            if let Ok(server_info) = serde_json::from_str::<ServerInfo>(&value) {
+                if server_info.height > 0 {
+                    heights.push(server_info.height);
+                }
+            }
+        }
+    }
+
+    heights.sort_unstable();
+    let percentile_height = if !heights.is_empty() {
+        let index = (heights.len() as f64 * 0.9).ceil() as usize - 1;
+        heights[index.min(heights.len() - 1)]
+    } else {
+        0
+    };
+    
     let template = ServerTemplate {
         data,
         host,
         network,
+        current_network: safe_network.0,
+        percentile_height,
     };
     
     let html = template.render().map_err(|e| {

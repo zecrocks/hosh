@@ -11,4 +11,16 @@ To improve user experience, many digital asset projects allow "light wallets" to
 
 Some digital asset wallets assume the perfect uptime of these servers.
 
+## How?
+
+```
+docker compose up
+```
+
+Load http://localhost:8080 in your browser.
+
+## Development
+
+Edit files, run ```docker compose up --build``` to see changes.
+
 होश में रहना ही समझदारी की पहली सीढ़ी है।
