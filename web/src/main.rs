@@ -374,11 +374,11 @@ async fn main() -> std::io::Result<()> {
     HttpServer::new(move || {
         App::new()
             .app_data(web::Data::new(redis_client.clone()))
+            .service(fs::Files::new("/static", "./static"))
             .service(root)
             .service(network_status)
             .service(server_detail)
             .service(network_api)
-            .service(fs::Files::new("/static", "./static"))
     })
     .bind("0.0.0.0:8080")?
     .run()
