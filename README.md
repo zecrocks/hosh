@@ -4,6 +4,8 @@ Hosh brings awareness to the uptime of light wallet servers across popular block
 
 Initially the project is focused on monitoring Bitcoin's Electrum servers, and Zcash's Lightwalletd infrastructure.
 
+Demo: [hosh.zec.rocks](https://hosh.zec.rocks)
+
 ## Why monitor light wallet uptime?
 
 Blockchains can become very large.
