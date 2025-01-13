@@ -16,16 +16,41 @@ services:
       retries: 5
 
   # Rust BTC Backend - uncomment to use
-  # btc-backend:
-  #   build: ./btc-backend
-  #   image: hosh/btc-backend
-  #   # Same name as the Python backend to maintain internal DNS
-  #   container_name: btc-backend
+  btc-backend:
+    build: ./btc-backend
+    image: hosh/btc-backend
+    # Same name as the Python backend to maintain internal DNS
+    container_name: btc-backend
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ports:
+      - "5000:5000"
+    depends_on:
+      nats:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+    environment:
+      TOR_PROXY_HOST: tor
+      TOR_PROXY_PORT: 9050
+
+  # # Python BTC Backend - uncomment to use
+  # btc-backend-py:
+  #   build: contrib/btc-backend-py
+  #   image: hosh/btc-backend-py
+  #   # Same name as the Rust backend to maintain internal DNS
+  #   container_name: btc-backend-py
   #   healthcheck:
   #     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
   #     interval: 5s
   #     timeout: 3s
   #     retries: 5
+  #   volumes:
+  #     - btc-data:/root/.electrum
+  #     - ./contrib/btc-backend-py/api.py:/electrum/api.py
   #   ports:
   #     - "5000:5000"
   #   depends_on:
@@ -36,31 +61,6 @@ services:
   #   environment:
   #     TOR_PROXY_HOST: tor
   #     TOR_PROXY_PORT: 9050
-
-  # Python BTC Backend - uncomment to use
-  btc-backend:
-    build: contrib/btc-backend-py
-    image: hosh/btc-backend-py
-    # Same name as the Rust backend to maintain internal DNS
-    container_name: btc-backend
-    healthcheck:
-      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    volumes:
-      - btc-data:/root/.electrum
-      - ./contrib/btc-backend-py/api.py:/electrum/api.py
-    ports:
-      - "5001:5000"
-    depends_on:
-      nats:
-        condition: service_healthy
-      tor:
-        condition: service_healthy
-    environment:
-      TOR_PROXY_HOST: tor
-      TOR_PROXY_PORT: 9050
 
   dashboard:
     build: contrib/dashboard

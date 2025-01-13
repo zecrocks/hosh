@@ -12,13 +12,129 @@ use chrono::{TimeZone, Utc};
 use electrum_client::{Client, ElectrumApi};
 use reqwest::Client as HttpClient;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use serde_json::{json, Value};
 use std::{
+    collections::HashMap,
     net::SocketAddr,
-    sync::Arc,
     time::Instant,
 };
-use tokio::sync::Mutex;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
+use tokio_native_tls::TlsConnector;
+
+
+// Query parameters for the /electrum/peers endpoint
+#[derive(Deserialize)]
+struct PeerQueryParams {
+    url: String,
+    port: Option<u16>,
+}
+
+async fn fetch_peers(host: &str, port: u16) -> Result<Vec<Value>, String> {
+    let addr = format!("{}:{}", host, port);
+    let stream = TcpStream::connect(addr).await.map_err(|e| {
+        format!("Failed to connect to {}:{} - {}", host, port, e)
+    })?;
+    println!("Connected to {}:{}", host, port);
+
+    let tls_connector =
+        TlsConnector::from(native_tls::TlsConnector::new().map_err(|e| e.to_string())?);
+    let mut stream = tls_connector.connect(host, stream).await.map_err(|e| {
+        format!("Failed to establish TLS connection to {}:{} - {}", host, port, e)
+    })?;
+    println!("TLS connection established to {}:{}", host, port);
+
+    let request = json!({
+        "id": 1,
+        "method": "server.peers.subscribe",
+        "params": []
+    });
+    let request_str = serde_json::to_string(&request).unwrap() + "\n";
+    stream.write_all(request_str.as_bytes()).await.map_err(|e| {
+        format!("Failed to send request to {}:{} - {}", host, port, e)
+    })?;
+    println!("Request sent: {}", request_str);
+
+    let mut response_str = String::new();
+    let mut buffer = vec![0; 4096];
+    loop {
+        let n = stream.read(&mut buffer).await.map_err(|e| {
+            format!("Failed to read response from {}:{} - {}", host, port, e)
+        })?;
+        if n == 0 {
+            break;
+        }
+        response_str.push_str(&String::from_utf8_lossy(&buffer[..n]));
+        if response_str.ends_with("\n") {
+            break;
+        }
+    }
+    println!("Response received: {}", response_str);
+
+    let response: Value = serde_json::from_str(&response_str).map_err(|e| {
+        format!("Failed to parse JSON response from {}:{} - {}", host, port, e)
+    })?;
+    if let Some(peers) = response["result"].as_array() {
+        Ok(peers.clone())
+    } else {
+        Err(format!("No peers found in response from {}:{}", host, port))
+    }
+}
+async fn electrum_peers(Query(params): Query<PeerQueryParams>) -> Result<Json<serde_json::Value>, String> {
+    let host = params.url;
+    let port = params.port.unwrap_or(50002);
+
+    // Fetch peers from the specified host and port
+    let peers = fetch_peers(&host, port).await?;
+
+    let mut peers_map = serde_json::Map::new();
+
+    for peer in peers {
+        if let Some(peer_details) = peer.as_array() {
+            let address = peer_details.get(0).and_then(|v| v.as_str()).unwrap_or("Unknown");
+            let _hostname = peer_details.get(1).and_then(|v| v.as_str()).unwrap_or("Unknown");
+
+            let features = peer_details
+                .get(2)
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| {
+                    static EMPTY_VEC: Vec<Value> = Vec::new();
+                    &EMPTY_VEC
+                })
+                .iter()
+                .filter_map(|f| f.as_str())
+                .collect::<Vec<&str>>();
+
+
+
+            let version = features.iter().find_map(|f| f.strip_prefix('v')).unwrap_or("unknown");
+
+            // Construct the peer entry
+            let peer_entry = serde_json::json!({
+                "pruning": "-",  // Placeholder, as pruning information is not provided by peers
+                "s": if features.iter().any(|&f| f.starts_with("s50002")) {
+                    Some("50002".to_string())
+                } else {
+                    None
+                },
+                "t": if features.iter().any(|&f| f.starts_with("t50001")) {
+                    Some("50001".to_string())
+                } else {
+                    None
+                },
+                "version": version,
+            });
+
+            peers_map.insert(address.to_string(), peer_entry);
+        }
+    }
+
+    Ok(Json(serde_json::json!({ "peers": peers_map })))
+}
+
+
 
 fn parse_block_header(header_hex: &str) -> Result<serde_json::Value, String> {
     let header_bytes = hex::decode(header_hex).map_err(|e| e.to_string())?;
@@ -33,6 +149,7 @@ fn parse_block_header(header_hex: &str) -> Result<serde_json::Value, String> {
     }))
 }
 
+
 #[derive(Serialize)]
 struct HealthCheckResponse {
     status: String,
@@ -43,13 +160,6 @@ struct HealthCheckResponse {
 struct QueryParams {
     url: String,
     port: Option<u16>,
-}
-
-#[derive(Serialize)]
-struct ServerResponse {
-    host: String,
-    ports: HashMap<String, Option<u16>>,
-    version: String,
 }
 
 
@@ -72,7 +182,7 @@ async fn health_check() -> Json<HealthCheckResponse> {
     Json(response)
 }
 
-async fn get_servers() -> Result<Json<serde_json::Value>, String> {
+async fn electrum_servers() -> Result<Json<serde_json::Value>, String> {
     let url = "https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/electrum/servers.json";
 
     let http_client = HttpClient::new();
@@ -88,18 +198,11 @@ async fn get_servers() -> Result<Json<serde_json::Value>, String> {
     let mut servers = serde_json::Map::new();
 
     for (host, details) in response {
-        let s_port = details
-            .get("s")
-            .and_then(|v| v.as_u64())
-            .map(|s| s.to_string())
-            .unwrap_or_else(|| "null".to_string());
+        // Extract ports as strings directly
+        let s_port = details.get("s").cloned().unwrap_or(serde_json::Value::Null);
+        let t_port = details.get("t").cloned().unwrap_or(serde_json::Value::Null);
 
-        let t_port = details
-            .get("t")
-            .and_then(|v| v.as_u64())
-            .map(|t| t.to_string())
-            .unwrap_or_else(|| "null".to_string());
-
+        // Extract other fields
         let version = details
             .get("version")
             .and_then(|v| v.as_str())
@@ -114,9 +217,9 @@ async fn get_servers() -> Result<Json<serde_json::Value>, String> {
 
         let server_entry = serde_json::json!({
             "pruning": pruning,
-            "s": if s_port == "null" { serde_json::Value::Null } else { serde_json::Value::String(s_port) },
-            "t": if t_port == "null" { serde_json::Value::Null } else { serde_json::Value::String(t_port) },
-            "version": version
+            "s": s_port,
+            "t": t_port,
+            "version": version,
         });
 
         servers.insert(host, server_entry);
@@ -124,6 +227,9 @@ async fn get_servers() -> Result<Json<serde_json::Value>, String> {
 
     Ok(Json(serde_json::json!({ "servers": servers })))
 }
+
+
+
 
 async fn electrum_query(
     Query(params): Query<QueryParams>,
@@ -249,19 +355,42 @@ async fn api_info() -> Json<ApiDescription> {
                             "pruning": "-",
                             "s": "50002",
                             "t": "50001",
-                            "version": "1.4.2"
-                        },
-                        "104.248.139.211": {
-                            "pruning": "-",
-                            "s": "50002",
-                            "t": "50001",
-                            "version": "1.4.2"
+                            "version": "1.4.2",
+                            "peer_count": 42
                         },
                         "128.0.190.26": {
                             "pruning": "-",
                             "s": "50002",
                             "t": null,
-                            "version": "1.4.2"
+                            "version": "1.4.2",
+                            "peer_count": 0
+                        }
+                    }
+                }),
+            },
+            EndpointInfo {
+                method: "GET".to_string(),
+                path: "/electrum/peers".to_string(),
+                description: "Fetches the list of peers from a specific Electrum server.".to_string(),
+                example_response: serde_json::json!({
+                    "peers": {
+                        "45.154.252.100": {
+                            "pruning": "-",
+                            "s": "50002",
+                            "t": null,
+                            "version": "1.5"
+                        },
+                        "135.181.215.237": {
+                            "pruning": "-",
+                            "s": "50002",
+                            "t": "50001",
+                            "version": "1.4"
+                        },
+                        "unknown.onion": {
+                            "pruning": "-",
+                            "s": null,
+                            "t": "50001",
+                            "version": "1.5"
                         }
                     }
                 }),
@@ -278,7 +407,7 @@ async fn api_info() -> Json<ApiDescription> {
                     "host": "electrum.blockstream.info",
                     "merkle_root": "9c37963b9e67a138ef18595e21eae9b5517abdaf4f500584ac88c2a7d15589a7",
                     "method_used": "blockchain.headers.subscribe",
-                    "nonce": 4216690212u32,  // Annotate as u32
+                    "nonce": 4216690212u32,
                     "ping": 157.55,
                     "prev_block": "00000000000000000000bd9001ebe6182a864943ce8b04338b81986ee2b0ebf3",
                     "resolved_ips": [
@@ -295,14 +424,16 @@ async fn api_info() -> Json<ApiDescription> {
     Json(api_info)
 }
 
-// Main function and router setup remain the same.
+
+
 #[tokio::main]
 async fn main() {
     let app = Router::new()
         .route("/", get(api_info))
         .route("/healthz", get(health_check))
-        .route("/electrum/servers", get(get_servers))
-        .route("/electrum/query", get(electrum_query));
+        .route("/electrum/servers", get(electrum_servers))
+        .route("/electrum/query", get(electrum_query))
+        .route("/electrum/peers", get(electrum_peers)); // Add this line
 
     let addr = SocketAddr::from(([0, 0, 0, 0], 5000));
     println!("Server running on http://{}", addr);
