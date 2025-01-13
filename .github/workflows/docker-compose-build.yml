@@ -10,7 +10,7 @@ jobs:
   build:
     strategy:
       matrix:
-        platform: [ubuntu-latest, arm64]
+        platform: [ubuntu-latest]
     runs-on: ${{ matrix.platform }}
     
     steps:
