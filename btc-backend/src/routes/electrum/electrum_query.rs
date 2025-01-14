@@ -62,19 +62,29 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
 
     match client.raw_call("blockchain.headers.subscribe", Vec::new()) {
         Ok(response) => {
+            println!("Raw response: {:?}", response); // Debug log
+
             let ping = start_time.elapsed().as_millis() as f64;
 
-            let hex = response.get("hex").and_then(|v| v.as_str()).unwrap_or("");
-            let parsed_header = match parse_block_header(hex) {
-                Ok(header) => header,
-                Err(e) => {
-                    eprintln!("Failed to parse block header: {}", e);
-                    json!({})
-                }
-            };
+            let mut bits = response.get("bits").and_then(|v| v.as_u64()).unwrap_or(0);
+            let mut nonce = response.get("nonce").and_then(|v| v.as_u64()).unwrap_or(0);
+            let mut timestamp = response.get("timestamp").and_then(|v| v.as_u64()).unwrap_or(0);
+            let mut version = response.get("version").and_then(|v| v.as_u64()).unwrap_or(0);
+            let mut merkle_root = response.get("merkle_root").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let mut prev_block_hash = response.get("prev_block_hash").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
-            // Extract timestamp from parsed header
-            let timestamp = parsed_header.get("time").and_then(|v| v.as_u64()).unwrap_or(0);
+            // If the hex field is present, parse it and overwrite extracted fields
+            if let Some(hex) = response.get("hex").and_then(|v| v.as_str()) {
+                if let Ok(parsed_header) = parse_block_header(hex) {
+                    bits = parsed_header.get("bits").and_then(|v| v.as_u64()).unwrap_or(bits);
+                    nonce = parsed_header.get("nonce").and_then(|v| v.as_u64()).unwrap_or(nonce);
+                    timestamp = parsed_header.get("time").and_then(|v| v.as_u64()).unwrap_or(timestamp);
+                    version = parsed_header.get("version").and_then(|v| v.as_u64()).unwrap_or(version);
+                    merkle_root = parsed_header.get("merkle_root").and_then(|v| v.as_str()).unwrap_or(&merkle_root).to_string();
+                    prev_block_hash = parsed_header.get("prev_blockhash").and_then(|v| v.as_str()).unwrap_or(&prev_block_hash).to_string();
+                }
+            }
+
             let timestamp_human = if timestamp > 0 {
                 DateTime::<Utc>::from(UNIX_EPOCH + Duration::from_secs(timestamp)).to_rfc2822()
             } else {
@@ -82,21 +92,21 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
             };
 
             let result = json!({
-                "bits": parsed_header.get("bits").unwrap_or(&json!(null)),
+                "bits": bits,
                 "connection_type": if self_signed { "SSL (self-signed)" } else { "SSL" },
                 "error": "",
-                "height": response.get("height").and_then(|v| v.as_u64()).unwrap_or(0),
+                "height": response.get("block_height").and_then(|v| v.as_u64()).unwrap_or(0),
                 "host": host,
-                "merkle_root": parsed_header.get("merkle_root").unwrap_or(&json!(null)),
+                "merkle_root": merkle_root,
                 "method_used": "blockchain.headers.subscribe",
-                "nonce": parsed_header.get("nonce").unwrap_or(&json!(null)),
+                "nonce": nonce,
                 "ping": ping,
-                "prev_block": parsed_header.get("prev_blockhash").unwrap_or(&json!(null)),
+                "prev_block_hash": prev_block_hash,
                 "resolved_ips": resolved_ips,
                 "self_signed": self_signed,
                 "timestamp": timestamp,
                 "timestamp_human": timestamp_human,
-                "version": parsed_header.get("version").unwrap_or(&json!(null))
+                "version": version
             });
 
             return Ok(Json(result));
@@ -109,6 +119,8 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
         }
     }
 }
+
+
 
 
 
