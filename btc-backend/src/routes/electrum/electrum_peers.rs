@@ -30,7 +30,7 @@ pub async fn electrum_peers(Query(params): Query<PeerQueryParams>) -> Result<Jso
         },
     };
 
-    let peers = fetch_peers(&host, port).await.map_err(|e| {
+    let peers = fetch_peers(host, port).await.map_err(|e| {
         error_response(&format!("Failed to fetch peers: {}", e))
     })?;
 
@@ -47,9 +47,10 @@ pub async fn electrum_peers(Query(params): Query<PeerQueryParams>) -> Result<Jso
                 .collect::<Vec<&str>>();
 
             let version = features.iter().find_map(|f| f.strip_prefix('v')).unwrap_or("unknown");
+            let pruning = features.iter().find_map(|f| f.strip_prefix("pruned")).unwrap_or("-");
 
             let peer_entry = json!({
-                "pruning": "-",
+                "pruning": pruning,
                 "s": if features.iter().any(|&f| f.starts_with("s")) {
                     Some("50002".to_string())
                 } else {
@@ -60,8 +61,7 @@ pub async fn electrum_peers(Query(params): Query<PeerQueryParams>) -> Result<Jso
                 } else {
                     None
                 },
-                "version": version,
-                "is_online": true,
+                "version": version
             });
 
             peers_map.insert(address.to_string(), peer_entry);
