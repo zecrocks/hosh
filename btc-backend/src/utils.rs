@@ -1,46 +1,79 @@
 use tokio::net::TcpStream;
-use tokio_native_tls::TlsConnector;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio_native_tls::{TlsConnector, TlsStream};
+use tokio_socks::{tcp::Socks5Stream}; // Ensure tokio_socks is included
 use serde_json::Value;
-use tokio::io::{AsyncReadExt, AsyncWriteExt}; // Import these traits
+use std::env;
+
 
 pub enum Connection {
     Tcp(TcpStream),
-    Tls(tokio_native_tls::TlsStream<TcpStream>),
+    Tls(TlsStream<TcpStream>),
 }
 
-pub async fn try_connect(host: &str, port: u16, use_ssl: bool) -> Result<(bool, Connection), String> {
+pub async fn try_connect(
+    host: &str,
+    port: u16,
+    use_ssl: bool,
+) -> Result<(bool, Connection), String> {
+    if host.ends_with(".onion") {
+        let tor_proxy_host = env::var("TOR_PROXY_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
+        let tor_proxy_port = env::var("TOR_PROXY_PORT").unwrap_or_else(|_| "9050".to_string());
+
+        println!("Connecting to .onion address via Tor proxy at {}:{}", tor_proxy_host, tor_proxy_port);
+
+        // Establish SOCKS5 connection through the Tor proxy
+        let stream = Socks5Stream::connect(
+            (tor_proxy_host.as_str(), tor_proxy_port.parse::<u16>().unwrap()),
+            (host, port),
+        )
+        .await
+        .map_err(|e| format!("Failed to connect to .onion address via Tor: {}", e))?;
+
+        if use_ssl {
+            let tls_connector = TlsConnector::from(
+                native_tls::TlsConnector::builder()
+                    .danger_accept_invalid_certs(true) // Allow self-signed certificates
+                    .build()
+                    .map_err(|e| e.to_string())?,
+            );
+
+            let tls_stream = tls_connector
+                .connect(host, stream.into_inner())
+                .await
+                .map_err(|e| format!("Failed to establish SSL connection: {}", e))?;
+
+            return Ok((true, Connection::Tls(tls_stream)));
+        } else {
+            return Ok((false, Connection::Tcp(stream.into_inner())));
+        }
+    }
+
+    // Standard connection logic for non-.onion addresses
     let addr = format!("{}:{}", host, port);
-    let stream = TcpStream::connect(&addr).await.map_err(|e| {
-        format!("Failed to connect to {}:{} - {}", host, port, e)
-    })?;
+    let stream = TcpStream::connect(&addr)
+        .await
+        .map_err(|e| format!("Failed to connect to {}:{} - {}", host, port, e))?;
 
     if use_ssl {
         let tls_connector = TlsConnector::from(
-            native_tls::TlsConnector::new().map_err(|e| e.to_string())?,
+            native_tls::TlsConnector::builder()
+                .danger_accept_invalid_certs(true)
+                .build()
+                .map_err(|e| e.to_string())?,
         );
 
-        match tls_connector.connect(host, stream).await {
-            Ok(tls_stream) => Ok((false, Connection::Tls(tls_stream))),
-            Err(_) => {
-                let tls_connector = TlsConnector::from(
-                    native_tls::TlsConnector::builder()
-                        .danger_accept_invalid_certs(true)
-                        .build()
-                        .map_err(|e| e.to_string())?,
-                );
-                tls_connector
-                    .connect(host, TcpStream::connect(&addr).await.map_err(|e| {
-                        format!("Failed to reconnect ignoring cert errors: {}", e)
-                    })?)
-                    .await
-                    .map(|tls_stream| (true, Connection::Tls(tls_stream)))
-                    .map_err(|e| format!("Failed to connect with SSL ignoring cert errors: {}", e))
-            }
-        }
+        let tls_stream = tls_connector
+            .connect(host, stream)
+            .await
+            .map_err(|e| format!("Failed to establish SSL connection: {}", e))?;
+
+        return Ok((false, Connection::Tls(tls_stream)));
     } else {
-        Ok((false, Connection::Tcp(stream)))
+        return Ok((false, Connection::Tcp(stream)));
     }
 }
+
 
 
 

@@ -1,7 +1,7 @@
 use crate::utils::{try_connect, fetch_peers, error_response};
 use axum::{extract::Query, response::Json};
 use serde::Deserialize;
-use serde_json::{json, Value};
+use serde_json::json;
 
 #[derive(Deserialize)]
 pub struct PeerQueryParams {
@@ -15,20 +15,10 @@ pub async fn electrum_peers(Query(params): Query<PeerQueryParams>) -> Result<Jso
 
     let mut peers_map = serde_json::Map::new();
 
-    let (_self_signed, _connection) = match try_connect(host, port, true).await {
-        Ok(result) => result,
-        Err(e) => {
-            eprintln!("SSL connection failed: {}", e);
-            match try_connect(host, 50001, false).await {
-                Ok(result) => result,
-                Err(e) => {
-                    return Err(error_response(&format!(
-                        "Failed to connect to {}: {}", host, e
-                    )));
-                }
-            }
-        },
-    };
+    let (_self_signed, _connection) = try_connect(host, port, true).await.map_err(|e| {
+        error_response(&format!("Failed to connect to {}:{} - {}", host, port, e))
+    })?;
+
 
     let peers = fetch_peers(host, port).await.map_err(|e| {
         error_response(&format!("Failed to fetch peers: {}", e))

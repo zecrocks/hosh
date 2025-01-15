@@ -101,6 +101,8 @@ def sort_priority(host):
     return (3, host)  # Unknown (lowest priority)
 
 
+from socks import socksocket, set_default_proxy, SOCKS5
+
 def query_electrumx_server(host, ports, method=None, params=[]):
     # Use a default method if none is provided
     if not method:
@@ -121,29 +123,26 @@ def query_electrumx_server(host, ports, method=None, params=[]):
     else:
         connection_options.append({"port": int(ports), "use_ssl": False})
 
-    # Check if the host is a .onion address
     use_tor_proxy = host.endswith(".onion")
-
-    # First, check server reachability
     reachable = False
+
     for connection in connection_options:
         try:
             if use_tor_proxy:
-                # Set up a socket using the Tor proxy
-                socks.set_default_proxy(socks.SOCKS5, TOR_PROXY_HOST, TOR_PROXY_PORT)
-                socket.socket = socks.socksocket
+                # Use a Tor proxy only for .onion addresses
+                set_default_proxy(SOCKS5, TOR_PROXY_HOST, TOR_PROXY_PORT)
+                sock = socksocket()
+            else:
+                sock = socket.socket()
 
             # Attempt to connect to the server
-            with socket.create_connection((host, connection["port"]), timeout=5):
-                reachable = True
-                break  # Exit loop if one connection succeeds
+            sock.connect((host, connection["port"]))
+            reachable = True
+            break
         except Exception as e:
             logging.error(f"Error connecting to {host}:{connection['port']}: {e}")
         finally:
-            if use_tor_proxy:
-                # Reset the proxy and restore default socket behavior
-                socks.set_default_proxy(None)
-                socket.socket = socket.create_connection
+            sock.close()
 
     if not reachable:
         return {
@@ -152,7 +151,7 @@ def query_electrumx_server(host, ports, method=None, params=[]):
             "ports": ports,
         }
 
-    # Proceed with querying the server if reachable
+    # Query the server
     for connection in connection_options:
         for method_config in methods:
             try:
@@ -165,45 +164,47 @@ def query_electrumx_server(host, ports, method=None, params=[]):
                 start_time = time.time()
 
                 if use_tor_proxy:
-                    # Set up a socket using the Tor proxy
-                    socks.set_default_proxy(socks.SOCKS5, TOR_PROXY_HOST, TOR_PROXY_PORT)
-                    socket.socket = socks.socksocket
+                    set_default_proxy(SOCKS5, TOR_PROXY_HOST, TOR_PROXY_PORT)
+                    sock = socksocket()
+                else:
+                    sock = socket.socket()
 
-                with socket.create_connection((host, connection["port"]), timeout=10) as sock:
-                    if connection["use_ssl"]:
-                        context = ssl.create_default_context()
-                        context.check_hostname = False
-                        context.verify_mode = ssl.CERT_NONE
-                        with context.wrap_socket(sock, server_hostname=host) as ssock:
-                            ssock.sendall(request_data.encode())
-                            response = ssock.recv(4096).decode()
-                            self_signed = True
-                    else:
-                        sock.sendall(request_data.encode())
-                        response = sock.recv(4096).decode()
-                        self_signed = False
+                sock.connect((host, connection["port"]))
 
-                    response_data = json.loads(response)
-                    ping_time = round((time.time() - start_time) * 1000, 2)
+                if connection["use_ssl"]:
+                    context = ssl.create_default_context()
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+                    with context.wrap_socket(sock, server_hostname=host) as ssock:
+                        ssock.sendall(request_data.encode())
+                        response = ssock.recv(4096).decode()
+                        self_signed = True
+                else:
+                    sock.sendall(request_data.encode())
+                    response = sock.recv(4096).decode()
+                    self_signed = False
 
-                    if "result" not in response_data:
-                        return {
-                            "ping": ping_time,
-                            "error": "Malformed response: Missing 'result' field",
-                            "response_id": response_data.get("id"),
-                            "response_error": response_data.get("error"),
-                            "method_used": method_config["method"],
-                            "connection_type": "SSL" if connection["use_ssl"] else "Plaintext",
-                            "self_signed": self_signed
-                        }
+                response_data = json.loads(response)
+                ping_time = round((time.time() - start_time) * 1000, 2)
 
+                if "result" not in response_data:
                     return {
                         "ping": ping_time,
-                        "result": response_data.get("result"),
+                        "error": "Malformed response: Missing 'result' field",
+                        "response_id": response_data.get("id"),
+                        "response_error": response_data.get("error"),
                         "method_used": method_config["method"],
                         "connection_type": "SSL" if connection["use_ssl"] else "Plaintext",
                         "self_signed": self_signed
                     }
+
+                return {
+                    "ping": ping_time,
+                    "result": response_data.get("result"),
+                    "method_used": method_config["method"],
+                    "connection_type": "SSL" if connection["use_ssl"] else "Plaintext",
+                    "self_signed": self_signed
+                }
 
             except ssl.SSLError as e:
                 logging.error(f"SSL error on {host}:{connection['port']} using {method_config['method']}: {e}")
@@ -212,17 +213,13 @@ def query_electrumx_server(host, ports, method=None, params=[]):
                 logging.error(f"Error on {host}:{connection['port']} using {method_config['method']}: {e}")
                 continue
             finally:
-                if use_tor_proxy:
-                    # Reset the proxy and restore default socket behavior
-                    socks.set_default_proxy(None)
-                    socket.socket = socket.create_connection
+                sock.close()
 
     return {
         "error": "All methods failed or server is unreachable",
         "host": host,
         "ports": ports
     }
-
 
 
 def resolve_hostname_to_ips(hostname):
