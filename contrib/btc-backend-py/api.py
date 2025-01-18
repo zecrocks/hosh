@@ -13,6 +13,7 @@ import logging
 import socks
 import socket
 import os
+from socks import socksocket, set_default_proxy, SOCKS5
 
 # Configure Tor SOCKS proxy from environment variables
 TOR_PROXY_HOST = os.environ.get("TOR_PROXY_HOST", "tor")
@@ -101,10 +102,8 @@ def sort_priority(host):
     return (3, host)  # Unknown (lowest priority)
 
 
-from socks import socksocket, set_default_proxy, SOCKS5
 
 def query_electrumx_server(host, ports, method=None, params=[]):
-    # Use a default method if none is provided
     if not method:
         method = "blockchain.headers.subscribe"
 
@@ -116,10 +115,10 @@ def query_electrumx_server(host, ports, method=None, params=[]):
 
     connection_options = []
     if isinstance(ports, dict):
-        if "s" in ports:
+        if "s" in ports and int(ports["s"]) == 50002:
             connection_options.append({"port": int(ports["s"]), "use_ssl": True})
-        if "t" in ports:
-            connection_options.append({"port": int(ports["t"]), "use_ssl": False})
+        if "t" in ports or int(ports.get("s", 0)) == 50001:
+            connection_options.append({"port": int(ports.get("t", 50001)), "use_ssl": False})
     else:
         connection_options.append({"port": int(ports), "use_ssl": False})
 
@@ -129,15 +128,16 @@ def query_electrumx_server(host, ports, method=None, params=[]):
     for connection in connection_options:
         try:
             if use_tor_proxy:
-                # Use a Tor proxy only for .onion addresses
                 set_default_proxy(SOCKS5, TOR_PROXY_HOST, TOR_PROXY_PORT)
                 sock = socksocket()
             else:
                 sock = socket.socket()
 
-            # Attempt to connect to the server
+            # Attempt to connect
+            logging.info(f"Attempting connection to {host}:{connection['port']} using {'Tor' if use_tor_proxy else 'Direct'}")
             sock.connect((host, connection["port"]))
             reachable = True
+            logging.info(f"Successfully connected to {host}:{connection['port']}")
             break
         except Exception as e:
             logging.error(f"Error connecting to {host}:{connection['port']}: {e}")
@@ -145,13 +145,14 @@ def query_electrumx_server(host, ports, method=None, params=[]):
             sock.close()
 
     if not reachable:
+        logging.error(f"Failed to connect to {host} on any available ports.")
         return {
             "error": "Server is unreachable",
             "host": host,
             "ports": ports,
         }
 
-    # Query the server
+    # Querying the server
     for connection in connection_options:
         for method_config in methods:
             try:
@@ -170,6 +171,7 @@ def query_electrumx_server(host, ports, method=None, params=[]):
                     sock = socket.socket()
 
                 sock.connect((host, connection["port"]))
+                logging.info(f"Connected to {host}:{connection['port']} - Sending request: {method_config['method']}")
 
                 if connection["use_ssl"]:
                     context = ssl.create_default_context()
@@ -186,6 +188,8 @@ def query_electrumx_server(host, ports, method=None, params=[]):
 
                 response_data = json.loads(response)
                 ping_time = round((time.time() - start_time) * 1000, 2)
+
+                logging.info(f"Response from {host}:{connection['port']}: {response_data}")
 
                 if "result" not in response_data:
                     return {
