@@ -5,7 +5,6 @@ use axum::{
 use std::net::SocketAddr;
 
 mod routes;
-mod tls;
 mod utils;
 use routes::{
     api_info::api_info,

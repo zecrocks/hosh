@@ -27,16 +27,18 @@ bitcoin = "0.32"
 
 # Time Handling
 chrono = { version = "0.4", features = ["serde"] }
+tokio-openssl = "0.6"
 
-# TLS - Modern (Rustls)
-tokio-rustls = "0.24"
-rustls = { version = "0.21", features = ["dangerous_configuration"] }
-rustls-pemfile = "1.0"
-webpki-roots = "0.26" # Provides system root certificates
+# OpenSSL (Only TLS implementation)
+## On macOS, force vendored OpenSSL
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+openssl = { version = "0.10", features = ["vendored"] }
 
-# TLS - Legacy (Native TLS for fallback)
-native-tls = "0.2"
-tokio-native-tls = "0.3"
+## On Linux (Docker container), use system OpenSSL
+[target.'cfg(target_os = "linux")'.dependencies]
+openssl = { version = "0.10" }
+
 
 # Tor Support
 arti-client = "0.26"
+

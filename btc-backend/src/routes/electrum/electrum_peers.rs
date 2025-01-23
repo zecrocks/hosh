@@ -1,7 +1,11 @@
-use crate::utils::{try_connect, fetch_peers, error_response};
+
+use crate::utils::{try_connect, error_response, Stream};
 use axum::{extract::Query, response::Json};
 use serde::Deserialize;
 use serde_json::json;
+use serde_json::Value;
+use std::pin::Pin;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 #[derive(Deserialize)]
 pub struct PeerQueryParams {
@@ -9,16 +13,60 @@ pub struct PeerQueryParams {
     pub port: Option<u16>,
 }
 
+pub async fn fetch_peers(host: &str, port: u16) -> Result<Vec<Value>, String> {
+    let (_self_signed, connection) = try_connect(host, port, true)
+        .await
+        .map_err(|e| format!("Failed to connect to {}:{} - {}", host, port, e))?;
+
+    let mut stream: Pin<Box<dyn Stream>> = match connection {
+        crate::utils::Connection::Tcp(stream) => stream, // Already a `Pin<Box<TcpStream>>`
+        crate::utils::Connection::OpenSsl(stream) => stream, // Already a `Pin<Box<SslStream<TcpStream>>>`
+    };
+
+    let request = serde_json::json!({
+        "id": 1,
+        "method": "server.peers.subscribe",
+        "params": []
+    });
+
+    let request_str = serde_json::to_string(&request).unwrap() + "\n";
+    stream.write_all(request_str.as_bytes()).await.map_err(|e| {
+        format!("Failed to send request to {}:{} - {}", host, port, e)
+    })?;
+
+    let mut buffer = Vec::new();
+    let mut temp_buf = [0u8; 4096];
+
+    loop {
+        let n = stream.read(&mut temp_buf).await.map_err(|e| {
+            format!("Failed to read response from {}:{} - {}", host, port, e)
+        })?;
+        if n == 0 {
+            break;
+        }
+        buffer.extend_from_slice(&temp_buf[..n]);
+        if buffer.ends_with(b"\n") {
+            break;
+        }
+    }
+
+    let response_str = String::from_utf8_lossy(&buffer);
+    let response: Value = serde_json::from_str(&response_str)
+        .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+
+    let peers = response["result"]
+        .as_array()
+        .cloned()
+        .ok_or_else(|| "Invalid response format".to_string())?;
+
+    Ok(peers)
+}
+
 pub async fn electrum_peers(Query(params): Query<PeerQueryParams>) -> Result<Json<serde_json::Value>, axum::response::Response> {
     let host = &params.url;
     let port = params.port.unwrap_or(50002);
 
     let mut peers_map = serde_json::Map::new();
-
-    let (_self_signed, _connection) = try_connect(host, port, true).await.map_err(|e| {
-        error_response(&format!("Failed to connect to {}:{} - {}", host, port, e))
-    })?;
-
 
     let peers = fetch_peers(host, port).await.map_err(|e| {
         error_response(&format!("Failed to fetch peers: {}", e))
@@ -60,5 +108,4 @@ pub async fn electrum_peers(Query(params): Query<PeerQueryParams>) -> Result<Jso
 
     Ok(Json(json!({ "peers": peers_map })))
 }
-
 
