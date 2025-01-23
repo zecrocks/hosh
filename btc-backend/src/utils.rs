@@ -1,96 +1,71 @@
 use std::pin::Pin;
 use std::sync::{Arc, atomic::{AtomicBool, Ordering}};
-use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::TcpStream;
 use tokio_openssl::SslStream;
 use openssl::ssl::{SslConnector, SslMethod, SslVerifyMode};
 use openssl::x509::X509StoreContextRef;
 
-/// Define a supertrait to avoid trait object restrictions
-pub trait Stream: AsyncRead + AsyncWrite + Send + Sync + Unpin {}
-
-impl<T: AsyncRead + AsyncWrite + Send + Sync + Unpin> Stream for T {}
-
-pub enum Connection {
-    Tcp(Pin<Box<TcpStream>>),
-    OpenSsl(Pin<Box<SslStream<TcpStream>>>),
-}
-
-impl Connection {
-    /// Returns a pinned boxed reference to the inner stream for read/write operations
-    #[allow(dead_code)]
-    pub fn get_mut(&mut self) -> Pin<&mut (dyn Stream)> {
-        match self {
-            Connection::Tcp(ref mut stream) => stream.as_mut(),
-            Connection::OpenSsl(ref mut stream) => stream.as_mut(),
-        }
-    }
-}
 
 pub async fn try_connect(
     host: &str,
     port: u16,
-    use_ssl: bool,
-) -> Result<(bool, Connection), String> {
+) -> Result<(bool, SslStream<TcpStream>), String> {
     let addr = format!("{}:{}", host, port);
+    println!("🔗 Attempting connection to {}:{}", host, port);
+
     let stream = TcpStream::connect(&addr)
         .await
-        .map_err(|e| format!("Failed to connect to {}:{} - {}", host, port, e))?;
+        .map_err(|e| format!("❌ Failed to connect to {}:{} - {}", host, port, e))?;
 
-    if use_ssl {
-        let mut connector_builder = SslConnector::builder(SslMethod::tls())
-            .map_err(|e| format!("Failed to create OpenSSL connector: {:?}", e))?;
+    println!("✅ Successfully connected to {}:{}", host, port);
 
-        // ✅ Disable certificate verification (this fully allows self-signed certs)
-        connector_builder.set_verify(SslVerifyMode::NONE);
+    println!("🔐 Establishing SSL connection...");
 
-        // ✅ Atomic flag to track if the certificate is self-signed
-        let self_signed_flag = Arc::new(AtomicBool::new(false));
-        let flag_clone = Arc::clone(&self_signed_flag);
+    let mut connector_builder = SslConnector::builder(SslMethod::tls())
+        .map_err(|e| format!("❌ Failed to create OpenSSL connector: {:?}", e))?;
 
-        // ✅ Allow self-signed certificates but track them
-        connector_builder.set_verify_callback(SslVerifyMode::PEER, move |valid, ctx: &mut X509StoreContextRef| {
-            if !valid {
-                let error_string = ctx.error().error_string();
-                if error_string.contains("certificate verify failed") {
-                    println!("⚠️ Warning: Self-signed certificate detected.");
-                    flag_clone.store(true, Ordering::Relaxed); // ✅ Mark self-signed certs
-                    return true; // ✅ Accept self-signed certificates
-                }
-            }
-            valid
-        });
+    // ✅ Fully disable certificate verification (allows self-signed certs)
+    connector_builder.set_verify(SslVerifyMode::NONE);
 
-        let connector = connector_builder.build();
+    let self_signed_flag = Arc::new(AtomicBool::new(false));
+    let flag_clone = Arc::clone(&self_signed_flag);
 
-        let config = connector.configure()
-            .map_err(|e| format!("Failed to configure OpenSSL: {:?}", e))?;
+    // ✅ Allow self-signed certificates but track them
+    connector_builder.set_verify_callback(SslVerifyMode::NONE, move |_valid, _ctx: &mut X509StoreContextRef| {
+        flag_clone.store(true, Ordering::Relaxed);
+        true
+    });
 
-        let domain = host.to_string();
-        let mut ssl = config.into_ssl(&domain)
-            .map_err(|e| format!("Failed to create OpenSSL SSL object: {:?}", e))?;
+    let connector = connector_builder.build();
+    let config = connector.configure()
+        .map_err(|e| format!("❌ Failed to configure OpenSSL: {:?}", e))?;
 
-        ssl.set_connect_state(); // ✅ Explicitly set as a client connection
+    let domain = host.to_string();
+    let mut ssl = config.into_ssl(&domain)
+        .map_err(|e| format!("❌ Failed to create OpenSSL SSL object: {:?}", e))?;
 
-        let mut ssl_stream = SslStream::new(ssl, stream)
-            .map_err(|e| format!("Failed to create OpenSSL stream: {:?}", e))?;
+    ssl.set_connect_state();
 
-        let mut pinned_stream = Pin::new(&mut ssl_stream);
+    let mut ssl_stream = SslStream::new(ssl, stream)
+        .map_err(|e| format!("❌ Failed to create OpenSSL stream: {:?}", e))?;
 
-        match pinned_stream.as_mut().do_handshake().await {
-            Ok(()) => {
-                let self_signed = self_signed_flag.load(Ordering::Relaxed); // ✅ Read self-signed flag
-                println!(
-                    "✅ Successfully connected to {}:{} with SSL (self_signed: {})",
-                    host, port, self_signed
-                );
-                Ok((self_signed, Connection::OpenSsl(Box::pin(ssl_stream))))
-            }
-            Err(e) => Err(format!("SSL handshake failed: {:?}", e)),
+    let mut pinned_stream = Pin::new(&mut ssl_stream);
+
+    match pinned_stream.as_mut().do_handshake().await {
+        Ok(()) => {
+            let self_signed = self_signed_flag.load(Ordering::Relaxed);
+            let tls_version = ssl_stream.ssl().version_str();
+            println!(
+                "✅ SSL handshake successful with {}:{} (TLS: {}, self_signed: {})",
+                host, port, tls_version, self_signed
+            );
+            Ok((self_signed, ssl_stream)) // ✅ Now returning the actual SSL stream
         }
-    } else {
-        println!("✅ Successfully connected to {}:{} without SSL", host, port);
-        Ok((false, Connection::Tcp(Box::pin(stream))))
+        Err(e) => {
+            let msg = format!("❌ SSL handshake failed with {}:{} - {:?}", host, port, e);
+            println!("{}", msg);
+            Err(msg)
+        }
     }
 }
 

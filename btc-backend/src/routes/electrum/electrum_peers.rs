@@ -1,11 +1,14 @@
-
-use crate::utils::{try_connect, error_response, Stream};
+use crate::utils::{try_connect, error_response};
 use axum::{extract::Query, response::Json};
 use serde::Deserialize;
 use serde_json::json;
 use serde_json::Value;
 use std::pin::Pin;
+use tokio_openssl::SslStream;
+use tokio::net::TcpStream;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+
 
 #[derive(Deserialize)]
 pub struct PeerQueryParams {
@@ -14,14 +17,10 @@ pub struct PeerQueryParams {
 }
 
 pub async fn fetch_peers(host: &str, port: u16) -> Result<Vec<Value>, String> {
-    let (_self_signed, connection) = try_connect(host, port, true)
-        .await
+    let (_self_signed, ssl_stream) = try_connect(host, port).await
         .map_err(|e| format!("Failed to connect to {}:{} - {}", host, port, e))?;
 
-    let mut stream: Pin<Box<dyn Stream>> = match connection {
-        crate::utils::Connection::Tcp(stream) => stream, // Already a `Pin<Box<TcpStream>>`
-        crate::utils::Connection::OpenSsl(stream) => stream, // Already a `Pin<Box<SslStream<TcpStream>>>`
-    };
+    let mut stream: Pin<Box<SslStream<TcpStream>>> = Box::pin(ssl_stream); // ✅ No more `Connection` enum
 
     let request = serde_json::json!({
         "id": 1,
