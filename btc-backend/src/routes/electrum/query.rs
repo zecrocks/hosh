@@ -1,15 +1,13 @@
-use crate::utils::{try_connect, error_response};
+use crate::utils::{try_connect, error_response, send_electrum_request};
 use axum::{extract::Query, response::Json};
 use serde::Deserialize;
 use serde_json::json;
 use std::time::{Duration, UNIX_EPOCH};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio_openssl::SslStream;
-use tokio::net::TcpStream;
-
 use chrono::{DateTime, Utc};
 use bitcoin::blockdata::block::Header as BlockHeader;
 use bitcoin::consensus::encode::deserialize;
+use crate::utils::ElectrumStream;
+
 
 
 #[derive(Deserialize)]
@@ -40,64 +38,28 @@ fn parse_block_header(header_hex: &str) -> Result<serde_json::Value, String> {
     }))
 }
 
-async fn send_electrum_request(
-    ssl_stream: &mut SslStream<TcpStream>,
-    method: &str,
-    params: Vec<serde_json::Value>,
-) -> Result<serde_json::Value, String> {
-    let request = json!({
-        "id": 1,
-        "method": method,
-        "params": params
-    });
-
-    let request_str = serde_json::to_string(&request).unwrap() + "\n";
-    
-    ssl_stream.write_all(request_str.as_bytes()).await.map_err(|e| {
-        format!("❌ Failed to send request - {}", e)
-    })?;
-
-    let mut buffer = Vec::new();
-    let mut temp_buf = [0u8; 4096];
-
-    loop {
-        let n = ssl_stream.read(&mut temp_buf).await.map_err(|e| {
-            format!("❌ Failed to read response - {}", e)
-        })?;
-        if n == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&temp_buf[..n]);
-        if buffer.ends_with(b"\n") {
-            break;
-        }
-    }
-
-    let response_str = String::from_utf8_lossy(&buffer);
-    let response: serde_json::Value = serde_json::from_str(&response_str)
-        .map_err(|e| format!("❌ Failed to parse JSON response - {}", e))?;
-
-    Ok(response)
-}
 
 pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<serde_json::Value>, axum::response::Response> {
     let host = &params.url;
     let port = params.port.unwrap_or(50002);
     let is_onion_address = host.ends_with(".onion");
 
-    let (self_signed, mut ssl_stream) = try_connect(host, port).await
+    let (self_signed, mut stream) = try_connect(host, port).await
         .map_err(|e| error_response(&format!("Failed to connect to {}:{} - {}", host, port, e)))?;
 
-    let tls_version = ssl_stream.ssl().version_str().to_string();
+    let tls_version = match &stream {
+        ElectrumStream::Ssl(ssl_stream) => ssl_stream.ssl().version_str().to_string(),
+        ElectrumStream::Plain(_) => "None (plaintext)".to_string(),
+    };
 
     println!(
-        "🔍 Connected to {}:{} | TLS Version: {} | Self-signed: {}",
+        "🔍 Connected to {}:{} | TLS Version: {} | Self-signed: {:?}",
         host, port, tls_version, self_signed
     );
 
     let connection_type = if is_onion_address {
         "Tor"
-    } else if port == 50002 {
+    } else if matches!(stream, ElectrumStream::Ssl(_)) {
         "SSL"
     } else {
         "Plaintext"
@@ -113,9 +75,9 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
 
     let start_time = std::time::Instant::now(); // ✅ Start timing the request
 
-    match send_electrum_request(&mut ssl_stream, "blockchain.headers.subscribe", vec![]).await {
+    match send_electrum_request(&mut stream, "blockchain.headers.subscribe", vec![]).await {
         Ok(response) => {
-            let ping = start_time.elapsed().as_millis() as f64; // ✅ Calculate ping (milliseconds)
+            let ping = start_time.elapsed().as_millis() as f64;
 
             println!("Electrum response: {:?}", response);
 

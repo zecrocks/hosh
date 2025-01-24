@@ -1,14 +1,7 @@
-use crate::utils::{try_connect, error_response};
+use crate::utils::{try_connect, error_response, send_electrum_request};
 use axum::{extract::Query, response::Json};
 use serde::Deserialize;
-use serde_json::json;
-use serde_json::Value;
-use std::pin::Pin;
-use tokio_openssl::SslStream;
-use tokio::net::TcpStream;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-
+use serde_json::{json, Value};
 
 #[derive(Deserialize)]
 pub struct PeerQueryParams {
@@ -17,41 +10,16 @@ pub struct PeerQueryParams {
 }
 
 pub async fn fetch_peers(host: &str, port: u16) -> Result<Vec<Value>, String> {
-    let (_self_signed, ssl_stream) = try_connect(host, port).await
+    let (_self_signed, mut stream) = try_connect(host, port).await
         .map_err(|e| format!("Failed to connect to {}:{} - {}", host, port, e))?;
 
-    let mut stream: Pin<Box<SslStream<TcpStream>>> = Box::pin(ssl_stream); // ✅ No more `Connection` enum
+    println!("🔄 Fetching peers from {}:{}", host, port);
 
-    let request = serde_json::json!({
-        "id": 1,
-        "method": "server.peers.subscribe",
-        "params": []
-    });
-
-    let request_str = serde_json::to_string(&request).unwrap() + "\n";
-    stream.write_all(request_str.as_bytes()).await.map_err(|e| {
-        format!("Failed to send request to {}:{} - {}", host, port, e)
-    })?;
-
-    let mut buffer = Vec::new();
-    let mut temp_buf = [0u8; 4096];
-
-    loop {
-        let n = stream.read(&mut temp_buf).await.map_err(|e| {
-            format!("Failed to read response from {}:{} - {}", host, port, e)
-        })?;
-        if n == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&temp_buf[..n]);
-        if buffer.ends_with(b"\n") {
-            break;
-        }
-    }
-
-    let response_str = String::from_utf8_lossy(&buffer);
-    let response: Value = serde_json::from_str(&response_str)
-        .map_err(|e| format!("Failed to parse JSON response: {}", e))?;
+    let response = send_electrum_request(
+        &mut stream,
+        "server.peers.subscribe",
+        vec![]
+    ).await?;
 
     let peers = response["result"]
         .as_array()

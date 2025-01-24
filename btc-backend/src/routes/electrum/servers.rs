@@ -2,6 +2,7 @@ use axum::response::Json;
 use reqwest::Client as HttpClient;
 use std::collections::HashMap;
 
+
 pub async fn electrum_servers() -> Result<Json<serde_json::Value>, String> {
     let url = "https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/electrum/servers.json";
 
