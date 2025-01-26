@@ -44,7 +44,9 @@ async def publish_checks(nc, redis_client):
             # Get all keys from Redis
             for prefix in ['btc:', 'zec:']:
                 keys = redis_client.keys(f"{prefix}*")
-                
+                if not keys:
+                    print(f"No keys found for prefix {prefix}")
+
                 for key in keys:
                     key = key.decode('utf-8')  # Convert bytes to string
                     raw_data = redis_client.get(key)

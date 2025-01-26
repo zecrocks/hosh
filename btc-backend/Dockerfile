@@ -2,10 +2,12 @@ FROM rust:1.84-slim-bullseye as builder
 
 WORKDIR /usr/src/app
 
+# Install required dependencies for OpenSSL, Rust, and cargo
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     git \
+    make \
     && rm -rf /var/lib/apt/lists/*
 
 # Dependency caching
@@ -27,10 +29,11 @@ FROM debian:bullseye-slim
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies (including OpenSSL)
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
+    libssl1.1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary from builder
@@ -42,3 +45,4 @@ RUN chmod +x /app/btc-backend
 EXPOSE 5000
 
 CMD ["/app/btc-backend"]
+
