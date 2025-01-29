@@ -13,6 +13,8 @@ struct IndexTemplate {
     servers: Vec<ServerInfo>,
     percentile_height: u64,
     current_network: &'static str,
+    online_count: usize,
+    total_count: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -129,6 +131,8 @@ struct ServerTemplate {
     network: String,
     current_network: &'static str,
     percentile_height: u64,
+    online_count: usize,
+    total_count: usize,
 }
 
 #[derive(Serialize)]
@@ -221,10 +225,15 @@ async fn network_status(
             })
     });
 
+    let online_count = servers.iter().filter(|s| s.is_online()).count();
+    let total_count = servers.len();
+
     let template = IndexTemplate { 
         servers,
         percentile_height,
         current_network: network.0,
+        online_count,
+        total_count,
     };
     
     let html = template.render().map_err(|e| {
@@ -263,37 +272,37 @@ async fn server_detail(
         actix_web::error::ErrorInternalServerError("Failed to parse server data")
     })?;
     
-    // Get all servers to calculate percentile height
     let keys: Vec<String> = conn.keys(safe_network.redis_prefix()).map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
+        eprintln!("Redis error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis error")
     })?;
-
+    
+    let total_count = keys.len();
     let mut heights = Vec::new();
+
     for key in keys {
-        if let Ok(value) = conn.get::<_, String>(&key) {
-            if let Ok(server_info) = serde_json::from_str::<ServerInfo>(&value) {
-                if server_info.height > 0 {
-                    heights.push(server_info.height);
+        if let Ok(Some(data)) = conn.get::<_, Option<String>>(&key) {
+            if let Ok(server_data) = serde_json::from_str::<Value>(&data) {
+                if let Some(height) = server_data.get("height").and_then(|h| h.as_u64()) {
+                    if height > 0 {
+                        heights.push(height);
+                    }
                 }
             }
         }
     }
 
-    heights.sort_unstable();
-    let percentile_height = if !heights.is_empty() {
-        let index = (heights.len() as f64 * 0.9).ceil() as usize - 1;
-        heights[index.min(heights.len() - 1)]
-    } else {
-        0
-    };
-    
+    let online_count = heights.len();
+    let percentile_height = calculate_percentile(&heights, 90);
+
     let template = ServerTemplate {
         data,
         host,
         network,
         current_network: safe_network.0,
         percentile_height,
+        online_count,
+        total_count,
     };
     
     let html = template.render().map_err(|e| {
@@ -368,6 +377,18 @@ async fn fetch_network_servers(redis: &redis::Client, network: &str) -> Result<V
     }
 
     Ok(servers)
+}
+
+fn calculate_percentile(values: &[u64], percentile: u8) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    
+    let mut sorted = values.to_vec();
+    sorted.sort_unstable();
+    
+    let index = (percentile as f64 / 100.0 * (sorted.len() - 1) as f64).round() as usize;
+    sorted[index]
 }
 
 #[actix_web::main]

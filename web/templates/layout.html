@@ -24,11 +24,18 @@
                     <a href="/zec" class="btn btn-{% if current_network == "zec" %}primary{% else %}outline-primary{% endif %}">Zcash</a>
                 </div>
             </div>
-            {% if percentile_height > 0 %}
+            
             <div class="text-center text-muted">
-                <small>90th percentile block height: {{ percentile_height }}</small>
+                <small>
+                    {% if total_count > 0 %}
+                        {{ online_count }}/{{ total_count }} servers online.
+                    {% endif %}    
+                    {% if percentile_height > 0 %}
+                        90th percentile block height: {{ percentile_height }}
+                    {% endif %}
+                </small>
             </div>
-            {% endif %}
+            
         </div>
       </div>
       {% block content %}{% endblock %}
