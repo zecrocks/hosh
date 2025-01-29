@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 
 pub async fn electrum_servers() -> Result<Json<serde_json::Value>, String> {
-    let url = "https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/electrum/servers.json";
+    let url = "https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/electrum/chains/servers.json";
 
     let http_client = HttpClient::new();
     let response = http_client
