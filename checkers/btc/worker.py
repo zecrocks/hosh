@@ -43,9 +43,15 @@ def query_server_data(host, port=50002, electrum_version="unknown"):
         "port": port
     }
 
-    response = requests.get(url, params=params, timeout=10)
-    if response.status_code != 200:
-        raise Exception(f"HTTP {response.status_code}")
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        response.raise_for_status()  # Raise HTTPError for bad responses (4xx/5xx)
+    except requests.Timeout:
+        print(f"Timeout while querying {host}. Skipping Redis update.")
+        return None  # Ensure no Redis update
+    except requests.RequestException as e:
+        print(f"Error querying {host}: {e}")
+        return None
 
     data = response.json()
     data.update({
@@ -67,17 +73,14 @@ async def process_check_request(nc, msg):
 
         print(f"Processing check request for server: {host}")
 
-        try:
-            # Query server and prepare data
-            server_data = query_server_data(host, port, electrum_version)
-            server_data = make_json_serializable(server_data)
+        server_data = query_server_data(host, port, electrum_version)
 
-            # Save to Redis
+        if server_data:  # Only update Redis if data is retrieved successfully
+            server_data = make_json_serializable(server_data)
             redis_client.set(f"btc:{host}", json.dumps(server_data))
             print(f"Data for server {host} saved to Redis.")
-
-        except Exception as e:
-            print(f"Error processing server {host}: {e}")
+        else:
+            print(f"Skipping Redis update for {host} due to timeout.")
 
     except Exception as e:
         print(f"Error processing message: {e}")
@@ -111,4 +114,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

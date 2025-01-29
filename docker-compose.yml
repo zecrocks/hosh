@@ -14,6 +14,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    profiles:
+      - default
+      - dev
 
   # Rust BTC Backend - uncomment to use
   btc-backend:
@@ -36,6 +39,8 @@ services:
     environment:
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
+    profiles:
+      - default
 
   # # Python BTC Backend - uncomment to use
   # btc-backend-py:
@@ -51,6 +56,8 @@ services:
   #   volumes:
   #     - btc-data:/root/.electrum
   #     - ./contrib/btc-backend-py/api.py:/electrum/api.py
+  #   profiles:
+  #     - disabled
   #   ports:
   #     - "5000:5000"
   #   depends_on:
@@ -68,6 +75,9 @@ services:
     container_name: data-dashboard
     ports:
       - "8050:8050"
+    profiles:
+      - disabled
+      - dev
     volumes:
       - ./contrib/dashboard:/app
     environment:
@@ -90,6 +100,8 @@ services:
         condition: service_healthy
       btc-backend:
         condition: service_healthy
+    profiles:
+      - default
 
   publisher:
     build: publisher
@@ -113,6 +125,8 @@ services:
         condition: service_started
       checker-zec:
         condition: service_started
+    profiles:
+      - default
 
   checker-btc:
     build: checkers/btc
@@ -132,6 +146,8 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    profiles:
+      - default
 
   checker-zec:
     build: checkers/zec
@@ -147,6 +163,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+    profiles:
+      - default
 
   redis:
     image: redis:alpine
@@ -161,6 +179,9 @@ services:
       - redis-data:/data
     command: redis-server --appendonly yes
     restart: always
+    profiles:
+      - default
+      - dev
 
   tor:
     image: osminogin/tor-simple
@@ -185,6 +206,8 @@ services:
         delay: 10s
         max_attempts: 5
         window: 120s
+    profiles:
+      - default
 
   web:
     build: web
@@ -203,6 +226,23 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+    profiles:
+      - default
+
+
+  architecture:
+    image: terrastruct/d2:v0.1.2
+    profiles:
+      - disabled
+      - dev
+    environment:
+      - D2_LAYOUT=dagre
+    volumes:
+      - ./docs/src:/home/debian/src
+    ports:
+      - "8000:8080"
+    command: ["--watch", "/home/debian/src/architecture.d2"]
+
 
 volumes:
   btc-data:

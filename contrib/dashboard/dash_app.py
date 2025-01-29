@@ -4,6 +4,8 @@ from dash.dependencies import Input, Output
 import redis
 import json
 import os
+from datetime import datetime, timezone
+
 
 # Initialize the Dash app
 app = dash.Dash(__name__)
@@ -89,6 +91,7 @@ def update_interval(refresh_interval):
     return max(1, refresh_interval or 10) * 1000
 
 
+
 @app.callback(
     [Output('data-table', 'columns'),
      Output('data-table', 'data')],
@@ -122,6 +125,48 @@ def update_table(clear_clicks, auto_refresh_intervals):
     sorted_keys = sorted(data[0].keys())  # Sort the keys alphabetically
     columns = [{"name": key, "id": key} for key in sorted_keys]
 
+    # Get current time in UTC
+    now = datetime.now(timezone.utc)
+
+    # Convert 'LastUpdated' to time delta
+    for record in data:
+        if 'LastUpdated' in record:
+            last_updated_str = record['LastUpdated'].strip()
+
+            # Handle uninitialized timestamps
+            if last_updated_str in ["0001-01-01T00:00:00", "0001-01-01T00:00:00Z"]:
+                record['LastUpdated'] = "Never Updated"
+                continue
+
+            try:
+                # Detect if it's a Unix timestamp (all digits)
+                if last_updated_str.isdigit():
+                    last_updated = datetime.fromtimestamp(int(last_updated_str), tz=timezone.utc)
+                else:
+                    # Assume ISO 8601 format
+                    last_updated = datetime.fromisoformat(last_updated_str)
+                    
+                    # If the datetime is naive (no timezone info), set it to UTC
+                    if last_updated.tzinfo is None:
+                        last_updated = last_updated.replace(tzinfo=timezone.utc)
+
+                time_delta = now - last_updated
+                
+                # Format time delta (e.g., "5m ago", "2h 15m ago")
+                seconds = int(time_delta.total_seconds())
+                if seconds < 60:
+                    record['LastUpdated'] = f"{seconds}s ago"
+                elif seconds < 3600:
+                    record['LastUpdated'] = f"{seconds // 60}m ago"
+                elif seconds < 86400:
+                    record['LastUpdated'] = f"{seconds // 3600}h {(seconds % 3600) // 60}m ago"
+                else:
+                    record['LastUpdated'] = f"{seconds // 86400}d {(seconds % 86400) // 3600}h ago"
+
+            except Exception as e:
+                print(f"Error parsing LastUpdated: {e} (Value: {last_updated_str})")
+                record['LastUpdated'] = "Invalid Time"
+
     # Sort the data records by 'host'
     sorted_data = sorted(data, key=lambda record: record.get("host", "").lower())
 
@@ -131,6 +176,7 @@ def update_table(clear_clicks, auto_refresh_intervals):
     ]
 
     return columns, sorted_data
+
 
 
 
