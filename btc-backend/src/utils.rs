@@ -156,8 +156,11 @@ pub async fn send_electrum_request(
 
 
 
-pub fn error_response(message: &str) -> axum::response::Response {
-    let error_body = serde_json::json!({ "error": message });
+pub fn error_response(message: &str, error_type: &str) -> axum::response::Response {
+    let error_body = serde_json::json!({ 
+        "error": message,
+        "error_type": error_type 
+    });
     axum::response::Response::builder()
         .status(400)
         .header("Content-Type", "application/json")
