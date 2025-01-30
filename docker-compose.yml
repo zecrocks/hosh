@@ -18,19 +18,19 @@ services:
       - default
       - dev
 
-  # Rust BTC Backend - uncomment to use
+  # Rust BTC Backend
   btc-backend:
     build: ./btc-backend
     image: hosh/btc-backend
-    # Same name as the Python backend to maintain internal DNS
-    container_name: btc-backend
+    deploy:
+      replicas: 5  # Run 3 instances
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
       interval: 5s
       timeout: 3s
       retries: 5
     ports:
-      - "5000:5000"
+      - "5000-5009:5000"  # Map ports 5000-5002 to allow multiple instances
     depends_on:
       nats:
         condition: service_healthy
@@ -108,12 +108,11 @@ services:
     image: hosh/publisher
     container_name: publisher
     environment:
-      BTC_WORKER: http://btc-backend:5000
+      CHECK_INTERVAL: "300"  # Triggers checks every 5 minutes
       STALE_THRESHOLD_SECONDS: 120
+      NATS_URL: "nats://nats:4222"
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      NATS_URL: "nats://nats:4222"
-      CHECK_INTERVAL: "300"
     volumes:
       - ./publisher:/app
     depends_on:
@@ -133,7 +132,7 @@ services:
     image: hosh/checker-btc
     container_name: checker-btc
     environment:
-      BTC_WORKER: http://btc-backend:5000
+      BTC_WORKER: http://btc-backend:5000  # Docker will automatically load balance requests
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"

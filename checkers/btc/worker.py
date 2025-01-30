@@ -37,6 +37,9 @@ def make_json_serializable(data):
 def query_server_data(host, port=50002, electrum_version="unknown"):
     """Query the Electrum server for block header information."""
     url = f"{BTC_WORKER}/electrum/query"
+    
+    print(f"📡 Sending request to {url} for host {host}")
+    
     params = {
         "url": host,
         "method": "blockchain.headers.subscribe",
@@ -45,12 +48,34 @@ def query_server_data(host, port=50002, electrum_version="unknown"):
 
     try:
         response = requests.get(url, params=params, timeout=30)
-        response.raise_for_status()  # Raise HTTPError for bad responses (4xx/5xx)
+        if response.status_code == 400:
+            error_data = response.json()
+            error_type = error_data.get('error_type', 'unknown')
+            
+            # Only treat actual connection errors as server failures
+            if error_type in ['host_unreachable', 'connection_error', 'protocol_error']:
+                print(f"🔴 Server error for {host}: {error_data['error']}")
+                return {
+                    "host": host,
+                    "port": port,
+                    "height": 0,
+                    "server_version": electrum_version,
+                    "LastUpdated": datetime.datetime.utcnow().isoformat(),
+                    "error": True,
+                    "error_type": error_type,
+                    "error_message": error_data['error']
+                }
+            else:
+                # For other errors (like btc-backend timeouts), skip update
+                print(f"⚠️ Backend error for {host}: {error_data['error']}")
+                return None
+                
+        response.raise_for_status()
     except requests.Timeout:
-        print(f"Timeout while querying {host}. Skipping Redis update.")
-        return None  # Ensure no Redis update
+        print(f"⏰ Backend timeout while querying {host}")
+        return None  # Skip update for backend timeouts
     except requests.RequestException as e:
-        print(f"Error querying {host}: {e}")
+        print(f"💥 Backend error when querying {host}: {e}")
         return None
 
     data = response.json()
@@ -58,7 +83,8 @@ def query_server_data(host, port=50002, electrum_version="unknown"):
         "host": host,
         "port": port,
         "electrum_version": electrum_version,
-        "LastUpdated": datetime.datetime.utcnow().isoformat()
+        "LastUpdated": datetime.datetime.utcnow().isoformat(),
+        "error": False  # Explicitly mark successful responses
     })
     return data
 
