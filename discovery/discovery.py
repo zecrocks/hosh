@@ -22,6 +22,7 @@ ZEC_SERVERS = [
     {'host': 'eu.zec.rocks', 'port': 443},
     {'host': 'ap.zec.rocks', 'port': 443},
     {'host': 'me.zec.rocks', 'port': 443},
+    {'host': 'zcashd.zec.rocks', 'port': 443},
     {'host': 'lwd1.zcash-infra.com', 'port': 9067},
     {'host': 'lwd2.zcash-infra.com', 'port': 9067},
     {'host': 'lwd3.zcash-infra.com', 'port': 9067},
