@@ -1,11 +1,13 @@
 use std::env;
 use std::collections::HashMap;
-use actix_web::{get, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
+use actix_web::{get, post, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
 use actix_files as fs;
 use askama::Template;
 use redis::Commands;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use chrono::{DateTime, Utc, TimeZone, FixedOffset, NaiveDateTime};
+use uuid::Uuid;
 
 #[derive(Template)]
 #[template(path = "index.html")]
@@ -15,6 +17,7 @@ struct IndexTemplate {
     current_network: &'static str,
     online_count: usize,
     total_count: usize,
+    check_error: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -36,6 +39,12 @@ struct ServerInfo {
 
     #[serde(default)]
     server_version: Option<String>,
+
+    #[serde(default)]
+    error: Option<bool>,
+
+    #[serde(default)]
+    error_time: Option<String>,
 
     #[serde(flatten)]
     extra: HashMap<String, serde_json::Value>,
@@ -70,12 +79,59 @@ impl ServerInfo {
     }
 
     fn formatted_last_updated(&self) -> String {
-        self.last_updated.clone().unwrap_or_else(|| "".to_string())
+        if let Some(last_updated) = &self.last_updated {
+            // Try parsing with DateTime::parse_from_rfc3339 first
+            let parsed_time = DateTime::parse_from_rfc3339(last_updated)
+                // If that fails, try parsing as a naive datetime and assume UTC
+                .or_else(|_| {
+                    DateTime::parse_from_rfc3339(&format!("{}Z", last_updated))
+                })
+                .or_else(|_| {
+                    // Parse as naive datetime and convert to UTC
+                    chrono::NaiveDateTime::parse_from_str(last_updated, "%Y-%m-%dT%H:%M:%S%.f")
+                        .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+                        .map(|dt| dt.with_timezone(&FixedOffset::east_opt(0).unwrap()))
+                });
+
+            if let Ok(time) = parsed_time {
+                let now = Utc::now().with_timezone(time.offset());
+                let duration = now.signed_duration_since(time);
+
+                let total_seconds = duration.num_seconds();
+                if total_seconds < 0 {
+                    return "Just now".to_string();
+                }
+
+                if total_seconds < 60 {
+                    return format!("{}s", total_seconds);
+                }
+
+                let minutes = total_seconds / 60;
+                if minutes < 60 {
+                    let seconds = total_seconds % 60;
+                    return format!("{}m {}s", minutes, seconds);
+                }
+
+                let hours = minutes / 60;
+                if hours < 24 {
+                    let mins = minutes % 60;
+                    return format!("{}h {}m", hours, mins);
+                }
+
+                let days = hours / 24;
+                let hrs = hours % 24;
+                format!("{}d {}h", days, hrs)
+            } else {
+                format!("Invalid time: {}", last_updated)  // Include the timestamp for debugging
+            }
+        } else {
+            "Never".to_string()
+        }
     }
 
     // TODO: Show status based on something other than height
     fn is_online(&self) -> bool {
-        self.height > 0
+        !self.error.unwrap_or(false) && self.height > 0
     }
 
     fn is_height_behind(&self, percentile_height: &u64) -> bool {
@@ -250,6 +306,7 @@ async fn network_status(
         current_network: network.0,
         online_count,
         total_count,
+        check_error: None,
     };
     
     let html = template.render().map_err(|e| {
@@ -407,6 +464,65 @@ fn calculate_percentile(values: &[u64], percentile: u8) -> u64 {
     sorted[index]
 }
 
+#[post("/{network}/check")]
+async fn check_server(
+    redis: web::Data<redis::Client>,
+    network: web::Path<String>,
+    form: web::Form<CheckServerForm>,
+) -> Result<HttpResponse> {
+    let network = SafeNetwork::from_str(&network)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+
+    // Validate form data
+    if form.url.is_empty() {
+        return Ok(HttpResponse::BadRequest().body("URL is required"));
+    }
+
+    let check_id = Uuid::new_v4().to_string();
+    let check_request = serde_json::json!({
+        "host": form.url,
+        "port": form.port.unwrap_or(50002),
+        "user_submitted": true,
+        "check_id": check_id
+    });
+
+    println!("📤 Submitting check request to NATS - network: {}, host: {}, port: {}, check_id: {}, message: {}", 
+        network.0,
+        form.url,
+        form.port.unwrap_or(50002),
+        check_id,
+        serde_json::to_string_pretty(&check_request).unwrap()
+    );
+
+    // Publish check request to NATS
+    let nats = nats::connect("nats://nats:4222").map_err(|e| {
+        eprintln!("NATS connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to connect to NATS")
+    })?;
+
+    // Add debug logging for NATS publish
+    let subject = format!("hosh.check.{}", network.0);
+    println!("📤 Publishing to NATS subject: {}", subject);
+    nats.publish(&subject, &serde_json::to_vec(&check_request).unwrap())
+        .map_err(|e| {
+            eprintln!("NATS publish error: {}", e);
+            actix_web::error::ErrorInternalServerError("Failed to publish check request")
+        })?;
+
+    println!("✅ Successfully published check request to NATS");
+
+    // Redirect back to the network page
+    Ok(HttpResponse::SeeOther()
+        .insert_header(("Location", format!("/{}", network.0)))
+        .finish())
+}
+
+#[derive(Deserialize)]
+struct CheckServerForm {
+    url: String,
+    port: Option<u16>,
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| {
@@ -434,6 +550,7 @@ async fn main() -> std::io::Result<()> {
             .service(network_status)
             .service(server_detail)
             .service(network_api)
+            .service(check_server)
     })
     .bind("0.0.0.0:8080")?
     .run()

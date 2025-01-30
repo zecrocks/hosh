@@ -130,14 +130,14 @@ services:
   checker-btc:
     build: checkers/btc
     image: hosh/checker-btc
-    container_name: checker-btc
+    deploy:
+      replicas: 3  # Run multiple instances
     environment:
-      BTC_WORKER: http://btc-backend:5000  # Docker will automatically load balance requests
+      BTC_WORKER: http://btc-backend:5000
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
-    volumes:
-      - ./checkers/btc:/app
+      NATS_SUBJECT: "hosh.check.btc"
     depends_on:
       btc-backend:
         condition: service_healthy
@@ -145,6 +145,8 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+    volumes:
+      - ./checkers/btc:/app
     profiles:
       - default
 
