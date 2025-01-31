@@ -1,8 +1,11 @@
-use std::{env, error::Error, time::Instant};
+use std::{env, error::Error};
 use chrono::{DateTime, Utc};
 use redis::Commands;
 use serde::{Deserialize, Serialize};
+use std::time::Instant;
 use zingolib;
+use futures_util::StreamExt;
+use tokio::task;
 
 #[derive(Debug, Deserialize)]
 struct CheckRequest {
@@ -22,7 +25,8 @@ struct CheckResult {
     ping: f64,
 }
 
-fn main() -> Result<(), Box<dyn Error>> {
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
     rustls::crypto::ring::default_provider()
         .install_default()
         .expect("Failed to install rustls crypto provider");
@@ -43,15 +47,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     let mut redis_conn = redis::Client::open(redis_url.as_str())?.get_connection()?;
     println!("Connected to Redis at {}", redis_url);
     
-    let nc = nats::connect(&nats_url)?;
+    let nc = async_nats::connect(&nats_url).await?;
     println!("Connected to NATS at {}", nats_url);
     
-    let sub = nc.subscribe(&format!("{}check.zec", nats_prefix))?;
+    let mut sub = nc.subscribe(format!("{}check.zec", nats_prefix)).await?;
     println!("Subscribed to {}check.zec", nats_prefix);
-    nc.flush()?;
 
-    while let Some(msg) = sub.next() {
-        let check_request: CheckRequest = match serde_json::from_slice(&msg.data) {
+    while let Some(msg) = sub.next().await {
+        let check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Failed to parse check request: {e}");
@@ -68,7 +71,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         };
 
         let start_time = Instant::now();
-        let (height, error) = match zingolib::get_latest_block_height(uri) {
+        let (height, error) = match task::spawn_blocking(move || {
+            zingolib::get_latest_block_height(uri)
+        }).await? {
             Ok(h) => (h, None),
             Err(e) => (0, Some(e.to_string())),
         };
