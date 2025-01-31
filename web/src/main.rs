@@ -34,6 +34,9 @@ struct ServerInfo {
     #[serde(default)]
     ping: Option<f64>,
 
+    #[serde(default)]
+    server_version: Option<String>,
+
     #[serde(flatten)]
     extra: HashMap<String, serde_json::Value>,
 }
@@ -103,6 +106,14 @@ impl ServerInfo {
         } else {
             3
         }
+    }
+
+    fn formatted_version(&self) -> String {
+        self.server_version
+            .as_ref()
+            .map(String::as_str)
+            .unwrap_or("-")
+            .to_string()
     }
 }
 
@@ -393,14 +404,22 @@ fn calculate_percentile(values: &[u64], percentile: u8) -> u64 {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
-    let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
+    let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| {
+        println!("⚠️  REDIS_HOST not set, using default 'redis'");
+        "redis".to_string()
+    });
+    let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| {
+        println!("⚠️  REDIS_PORT not set, using default '6379'");
+        "6379".to_string()
+    });
     let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+    
+    println!("🔌 Connecting to Redis at {}", redis_url);
 
     let redis_client = redis::Client::open(redis_url.as_str())
         .expect("Failed to create Redis client");
 
-    println!("Starting server at http://0.0.0.0:8080");
+    println!("🚀 Starting server at http://0.0.0.0:8080");
 
     HttpServer::new(move || {
         App::new()

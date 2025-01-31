@@ -47,6 +47,24 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
     let (self_signed, mut stream) = try_connect(host, port).await
         .map_err(|e| error_response(&format!("Failed to connect to {}:{} - {}", host, port, e)))?;
 
+    // Get server version first
+    let version = match send_electrum_request(&mut stream, "server.version", vec![
+        json!("btc-backend"), 
+        json!(["1.4", "1.4.5"])
+    ]).await {
+        Ok(response) => {
+            response.get("result")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| arr.get(0))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown").to_string()
+        },
+        Err(e) => {
+            eprintln!("Failed to get server version: {}", e);
+            "unknown".to_string()
+        }
+    };
+
     let tls_version = match &stream {
         ElectrumStream::Ssl(ssl_stream) => ssl_stream.ssl().version_str().to_string(),
         ElectrumStream::Plain(_) => "None (plaintext)".to_string(),
@@ -91,21 +109,22 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
                 match parse_block_header(hex_str) {
                     Ok(parsed_header) => {
                         return Ok(Json(json!({
-                            "error": "", // ✅ Explicitly include an empty error string
-                            "method_used": "blockchain.headers.subscribe", // ✅ Include the method used
-                            "host": host, // ✅ Include host for completeness
+                            "error": "",
+                            "method_used": "blockchain.headers.subscribe",
+                            "host": host,
                             "height": height,
-                            "ping": ping, // ✅ Include measured ping time
+                            "ping": ping,
                             "tls_version": tls_version,
                             "self_signed": self_signed,
                             "connection_type": connection_type,
                             "resolved_ips": resolved_ips,
+                            "server_version": version,
                             "bits": parsed_header["bits"],
                             "version": parsed_header["version"],
                             "nonce": parsed_header["nonce"],
                             "timestamp": parsed_header["timestamp"],
                             "timestamp_human": parsed_header["timestamp_human"]
-                                .as_str().unwrap_or("").replace("+0000", "GMT"), // ✅ Fix timestamp format
+                                .as_str().unwrap_or("").replace("+0000", "GMT"),
                             "merkle_root": parsed_header["merkle_root"],
                             "prev_block": parsed_header["prev_block"]
                         })));
@@ -130,6 +149,7 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
                 "self_signed": self_signed,
                 "connection_type": connection_type,
                 "resolved_ips": resolved_ips,
+                "server_version": version,
                 "response": response
             })))
         },
