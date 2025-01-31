@@ -6,18 +6,24 @@ use askama::Template;
 use redis::Commands;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use chrono::{DateTime, Utc, TimeZone, FixedOffset, NaiveDateTime};
+use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
+use reqwest;
+
+fn upper(s: &str) -> askama::Result<String> {
+    Ok(s.to_uppercase())
+}
 
 #[derive(Template)]
 #[template(path = "index.html")]
-struct IndexTemplate {
+struct IndexTemplate<'a> {
     servers: Vec<ServerInfo>,
     percentile_height: u64,
     current_network: &'static str,
     online_count: usize,
     total_count: usize,
-    check_error: Option<String>,
+    check_error: Option<&'a str>,
+    hcaptcha_site_key: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -216,6 +222,20 @@ struct ApiResponse {
     servers: Vec<ApiServerInfo>
 }
 
+#[derive(Template)]
+#[template(path = "check.html")]
+struct CheckTemplate {
+    check_id: String,
+    server: Option<ServerInfo>,
+    network: &'static str,
+}
+
+impl CheckTemplate {
+    fn network_upper(network: &str) -> String {
+        network.to_uppercase()
+    }
+}
+
 #[get("/")]
 async fn root() -> Result<Redirect> {
     Ok(Redirect::to("/zec"))
@@ -300,13 +320,15 @@ async fn network_status(
     let online_count = servers.iter().filter(|s| s.is_online()).count();
     let total_count = servers.len();
 
-    let template = IndexTemplate { 
+    let template = IndexTemplate {
         servers,
         percentile_height,
         current_network: network.0,
         online_count,
         total_count,
         check_error: None,
+        hcaptcha_site_key: env::var("HCAPTCHA_SITE_KEY")
+            .expect("HCAPTCHA_SITE_KEY must be set"),
     };
     
     let html = template.render().map_err(|e| {
@@ -321,7 +343,7 @@ async fn network_status(
 
 #[get("/{network}/{host}")]
 async fn server_detail(
-    redis: web::Data<redis::Client>,
+    _redis: web::Data<redis::Client>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse> {
     let (network, host) = path.into_inner();
@@ -330,7 +352,7 @@ async fn server_detail(
     
     let key = format!("{}:{}", network, host);
     
-    let mut conn = redis.get_connection().map_err(|e| {
+    let mut conn = _redis.get_connection().map_err(|e| {
         eprintln!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
@@ -464,14 +486,88 @@ fn calculate_percentile(values: &[u64], percentile: u8) -> u64 {
     sorted[index]
 }
 
+#[derive(Deserialize)]
+struct CheckServerForm {
+    url: String,
+    port: Option<u16>,
+    #[serde(rename = "h-captcha-response")]
+    captcha_response: String,
+}
+
+async fn verify_captcha(response: &str) -> Result<bool> {
+    let client = reqwest::Client::new();
+    let secret = env::var("HCAPTCHA_SECRET").expect("HCAPTCHA_SECRET must be set");
+    
+    let params = [
+        ("secret", secret),
+        ("response", response.to_string()),
+    ];
+    
+    let res = client.post("https://hcaptcha.com/siteverify")
+        .form(&params)
+        .send()
+        .await
+        .map_err(|e| {
+            eprintln!("Captcha verification error: {}", e);
+            actix_web::error::ErrorInternalServerError("Failed to verify captcha")
+        })?;
+
+    #[derive(Deserialize)]
+    struct CaptchaResponse {
+        success: bool,
+    }
+
+    let result: CaptchaResponse = res.json().await.map_err(|e| {
+        eprintln!("Captcha response parse error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to parse captcha response")
+    })?;
+
+    Ok(result.success)
+}
+
 #[post("/{network}/check")]
 async fn check_server(
     redis: web::Data<redis::Client>,
     network: web::Path<String>,
     form: web::Form<CheckServerForm>,
 ) -> Result<HttpResponse> {
-    let network = SafeNetwork::from_str(&network)
+    let network_str = network.into_inner();
+    let network = SafeNetwork::from_str(&network_str)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+
+    // Verify captcha first
+    if form.captcha_response.is_empty() || !verify_captcha(&form.captcha_response).await? {
+        let servers = fetch_network_servers(&redis, network.0).await?;
+        let online_count = servers.iter().filter(|s| s.is_online()).count();
+        let total_count = servers.len();
+        let percentile_height = calculate_percentile(
+            &servers.iter()
+                .filter(|s| s.height > 0)
+                .map(|s| s.height)
+                .collect::<Vec<_>>(), 
+            90
+        );
+
+        let template = IndexTemplate {
+            servers,
+            percentile_height,
+            current_network: network.0,
+            online_count,
+            total_count,
+            check_error: Some("Please complete the captcha"),
+            hcaptcha_site_key: env::var("HCAPTCHA_SITE_KEY")
+                .expect("HCAPTCHA_SITE_KEY must be set"),
+        };
+
+        let html = template.render().map_err(|e| {
+            eprintln!("Template rendering error: {}", e);
+            actix_web::error::ErrorInternalServerError("Template rendering failed")
+        })?;
+
+        return Ok(HttpResponse::BadRequest()
+            .content_type("text/html; charset=utf-8")
+            .body(html));
+    }
 
     // Validate form data
     if form.url.is_empty() {
@@ -511,16 +607,63 @@ async fn check_server(
 
     println!("✅ Successfully published check request to NATS");
 
-    // Redirect back to the network page
+    // Redirect to network-specific check result page
     Ok(HttpResponse::SeeOther()
-        .insert_header(("Location", format!("/{}", network.0)))
+        .insert_header(("Location", format!("/check/{}/{}", network.0, check_id)))
         .finish())
 }
 
-#[derive(Deserialize)]
-struct CheckServerForm {
-    url: String,
-    port: Option<u16>,
+#[get("/check/{network}/{check_id}")]
+async fn check_result(
+    redis: web::Data<redis::Client>,
+    path: web::Path<(String, String)>,  // Now captures both network and check_id
+) -> Result<HttpResponse> {
+    let (network_str, check_id) = path.into_inner();
+    let network = SafeNetwork::from_str(&network_str)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+
+    let mut conn = redis.get_connection().map_err(|e| {
+        eprintln!("Redis connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    })?;
+
+    // Only search the specific network's keys
+    let prefix = format!("{}:", network.0);
+    let mut server = None;
+
+    let keys: Vec<String> = conn.keys(format!("{}*", prefix)).map_err(|e| {
+        eprintln!("Redis keys error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
+    })?;
+
+    for key in keys {
+        let value: String = conn.get(&key).map_err(|e| {
+            eprintln!("Redis get error for key {}: {}", key, e);
+            actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
+        })?;
+
+        if let Ok(server_info) = serde_json::from_str::<ServerInfo>(&value) {
+            if server_info.extra.get("check_id").and_then(|v| v.as_str()) == Some(&check_id) {
+                server = Some(server_info);
+                break;
+            }
+        }
+    }
+
+    let template = CheckTemplate {
+        check_id,
+        server,
+        network: network.0,
+    };
+
+    let html = template.render().map_err(|e| {
+        eprintln!("Template rendering error: {}", e);
+        actix_web::error::ErrorInternalServerError("Template rendering failed")
+    })?;
+
+    Ok(HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(html))
 }
 
 #[actix_web::main]
@@ -540,6 +683,10 @@ async fn main() -> std::io::Result<()> {
     let redis_client = redis::Client::open(redis_url.as_str())
         .expect("Failed to create Redis client");
 
+    // No need to store these since they're accessed when needed
+    env::var("HCAPTCHA_SECRET").expect("HCAPTCHA_SECRET must be set"); // Verify it exists
+    env::var("HCAPTCHA_SITE_KEY").expect("HCAPTCHA_SITE_KEY must be set"); // Verify it exists
+
     println!("🚀 Starting server at http://0.0.0.0:8080");
 
     HttpServer::new(move || {
@@ -551,6 +698,7 @@ async fn main() -> std::io::Result<()> {
             .service(server_detail)
             .service(network_api)
             .service(check_server)
+            .service(check_result)
     })
     .bind("0.0.0.0:8080")?
     .run()
