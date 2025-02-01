@@ -23,8 +23,24 @@ def is_stale(data):
         if not last_updated:
             return True
 
+        # Skip if this was a recent user submission
+        if data.get("user_submitted", False):
+            last_updated_time = datetime.datetime.fromisoformat(last_updated)
+            if last_updated_time.tzinfo is not None:
+                last_updated_time = last_updated_time.astimezone(datetime.timezone.utc)
+            else:
+                last_updated_time = last_updated_time.replace(tzinfo=datetime.timezone.utc)
+
+            current_time = datetime.datetime.now(datetime.timezone.utc)
+            age = (current_time - last_updated_time).total_seconds()
+
+            # If user submitted and checked within last minute, skip it
+            if age < 60:  # or whatever threshold you prefer
+                print(f"Skipping recently user-submitted check ({age:.0f}s ago)")
+                return False
+
+        # Normal staleness check for regular updates
         last_updated_time = datetime.datetime.fromisoformat(last_updated)
-        # Convert to UTC if it has timezone, or assume UTC if it doesn't
         if last_updated_time.tzinfo is not None:
             last_updated_time = last_updated_time.astimezone(datetime.timezone.utc)
         else:
@@ -48,14 +64,15 @@ async def publish_checks(nc, redis_client):
                     print(f"No keys found for prefix {prefix}")
 
                 for key in keys:
-                    key = key.decode('utf-8')  # Convert bytes to string
+                    key = key.decode('utf-8')
                     raw_data = redis_client.get(key)
                     if not raw_data:
                         continue
 
                     try:
                         data = json.loads(raw_data)
-                        if not is_stale(data):
+                        # Skip if recently checked and not user-submitted
+                        if not data.get('user_submitted', False) and not is_stale(data):
                             print(f"Skipping {key}: recently checked")
                             continue
 
@@ -66,7 +83,9 @@ async def publish_checks(nc, redis_client):
                         check_data = {
                             'type': network,
                             'host': host,
-                            'port': data.get('port', 50002 if network == 'btc' else 9067)
+                            'port': data.get('port', 50002 if network == 'btc' else 9067),
+                            'user_submitted': data.get('user_submitted', False),
+                            'check_id': data.get('check_id')
                         }
 
                         # Add version for BTC servers

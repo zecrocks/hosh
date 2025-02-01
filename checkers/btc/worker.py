@@ -96,17 +96,37 @@ async def process_check_request(nc, msg):
         host = data['host']
         port = data.get('port', 50002)
         electrum_version = data.get('version', 'unknown')
+        check_id = data.get('check_id', 'none')
+        user_submitted = data.get('user_submitted', False)
 
-        print(f"Processing check request for server: {host}")
+        print(f"📥 Received check request - host: {host}, check_id: {check_id}, user_submitted: {user_submitted}")
 
         server_data = query_server_data(host, port, electrum_version)
 
-        if server_data:  # Only update Redis if data is retrieved successfully
+        if server_data:
+            # Success case - store the data
+            server_data.update({
+                'user_submitted': user_submitted,
+                'check_id': check_id
+            })
             server_data = make_json_serializable(server_data)
             redis_client.set(f"btc:{host}", json.dumps(server_data))
-            print(f"Data for server {host} saved to Redis.")
+            print(f"✅ Data saved to Redis - host: {host}, check_id: {check_id}, user_submitted: {user_submitted}")
         else:
-            print(f"Skipping Redis update for {host} due to timeout.")
+            # Failure case - store error info
+            error_data = {
+                'host': host,
+                'port': port,
+                'height': 0,
+                'LastUpdated': datetime.datetime.utcnow().isoformat(),
+                'error': True,
+                'error_type': 'connection_failed',
+                'error_message': 'Failed to connect or timeout',
+                'user_submitted': user_submitted,
+                'check_id': check_id
+            }
+            redis_client.set(f"btc:{host}", json.dumps(error_data))
+            print(f"❌ Check failed - host: {host}, check_id: {check_id}")
 
     except Exception as e:
         print(f"Error processing message: {e}")
@@ -115,16 +135,18 @@ async def process_check_request(nc, msg):
 async def main():
     """Main function to connect to NATS and handle subscriptions."""
     try:
-        # Connect to NATS
         nc = await nats.connect(NATS_URL)
         print("Connected to NATS successfully!")
+        print(f"🎯 Subscribing to NATS subject: {NATS_SUBJECT}")
 
-        # Subscribe to `hosh.check`
         async def subscription_handler(msg):
+            print(f"🔍 Raw message received: {msg.data.decode()}")
             await process_check_request(nc, msg)
 
-        await nc.subscribe(NATS_SUBJECT, cb=subscription_handler)
-        print(f"Subscribed to {NATS_SUBJECT}")
+        # Add queue group name for load balancing
+        queue_group = "btc_checkers"
+        await nc.subscribe(NATS_SUBJECT, queue=queue_group, cb=subscription_handler)
+        print(f"Subscribed to {NATS_SUBJECT} in queue group '{queue_group}'")
 
         # Keep the event loop running
         while True:
