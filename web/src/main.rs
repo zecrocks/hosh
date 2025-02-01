@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
-use reqwest;
+use rand::Rng;
 
 fn upper(s: &str) -> askama::Result<String> {
     Ok(s.to_uppercase())
@@ -23,7 +23,7 @@ struct IndexTemplate<'a> {
     online_count: usize,
     total_count: usize,
     check_error: Option<&'a str>,
-    hcaptcha_site_key: String,
+    math_problem: (u8, u8),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -228,6 +228,7 @@ struct CheckTemplate {
     check_id: String,
     server: Option<ServerInfo>,
     network: &'static str,
+    is_public_server: bool,
 }
 
 impl CheckTemplate {
@@ -278,6 +279,14 @@ async fn network_status(
                     server_info.last_updated = None;
                     continue;  // Skip default values too
                 }
+                
+                // Skip user-submitted checks
+                if server_info.extra.get("user_submitted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false) {
+                    continue;
+                }
+                
                 servers.push(server_info);
             },
             Err(e) => {
@@ -320,6 +329,8 @@ async fn network_status(
     let online_count = servers.iter().filter(|s| s.is_online()).count();
     let total_count = servers.len();
 
+    let (num1, num2, _answer) = generate_math_problem();
+    
     let template = IndexTemplate {
         servers,
         percentile_height,
@@ -327,8 +338,7 @@ async fn network_status(
         online_count,
         total_count,
         check_error: None,
-        hcaptcha_site_key: env::var("HCAPTCHA_SITE_KEY")
-            .expect("HCAPTCHA_SITE_KEY must be set"),
+        math_problem: (num1, num2),
     };
     
     let html = template.render().map_err(|e| {
@@ -490,39 +500,8 @@ fn calculate_percentile(values: &[u64], percentile: u8) -> u64 {
 struct CheckServerForm {
     url: String,
     port: Option<u16>,
-    #[serde(rename = "h-captcha-response")]
-    captcha_response: String,
-}
-
-async fn verify_captcha(response: &str) -> Result<bool> {
-    let client = reqwest::Client::new();
-    let secret = env::var("HCAPTCHA_SECRET").expect("HCAPTCHA_SECRET must be set");
-    
-    let params = [
-        ("secret", secret),
-        ("response", response.to_string()),
-    ];
-    
-    let res = client.post("https://hcaptcha.com/siteverify")
-        .form(&params)
-        .send()
-        .await
-        .map_err(|e| {
-            eprintln!("Captcha verification error: {}", e);
-            actix_web::error::ErrorInternalServerError("Failed to verify captcha")
-        })?;
-
-    #[derive(Deserialize)]
-    struct CaptchaResponse {
-        success: bool,
-    }
-
-    let result: CaptchaResponse = res.json().await.map_err(|e| {
-        eprintln!("Captcha response parse error: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to parse captcha response")
-    })?;
-
-    Ok(result.success)
+    verification: String,
+    expected_answer: String,
 }
 
 #[post("/{network}/check")]
@@ -535,8 +514,11 @@ async fn check_server(
     let network = SafeNetwork::from_str(&network_str)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
 
-    // Verify captcha first
-    if form.captcha_response.is_empty() || !verify_captcha(&form.captcha_response).await? {
+    // Parse and verify the math answer
+    let answer: u8 = form.verification.parse().unwrap_or(0);
+    let (num1, num2, _expected) = generate_math_problem();  // We'll use this if verification fails
+    
+    if answer != form.expected_answer.parse().unwrap_or(0) {
         let servers = fetch_network_servers(&redis, network.0).await?;
         let online_count = servers.iter().filter(|s| s.is_online()).count();
         let total_count = servers.len();
@@ -554,9 +536,8 @@ async fn check_server(
             current_network: network.0,
             online_count,
             total_count,
-            check_error: Some("Please complete the captcha"),
-            hcaptcha_site_key: env::var("HCAPTCHA_SITE_KEY")
-                .expect("HCAPTCHA_SITE_KEY must be set"),
+            check_error: Some("Incorrect answer, please try again"),
+            math_problem: (num1, num2),
         };
 
         let html = template.render().map_err(|e| {
@@ -575,19 +556,34 @@ async fn check_server(
     }
 
     let check_id = Uuid::new_v4().to_string();
+    
+    // Check if this server is already in our public list
+    let mut conn = redis.get_connection().map_err(|e| {
+        eprintln!("Redis connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    })?;
+
+    let key = format!("{}:{}", network.0, &form.url);
+    let existing_server: Option<ServerInfo> = conn.get(&key)
+        .ok()
+        .and_then(|value: String| serde_json::from_str(&value).ok());
+
+    // Only set user_submitted = true if it's not already in our public list
+    let is_user_submitted = existing_server
+        .as_ref()
+        .and_then(|s| s.extra.get("user_submitted"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
     let check_request = serde_json::json!({
         "host": form.url,
         "port": form.port.unwrap_or(50002),
-        "user_submitted": true,
+        "user_submitted": is_user_submitted,  // Preserve existing status
         "check_id": check_id
     });
 
-    println!("📤 Submitting check request to NATS - network: {}, host: {}, port: {}, check_id: {}, message: {}", 
-        network.0,
-        form.url,
-        form.port.unwrap_or(50002),
-        check_id,
-        serde_json::to_string_pretty(&check_request).unwrap()
+    println!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}",
+        form.url, form.port.unwrap_or(50002), check_id
     );
 
     // Publish check request to NATS
@@ -616,7 +612,7 @@ async fn check_server(
 #[get("/check/{network}/{check_id}")]
 async fn check_result(
     redis: web::Data<redis::Client>,
-    path: web::Path<(String, String)>,  // Now captures both network and check_id
+    path: web::Path<(String, String)>,
 ) -> Result<HttpResponse> {
     let (network_str, check_id) = path.into_inner();
     let network = SafeNetwork::from_str(&network_str)
@@ -627,9 +623,10 @@ async fn check_result(
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
-    // Only search the specific network's keys
+    // First try to find the server by check_id
     let prefix = format!("{}:", network.0);
     let mut server = None;
+    let mut is_public_server = false;
 
     let keys: Vec<String> = conn.keys(format!("{}*", prefix)).map_err(|e| {
         eprintln!("Redis keys error: {}", e);
@@ -643,8 +640,17 @@ async fn check_result(
         })?;
 
         if let Ok(server_info) = serde_json::from_str::<ServerInfo>(&value) {
+            // Check if this is a check_id match
             if server_info.extra.get("check_id").and_then(|v| v.as_str()) == Some(&check_id) {
                 server = Some(server_info);
+                break;
+            }
+            
+            // If it's a public server (not user submitted) and matches the check_id as a key
+            if !server_info.extra.get("user_submitted").and_then(|v| v.as_bool()).unwrap_or(true) 
+                && key.ends_with(&check_id) {
+                server = Some(server_info);
+                is_public_server = true;
                 break;
             }
         }
@@ -654,6 +660,7 @@ async fn check_result(
         check_id,
         server,
         network: network.0,
+        is_public_server,
     };
 
     let html = template.render().map_err(|e| {
@@ -664,6 +671,14 @@ async fn check_result(
     Ok(HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(html))
+}
+
+// Add this function to generate a math problem
+fn generate_math_problem() -> (u8, u8, u8) {
+    let mut rng = rand::thread_rng();
+    let a = rng.gen_range(1..10);
+    let b = rng.gen_range(1..10);
+    (a, b, a + b)
 }
 
 #[actix_web::main]
@@ -682,10 +697,6 @@ async fn main() -> std::io::Result<()> {
 
     let redis_client = redis::Client::open(redis_url.as_str())
         .expect("Failed to create Redis client");
-
-    // No need to store these since they're accessed when needed
-    env::var("HCAPTCHA_SECRET").expect("HCAPTCHA_SECRET must be set"); // Verify it exists
-    env::var("HCAPTCHA_SITE_KEY").expect("HCAPTCHA_SITE_KEY must be set"); // Verify it exists
 
     println!("🚀 Starting server at http://0.0.0.0:8080");
 

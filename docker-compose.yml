@@ -216,13 +216,9 @@ services:
     container_name: web
     ports:
       - "8080:8080"
-    env_file:
-      - .env
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      - HCAPTCHA_SITE_KEY=${HCAPTCHA_SITE_KEY}
-      - HCAPTCHA_SECRET=${HCAPTCHA_SECRET}
     depends_on:
       redis:
         condition: service_healthy

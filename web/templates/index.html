@@ -50,87 +50,44 @@
             {{ error }}
         </div>
     {% endif %}
-    <form id="checkForm" onsubmit="return false;" class="mt-4">
+    <form id="checkForm" method="POST" action="/{{ current_network }}/check" onsubmit="return handleSubmit(event)">
         <div class="flex gap-2">
-            <input type="text" name="url" placeholder="Server URL" class="flex-grow px-3 py-2 border rounded">
-            <input type="number" name="port" placeholder="Port (optional)" class="w-32 px-3 py-2 border rounded">
-            <button type="button" onclick="showCaptcha()" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">Check</button>
+            <input type="text" 
+                   name="url" 
+                   id="urlInput"
+                   placeholder="Server URL" 
+                   class="flex-grow px-3 py-2 border rounded"
+                   onchange="handleUrlInput(this.value)">
+            <input type="number" 
+                   name="port" 
+                   id="portInput"
+                   placeholder="Port" 
+                   value="50002"
+                   class="w-32 px-3 py-2 border rounded">
         </div>
-        <!-- Hidden captcha container -->
-        <div id="captchaContainer" class="mt-2 hidden">
-            <div class="h-captcha" data-sitekey="{{ hcaptcha_site_key }}"></div>
+        <!-- Add verification field -->
+        <div class="mt-2">
+            <input type="text"
+                   name="verification"
+                   placeholder="What is {{ math_problem.0 }} + {{ math_problem.1 }}?"
+                   class="px-3 py-2 border rounded"
+                   required>
+            <!-- Add hidden field for expected answer -->
+            <input type="hidden" 
+                   name="expected_answer" 
+                   value="{{ math_problem.0 + math_problem.1 }}">
+        </div>
+        <div class="mt-2">
+            <button type="submit" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">Check</button>
         </div>
     </form>
 </div>
 
+<!-- Add back URL parsing -->
 <script>
-let hcaptchaWidget = null;
-let hcaptchaLoaded = false;
-
-// Add this function to check if hCaptcha is loaded
-function waitForHcaptcha() {
-    if (typeof hcaptcha === 'undefined') {
-        setTimeout(waitForHcaptcha, 100);
-    } else {
-        hcaptchaLoaded = true;
-    }
-}
-
-function showCaptcha() {
-    if (!hcaptchaLoaded) {
-        console.log("Waiting for hCaptcha to load...");
-        setTimeout(showCaptcha, 100);
-        return;
-    }
-
-    const container = document.getElementById('captchaContainer');
-    container.classList.remove('hidden');
-    
-    if (!hcaptchaWidget) {
-        hcaptchaWidget = hcaptcha.render('captchaContainer', {
-            sitekey: '{{ hcaptcha_site_key }}',
-            callback: onCaptchaSuccess
-        });
-    } else {
-        hcaptcha.reset(hcaptchaWidget);
-    }
-}
-
-// Start waiting for hCaptcha to load
-waitForHcaptcha();
-
-function onCaptchaSuccess(token) {
-    const form = document.getElementById('checkForm');
-    const formData = new FormData(form);
-    
-    // Create a new form for submission
-    const submitForm = document.createElement('form');
-    submitForm.method = 'POST';
-    submitForm.action = '/{{ current_network }}/check';
-    
-    // Add form fields
-    for (let [key, value] of formData.entries()) {
-        const input = document.createElement('input');
-        input.type = 'hidden';
-        input.name = key;
-        input.value = value;
-    }
-    
-    // Add captcha response
-    const captchaInput = document.createElement('input');
-    captchaInput.type = 'hidden';
-    captchaInput.name = 'h-captcha-response';
-    captchaInput.value = token;
-    submitForm.appendChild(captchaInput);
-    
-    // Submit the form
-    document.body.appendChild(submitForm);
-    submitForm.submit();
-}
-
 function handleUrlInput(value) {
-    const portInput = document.getElementById('port');
-    const urlInput = document.getElementById('url');
+    const portInput = document.getElementById('portInput');
+    const urlInput = document.getElementById('urlInput');
     
     // Check if the input contains a port number
     const match = value.match(/(.*):(\d+)$/);
@@ -143,9 +100,17 @@ function handleUrlInput(value) {
         portInput.value = port;
     }
 }
-</script>
 
-<script src="https://js.hcaptcha.com/1.0.0/hcaptcha.js" async defer></script>
+function handleSubmit(event) {
+    const urlInput = document.getElementById('urlInput');
+    if (!urlInput.value.trim()) {
+        alert('URL is required');
+        event.preventDefault();
+        return false;
+    }
+    return true;
+}
+</script>
 
 <style>
 .check-server-form {
