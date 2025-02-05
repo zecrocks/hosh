@@ -227,14 +227,22 @@ struct ApiResponse {
 struct CheckTemplate {
     check_id: String,
     server: Option<ServerInfo>,
-    network: &'static str,
+    network: String,
     is_public_server: bool,
+    checking_url: Option<String>,
+    checking_port: Option<u16>,
 }
 
 impl CheckTemplate {
     fn network_upper(network: &str) -> String {
         network.to_uppercase()
     }
+}
+
+#[derive(Deserialize)]
+struct CheckQuery {
+    host: Option<String>,
+    port: Option<u16>,
 }
 
 #[get("/")]
@@ -603,64 +611,43 @@ async fn check_server(
 
     println!("✅ Successfully published check request to NATS");
 
-    // Redirect to network-specific check result page
+    // Redirect to network-specific check result page, carrying host & port
     Ok(HttpResponse::SeeOther()
-        .insert_header(("Location", format!("/check/{}/{}", network.0, check_id)))
+        .insert_header((
+            "Location",
+            format!(
+                "/check/{}/{}?host={}&port={}",
+                network.0,
+                check_id,
+                form.url,
+                form.port.unwrap_or(50002)
+            ),
+        ))
         .finish())
 }
 
 #[get("/check/{network}/{check_id}")]
 async fn check_result(
-    redis: web::Data<redis::Client>,
     path: web::Path<(String, String)>,
+    query: web::Query<CheckQuery>,
+    redis: web::Data<redis::Client>,
 ) -> Result<HttpResponse> {
     let (network_str, check_id) = path.into_inner();
-    let network = SafeNetwork::from_str(&network_str)
-        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+    let _redis = redis;
+    let _network = network_str.clone();
 
-    let mut conn = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
-        actix_web::error::ErrorInternalServerError("Redis connection failed")
-    })?;
-
-    // First try to find the server by check_id
-    let prefix = format!("{}:", network.0);
-    let mut server = None;
-    let mut is_public_server = false;
-
-    let keys: Vec<String> = conn.keys(format!("{}*", prefix)).map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
-    })?;
-
-    for key in keys {
-        let value: String = conn.get(&key).map_err(|e| {
-            eprintln!("Redis get error for key {}: {}", key, e);
-            actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
-        })?;
-
-        if let Ok(server_info) = serde_json::from_str::<ServerInfo>(&value) {
-            // Check if this is a check_id match
-            if server_info.extra.get("check_id").and_then(|v| v.as_str()) == Some(&check_id) {
-                server = Some(server_info);
-                break;
-            }
-            
-            // If it's a public server (not user submitted) and matches the check_id as a key
-            if !server_info.extra.get("user_submitted").and_then(|v| v.as_bool()).unwrap_or(true) 
-                && key.ends_with(&check_id) {
-                server = Some(server_info);
-                is_public_server = true;
-                break;
-            }
-        }
-    }
+    let server: Option<ServerInfo> = None;
+    let is_public_server = false;
+    let checking_url = query.host.clone();
+    let checking_port = query.port;
 
     let template = CheckTemplate {
         check_id,
         server,
-        network: network.0,
+        network: network_str.clone(),
         is_public_server,
+        checking_url,
+        checking_port,
     };
 
     let html = template.render().map_err(|e| {
@@ -668,9 +655,7 @@ async fn check_result(
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
 
-    Ok(HttpResponse::Ok()
-        .content_type("text/html; charset=utf-8")
-        .body(html))
+    Ok(HttpResponse::Ok().body(html))
 }
 
 // Add this function to generate a math problem

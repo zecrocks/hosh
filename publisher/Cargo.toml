@@ -1,0 +1,20 @@
+[package]
+name = "publisher"
+version = "0.1.0"
+edition = "2021"
+authors = ["Your Name <you@example.com>"]
+description = "NATS publisher for node checks"
+
+[dependencies]
+async-nats = "0.38"
+redis = { version = "0.28", features = ["tokio-comp"] }
+tokio = { version = "1.43", features = ["full"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_with = { version = "3.12", features = ["macros", "guide"] }
+serde_json = "1.0"
+chrono = { version = "0.4", features = ["serde"] }
+dotenvy = "0.15"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+rand = "0.9"

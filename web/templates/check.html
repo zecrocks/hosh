@@ -39,14 +39,20 @@
                 </dl>
             </div>
         {% else %}
-            <p class="text-red-600">Checking server... <span class="animate-spin">⏳</span></p>
+            <p>
+                Checking server 
+                {% if let Some(url) = checking_url %}
+                    {{ url }}{% if let Some(port) = checking_port %}:{{ port }}{% endif %}
+                {% endif %}
+                <span class="animate-spin ml-2">⏳</span>
+            </p>
             <script>
                 // Refresh the page every 5 seconds until we get a result
                 setTimeout(function checkResult() {
                     fetch(window.location.href)
                         .then(response => response.text())
                         .then(html => {
-                            if (html.includes('Checking server...')) {
+                            if (html.includes('Checking server')) {
                                 // No result yet, check again in 5 seconds
                                 setTimeout(checkResult, 5000);
                             } else {
