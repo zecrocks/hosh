@@ -104,17 +104,18 @@ services:
       - default
 
   publisher:
-    build: publisher
-    image: hosh/publisher
+    build: 
+      context: ./publisher
+      dockerfile: Dockerfile
+    image: hosh/publisher-rust
     container_name: publisher
     environment:
-      CHECK_INTERVAL: "300"  # Triggers checks every 5 minutes
-      STALE_THRESHOLD_SECONDS: 120
-      NATS_URL: "nats://nats:4222"
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-    volumes:
-      - ./publisher:/app
+      - RUST_LOG=info
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - NATS_PREFIX=${NATS_PREFIX:-hosh.}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
     depends_on:
       redis:
         condition: service_healthy

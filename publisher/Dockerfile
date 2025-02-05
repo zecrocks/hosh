@@ -1,18 +1,32 @@
-FROM python:3.11-slim
+FROM rust:1.84-slim-bullseye as builder
 
-ENV PYTHONUNBUFFERED=1
+WORKDIR /usr/src/app
 
 RUN apt-get update && apt-get install -y \
-    wget \
-    redis-tools \
-    && apt-get clean \
+    pkg-config \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# Cache dependencies
+COPY Cargo.toml Cargo.lock ./
+RUN mkdir -p src && \
+    echo "fn main() {println!(\"dummy\");}" > src/main.rs && \
+    cargo build --release && \
+    rm -rf src target/release/publisher
+
+# Build real application
+COPY src ./src
+RUN touch ./src/main.rs && cargo build --release
+
+# Runtime image
+FROM debian:bullseye-slim
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
 
-COPY publisher.py .
+COPY --from=builder /usr/src/app/target/release/publisher /app/publisher
 
-CMD ["python", "publisher.py"] 
+CMD ["/app/publisher"] 
