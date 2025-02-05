@@ -36,7 +36,10 @@ pub async fn electrum_peers(Query(params): Query<PeerQueryParams>) -> Result<Jso
     let mut peers_map = serde_json::Map::new();
 
     let peers = fetch_peers(host, port).await.map_err(|e| {
-        error_response(&format!("Failed to fetch peers: {}", e))
+        error_response(
+            &format!("Failed to fetch peers: {}", e),
+            "peers_error"
+        )
     })?;
 
     for peer in peers {

@@ -42,10 +42,21 @@ fn parse_block_header(header_hex: &str) -> Result<serde_json::Value, String> {
 pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<serde_json::Value>, axum::response::Response> {
     let host = &params.url;
     let port = params.port.unwrap_or(50002);
+    
+    println!("📥 Received query request for {}:{}", host, port);  // Add request received log
+    
     let is_onion_address = host.ends_with(".onion");
 
     let (self_signed, mut stream) = try_connect(host, port).await
-        .map_err(|e| error_response(&format!("Failed to connect to {}:{} - {}", host, port, e)))?;
+        .map_err(|e| {
+            if e.contains("Failed to connect to .onion via Tor") {
+                error_response(&format!("Failed to connect to {}:{} - {}", host, port, e), "tor_error")
+            } else if e.contains("connection refused") || e.contains("Host unreachable") {
+                error_response(&format!("Failed to connect to {}:{} - {}", host, port, e), "host_unreachable")
+            } else {
+                error_response(&format!("Failed to connect to {}:{} - {}", host, port, e), "connection_error")
+            }
+        })?;
 
     // Get server version first
     let version = match send_electrum_request(&mut stream, "server.version", vec![
@@ -83,12 +94,18 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
         "Plaintext"
     };
 
-    let resolved_ips = match tokio::net::lookup_host(format!("{}:{}", host, port)).await {
-        Ok(addrs) => addrs.map(|addr| addr.ip().to_string()).collect::<Vec<String>>(),
-        Err(e) => {
-            eprintln!("Failed to resolve {}:{} - {}", host, port, e);
-            vec![]
+    let resolved_ips = if !is_onion_address {
+        // Only attempt DNS lookup for non-.onion addresses
+        match tokio::net::lookup_host(format!("{}:{}", host, port)).await {
+            Ok(addrs) => addrs.map(|addr| addr.ip().to_string()).collect::<Vec<String>>(),
+            Err(e) => {
+                eprintln!("Failed to resolve {}:{} - {}", host, port, e);
+                vec![]
+            }
         }
+    } else {
+        // Skip DNS lookup for .onion addresses
+        vec![]
     };
 
     let start_time = std::time::Instant::now(); // ✅ Start timing the request
@@ -131,10 +148,10 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
                     }
                     Err(e) => {
                         eprintln!("Failed to parse block header: {}", e);
-                        return Err(error_response(&format!(
-                            "Failed to parse block header for {}:{} - {}",
-                            host, port, e
-                        )));
+                        return Err(error_response(
+                            &format!("Failed to parse block header for {}:{} - {}", host, port, e),
+                            "parse_error"
+                        ));
                     }
                 }
             }
@@ -155,7 +172,10 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
         },
         Err(e) => {
             eprintln!("Error calling blockchain.headers.subscribe: {}", e);
-            Err(error_response(&format!("Failed to query headers for {}:{} - {}", host, port, e)))
+            Err(error_response(
+                &format!("Failed to query headers for {}:{} - {}", host, port, e),
+                "protocol_error"
+            ))
         }
     }
 }

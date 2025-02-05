@@ -37,22 +37,54 @@ def make_json_serializable(data):
 def query_server_data(host, port=50002, electrum_version="unknown"):
     """Query the Electrum server for block header information."""
     url = f"{BTC_WORKER}/electrum/query"
+    
+    print(f"📡 Sending request to {url} for host {host}")
+    
     params = {
         "url": host,
         "method": "blockchain.headers.subscribe",
         "port": port
     }
 
-    response = requests.get(url, params=params, timeout=10)
-    if response.status_code != 200:
-        raise Exception(f"HTTP {response.status_code}")
+    try:
+        response = requests.get(url, params=params, timeout=30)
+        if response.status_code == 400:
+            error_data = response.json()
+            error_type = error_data.get('error_type', 'unknown')
+            
+            # Only treat actual connection errors as server failures
+            if error_type in ['host_unreachable', 'connection_error', 'protocol_error']:
+                print(f"🔴 Server error for {host}: {error_data['error']}")
+                return {
+                    "host": host,
+                    "port": port,
+                    "height": 0,
+                    "server_version": electrum_version,
+                    "LastUpdated": datetime.datetime.utcnow().isoformat(),
+                    "error": True,
+                    "error_type": error_type,
+                    "error_message": error_data['error']
+                }
+            else:
+                # For other errors (like btc-backend timeouts), skip update
+                print(f"⚠️ Backend error for {host}: {error_data['error']}")
+                return None
+                
+        response.raise_for_status()
+    except requests.Timeout:
+        print(f"⏰ Backend timeout while querying {host}")
+        return None  # Skip update for backend timeouts
+    except requests.RequestException as e:
+        print(f"💥 Backend error when querying {host}: {e}")
+        return None
 
     data = response.json()
     data.update({
         "host": host,
         "port": port,
         "electrum_version": electrum_version,
-        "LastUpdated": datetime.datetime.utcnow().isoformat()
+        "LastUpdated": datetime.datetime.utcnow().isoformat(),
+        "error": False  # Explicitly mark successful responses
     })
     return data
 
@@ -67,17 +99,14 @@ async def process_check_request(nc, msg):
 
         print(f"Processing check request for server: {host}")
 
-        try:
-            # Query server and prepare data
-            server_data = query_server_data(host, port, electrum_version)
-            server_data = make_json_serializable(server_data)
+        server_data = query_server_data(host, port, electrum_version)
 
-            # Save to Redis
+        if server_data:  # Only update Redis if data is retrieved successfully
+            server_data = make_json_serializable(server_data)
             redis_client.set(f"btc:{host}", json.dumps(server_data))
             print(f"Data for server {host} saved to Redis.")
-
-        except Exception as e:
-            print(f"Error processing server {host}: {e}")
+        else:
+            print(f"Skipping Redis update for {host} due to timeout.")
 
     except Exception as e:
         print(f"Error processing message: {e}")
@@ -111,4 +140,4 @@ async def main():
 
 
 if __name__ == "__main__":
-    asyncio.run(main()) 
+    asyncio.run(main())

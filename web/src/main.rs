@@ -193,9 +193,14 @@ async fn network_status(
 
         match serde_json::from_str::<ServerInfo>(&value) {
             Ok(mut server_info) => {
-                // Check if `last_updated` is the default value
+                // Skip servers without LastChecked
+                if server_info.last_updated.is_none() {
+                    continue;
+                }
+                // Check if `last_updated` is the default value and convert to None
                 if server_info.last_updated == Some("0001-01-01T00:00:00".to_string()) {
                     server_info.last_updated = None;
+                    continue;  // Skip default values too
                 }
                 servers.push(server_info);
             },
