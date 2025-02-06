@@ -11,6 +11,8 @@ use tokio::task;
 struct CheckRequest {
     host: String,
     port: u16,
+    check_id: Option<String>,
+    user_submitted: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -23,6 +25,8 @@ struct CheckResult {
     #[serde(rename = "LastUpdated")]
     last_updated: DateTime<Utc>,
     ping: f64,
+    check_id: Option<String>,
+    user_submitted: Option<bool>,
 }
 
 #[tokio::main]
@@ -101,6 +105,8 @@ async fn main() -> Result<(), Box<dyn Error>> {
             error,
             last_updated: Utc::now(),
             ping,
+            check_id: check_request.check_id,
+            user_submitted: check_request.user_submitted,
         };
 
         if let Ok(result_json) = serde_json::to_string(&result) {

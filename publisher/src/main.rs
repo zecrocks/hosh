@@ -46,6 +46,25 @@ where
     }
 }
 
+// Add this new function near your other deserializers
+fn deserialize_datetime<'de, D>(deserializer: D) -> Result<Option<DateTime<Utc>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    let s: String = Deserialize::deserialize(deserializer)?;
+    
+    // Handle the "zero" datetime case
+    if s == "0001-01-01T00:00:00" {
+        return Ok(None);
+    }
+    
+    // Try to parse the datetime
+    match DateTime::parse_from_rfc3339(&s) {
+        Ok(dt) => Ok(Some(dt.with_timezone(&Utc))),
+        Err(_) => Ok(None),  // Return None for any parsing errors
+    }
+}
+
 const DEFAULT_REFRESH_INTERVAL: u64 = 300;
 const DEFAULT_NATS_PREFIX: &str = "hosh.";
 const DEFAULT_REDIS_PORT: u16 = 6379;
@@ -63,7 +82,15 @@ struct ServerData {
     #[serde(rename = "electrum_version", default, deserialize_with = "int_or_string")]
     electrum_version: Option<String>,
 
+    // Make LastUpdated optional and use a custom deserializer
+    #[serde(rename = "LastUpdated", default, deserialize_with = "deserialize_datetime")]
     last_updated: Option<DateTime<Utc>>,
+
+    #[serde(default)]
+    user_submitted: bool,
+
+    #[serde(default)]  // Make check_id optional with a default
+    check_id: Option<String>,
 }
 
 #[derive(Debug)]
@@ -111,14 +138,25 @@ impl Config {
 }
 
 fn is_stale(data: &ServerData, stale_duration: Duration) -> bool {
-    match data.last_updated {
-        Some(updated) => {
-            let now = Utc::now();
-            let stale_time = updated + chrono::Duration::from_std(stale_duration).unwrap();
-            now > stale_time
+    let last_updated = match data.last_updated {
+        Some(updated) => updated,
+        None => return true,
+    };
+
+    let now = Utc::now();
+
+    // Special handling for user submitted entries
+    if data.user_submitted {
+        let age = now.signed_duration_since(last_updated);
+        if age.num_seconds() < 60 {  // Skip if checked within last minute
+            tracing::debug!("Skipping recently user-submitted check ({}s ago)", age.num_seconds());
+            return false;
         }
-        None => true,
     }
+
+    // Normal staleness check
+    let stale_time = last_updated + chrono::Duration::from_std(stale_duration).unwrap();
+    now > stale_time
 }
 
 fn network_from_key(key: &str) -> &str {
@@ -150,9 +188,13 @@ async fn publish_checks(
         interval.tick().await;
         
         for prefix in PREFIXES {
-            let keys: Vec<String> = redis.keys(format!("{prefix}*"))
-                .await
-                .context("Failed to get Redis keys")?;
+            let keys: Vec<String> = match redis.keys(format!("{prefix}*")).await {
+                Ok(keys) => keys,
+                Err(e) => {
+                    tracing::error!("Failed to get Redis keys for prefix {}: {}", prefix, e);
+                    continue;
+                }
+            };
 
             if keys.is_empty() {
                 tracing::info!("No keys found for prefix {prefix}");
@@ -160,12 +202,26 @@ async fn publish_checks(
             }
 
             for key in keys {
-                let raw_data: String = redis.get(&key)
-                    .await
-                    .with_context(|| format!("Failed to get key {key}"))?;
+                let raw_data: String = match redis.get(&key).await {
+                    Ok(data) => data,
+                    Err(e) => {
+                        tracing::error!("Failed to get Redis data for key {}: {}", key, e);
+                        continue;
+                    }
+                };
 
-                let data: ServerData = serde_json::from_str(&raw_data)
-                    .with_context(|| format!("Invalid JSON for key {key}"))?;
+                // Log the raw data when it's corrupted
+                if let Err(e) = serde_json::from_str::<ServerData>(&raw_data) {
+                    tracing::error!(
+                        "Invalid JSON for key {}: {}\nRaw data: {:?}",
+                        key, 
+                        e,
+                        raw_data
+                    );
+                    continue;
+                }
+
+                let data: ServerData = serde_json::from_str(&raw_data).unwrap(); // Safe because we checked above
 
                 if !is_stale(&data, config.refresh_interval) {
                     tracing::debug!(%key, "Skipping recently checked server");
@@ -185,19 +241,24 @@ async fn publish_checks(
                         "type": network,
                         "host": host,
                         "port": port,
-                        "version": data.version.as_deref().or(data.electrum_version.as_deref()).unwrap_or("unknown")
+                        "version": data.version.as_deref().or(data.electrum_version.as_deref()).unwrap_or("unknown"),
+                        "user_submitted": data.user_submitted,
+                        "check_id": data.check_id
                     }),
                     "zec" => serde_json::json!({
                         "type": network,
                         "host": host,
-                        "port": port
+                        "port": port,
+                        "user_submitted": data.user_submitted,
+                        "check_id": data.check_id
                     }),
                     _ => continue,
                 };
 
-                nats.publish(subject.clone(), message.to_string().into())
-                    .await
-                    .with_context(|| format!("Failed to publish message for {key}"))?;
+                if let Err(e) = nats.publish(subject.clone(), message.to_string().into()).await {
+                    tracing::error!("Failed to publish message for {}: {}", key, e);
+                    continue;
+                }
 
                 tracing::info!(%key, %subject, "Published check request");
             }
