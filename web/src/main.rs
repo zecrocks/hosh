@@ -633,13 +633,66 @@ async fn check_result(
     redis: web::Data<redis::Client>,
 ) -> Result<HttpResponse> {
     let (network_str, check_id) = path.into_inner();
-    let _redis = redis;
-    let _network = network_str.clone();
 
-    let server: Option<ServerInfo> = None;
-    let is_public_server = false;
+    // Start with the query-based host/port
     let checking_url = query.host.clone();
     let checking_port = query.port;
+
+    // We'll actually fetch from Redis to see if the checker wrote any data
+    let mut conn = redis.get_connection().map_err(|e| {
+        eprintln!("Redis connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    })?;
+
+    let prefix = format!("{}:", network_str);
+    let keys: Vec<String> = conn.keys(format!("{}*", prefix)).map_err(|e| {
+        eprintln!("Redis keys error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
+    })?;
+
+    // We'll store the discovered server info here if we find a match
+    let mut server: Option<ServerInfo> = None;
+    let mut is_public_server = false;
+
+    for key in keys {
+        // Grab the JSON
+        let value: String = conn.get(&key).map_err(|e| {
+            eprintln!("Redis get error for key {}: {}", key, e);
+            actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
+        })?;
+
+        // Attempt to parse JSON into your ServerInfo
+        if let Ok(server_info) = serde_json::from_str::<ServerInfo>(&value) {
+            // Check if this key has the right check_id
+            let has_check_id = server_info
+                .extra
+                .get("check_id")
+                .and_then(|v| v.as_str())
+                .map(|c| c == check_id)
+                .unwrap_or(false);
+
+            if has_check_id {
+                // If found a matching check_id, we use that data
+                server = Some(server_info);
+                break;
+            }
+
+            // Otherwise, you might optionally check other conditions
+            // e.g. if it's a public server with a matching suffix
+            let user_submitted = server_info
+                .extra
+                .get("user_submitted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            if !user_submitted && key.ends_with(&check_id) {
+                // Mark it as "public"
+                is_public_server = true;
+                server = Some(server_info);
+                break;
+            }
+        }
+    }
 
     let template = CheckTemplate {
         check_id,
