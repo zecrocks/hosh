@@ -594,15 +594,19 @@ async fn check_server(
         form.url, form.port.unwrap_or(50002), check_id
     );
 
-    // Publish check request to NATS
     let nats = nats::connect("nats://nats:4222").map_err(|e| {
         eprintln!("NATS connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to connect to NATS")
     })?;
 
-    // Add debug logging for NATS publish
-    let subject = format!("hosh.check.{}", network.0);
+    // Use different subjects for BTC vs ZEC
+    let subject = match network.0 {
+        "btc" => format!("hosh.check.btc.user"),  // BTC still uses separate user queue
+        "zec" => format!("hosh.check.zec"),       // ZEC uses single queue for all checks
+        _ => unreachable!("Invalid network"),
+    };
     println!("📤 Publishing to NATS subject: {}", subject);
+    
     nats.publish(&subject, &serde_json::to_vec(&check_request).unwrap())
         .map_err(|e| {
             eprintln!("NATS publish error: {}", e);
