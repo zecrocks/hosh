@@ -28,9 +28,12 @@ struct ServerData {
     host: String,
     port: u16,
     height: u64,
+    #[serde(rename = "server_version")]
     electrum_version: String,
     #[serde(rename = "LastUpdated")]
     last_updated: chrono::DateTime<chrono::Utc>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ping: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -89,7 +92,6 @@ impl Worker {
                     "merkle_root": data["merkle_root"],
                     "method_used": data["method_used"],
                     "nonce": data["nonce"],
-                    "ping": data["ping"],
                     "prev_block": data["prev_block"],
                     "resolved_ips": data["resolved_ips"],
                     "self_signed": data["self_signed"],
@@ -109,6 +111,7 @@ impl Worker {
                         .unwrap_or(&request.version)
                         .to_string(),
                     last_updated: chrono::Utc::now(),
+                    ping: data.get("ping").and_then(|v| v.as_f64()),
                     error: None,
                     error_type: None,
                     error_message: None,
@@ -125,6 +128,7 @@ impl Worker {
                     height: 0,
                     electrum_version: request.version.clone(),
                     last_updated: chrono::Utc::now(),
+                    ping: None,
                     error: Some("Failed to connect".to_string()),
                     error_type: Some("connection_error".to_string()),
                     error_message: Some(format!("Failed to query server: {:?}", error_response)),
