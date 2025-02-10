@@ -1,20 +1,29 @@
 use std::env;
 use std::collections::HashMap;
-use actix_web::{get, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
+use actix_web::{get, post, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
 use actix_files as fs;
 use askama::Template;
 use redis::Commands;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use chrono::{DateTime, Utc, FixedOffset};
+use uuid::Uuid;
+use rand::Rng;
+
+fn upper(s: &str) -> askama::Result<String> {
+    Ok(s.to_uppercase())
+}
 
 #[derive(Template)]
 #[template(path = "index.html")]
-struct IndexTemplate {
+struct IndexTemplate<'a> {
     servers: Vec<ServerInfo>,
     percentile_height: u64,
     current_network: &'static str,
     online_count: usize,
     total_count: usize,
+    check_error: Option<&'a str>,
+    math_problem: (u8, u8),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -36,6 +45,12 @@ struct ServerInfo {
 
     #[serde(default)]
     server_version: Option<String>,
+
+    #[serde(default)]
+    error: Option<bool>,
+
+    #[serde(default)]
+    error_time: Option<String>,
 
     #[serde(flatten)]
     extra: HashMap<String, serde_json::Value>,
@@ -70,12 +85,59 @@ impl ServerInfo {
     }
 
     fn formatted_last_updated(&self) -> String {
-        self.last_updated.clone().unwrap_or_else(|| "".to_string())
+        if let Some(last_updated) = &self.last_updated {
+            // Try parsing with DateTime::parse_from_rfc3339 first
+            let parsed_time = DateTime::parse_from_rfc3339(last_updated)
+                // If that fails, try parsing as a naive datetime and assume UTC
+                .or_else(|_| {
+                    DateTime::parse_from_rfc3339(&format!("{}Z", last_updated))
+                })
+                .or_else(|_| {
+                    // Parse as naive datetime and convert to UTC
+                    chrono::NaiveDateTime::parse_from_str(last_updated, "%Y-%m-%dT%H:%M:%S%.f")
+                        .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
+                        .map(|dt| dt.with_timezone(&FixedOffset::east_opt(0).unwrap()))
+                });
+
+            if let Ok(time) = parsed_time {
+                let now = Utc::now().with_timezone(time.offset());
+                let duration = now.signed_duration_since(time);
+
+                let total_seconds = duration.num_seconds();
+                if total_seconds < 0 {
+                    return "Just now".to_string();
+                }
+
+                if total_seconds < 60 {
+                    return format!("{}s", total_seconds);
+                }
+
+                let minutes = total_seconds / 60;
+                if minutes < 60 {
+                    let seconds = total_seconds % 60;
+                    return format!("{}m {}s", minutes, seconds);
+                }
+
+                let hours = minutes / 60;
+                if hours < 24 {
+                    let mins = minutes % 60;
+                    return format!("{}h {}m", hours, mins);
+                }
+
+                let days = hours / 24;
+                let hrs = hours % 24;
+                format!("{}d {}h", days, hrs)
+            } else {
+                format!("Invalid time: {}", last_updated)  // Include the timestamp for debugging
+            }
+        } else {
+            "Never".to_string()
+        }
     }
 
     // TODO: Show status based on something other than height
     fn is_online(&self) -> bool {
-        self.height > 0
+        !self.error.unwrap_or(false) && self.height > 0
     }
 
     fn is_height_behind(&self, percentile_height: &u64) -> bool {
@@ -160,6 +222,29 @@ struct ApiResponse {
     servers: Vec<ApiServerInfo>
 }
 
+#[derive(Template)]
+#[template(path = "check.html")]
+struct CheckTemplate {
+    check_id: String,
+    server: Option<ServerInfo>,
+    network: String,
+    is_public_server: bool,
+    checking_url: Option<String>,
+    checking_port: Option<u16>,
+}
+
+impl CheckTemplate {
+    fn network_upper(network: &str) -> String {
+        network.to_uppercase()
+    }
+}
+
+#[derive(Deserialize)]
+struct CheckQuery {
+    host: Option<String>,
+    port: Option<u16>,
+}
+
 #[get("/")]
 async fn root() -> Result<Redirect> {
     Ok(Redirect::to("/zec"))
@@ -202,6 +287,14 @@ async fn network_status(
                     server_info.last_updated = None;
                     continue;  // Skip default values too
                 }
+                
+                // Skip user-submitted checks
+                if server_info.extra.get("user_submitted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false) {
+                    continue;
+                }
+                
                 servers.push(server_info);
             },
             Err(e) => {
@@ -244,12 +337,16 @@ async fn network_status(
     let online_count = servers.iter().filter(|s| s.is_online()).count();
     let total_count = servers.len();
 
-    let template = IndexTemplate { 
+    let (num1, num2, _answer) = generate_math_problem();
+    
+    let template = IndexTemplate {
         servers,
         percentile_height,
         current_network: network.0,
         online_count,
         total_count,
+        check_error: None,
+        math_problem: (num1, num2),
     };
     
     let html = template.render().map_err(|e| {
@@ -264,7 +361,7 @@ async fn network_status(
 
 #[get("/{network}/{host}")]
 async fn server_detail(
-    redis: web::Data<redis::Client>,
+    _redis: web::Data<redis::Client>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse> {
     let (network, host) = path.into_inner();
@@ -273,7 +370,7 @@ async fn server_detail(
     
     let key = format!("{}:{}", network, host);
     
-    let mut conn = redis.get_connection().map_err(|e| {
+    let mut conn = _redis.get_connection().map_err(|e| {
         eprintln!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
@@ -407,6 +504,225 @@ fn calculate_percentile(values: &[u64], percentile: u8) -> u64 {
     sorted[index]
 }
 
+#[derive(Deserialize)]
+struct CheckServerForm {
+    url: String,
+    port: Option<u16>,
+    verification: String,
+    expected_answer: String,
+}
+
+#[post("/{network}/check")]
+async fn check_server(
+    redis: web::Data<redis::Client>,
+    network: web::Path<String>,
+    form: web::Form<CheckServerForm>,
+) -> Result<HttpResponse> {
+    let network_str = network.into_inner();
+    let network = SafeNetwork::from_str(&network_str)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+
+    // Parse and verify the math answer
+    let answer: u8 = form.verification.parse().unwrap_or(0);
+    let (num1, num2, _expected) = generate_math_problem();  // We'll use this if verification fails
+    
+    if answer != form.expected_answer.parse().unwrap_or(0) {
+        let servers = fetch_network_servers(&redis, network.0).await?;
+        let online_count = servers.iter().filter(|s| s.is_online()).count();
+        let total_count = servers.len();
+        let percentile_height = calculate_percentile(
+            &servers.iter()
+                .filter(|s| s.height > 0)
+                .map(|s| s.height)
+                .collect::<Vec<_>>(), 
+            90
+        );
+
+        let template = IndexTemplate {
+            servers,
+            percentile_height,
+            current_network: network.0,
+            online_count,
+            total_count,
+            check_error: Some("Incorrect answer, please try again"),
+            math_problem: (num1, num2),
+        };
+
+        let html = template.render().map_err(|e| {
+            eprintln!("Template rendering error: {}", e);
+            actix_web::error::ErrorInternalServerError("Template rendering failed")
+        })?;
+
+        return Ok(HttpResponse::BadRequest()
+            .content_type("text/html; charset=utf-8")
+            .body(html));
+    }
+
+    // Validate form data
+    if form.url.is_empty() {
+        return Ok(HttpResponse::BadRequest().body("URL is required"));
+    }
+
+    let check_id = Uuid::new_v4().to_string();
+    
+    // Check if this server is already in our public list
+    let mut conn = redis.get_connection().map_err(|e| {
+        eprintln!("Redis connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    })?;
+
+    let key = format!("{}:{}", network.0, &form.url);
+    let existing_server: Option<ServerInfo> = conn.get(&key)
+        .ok()
+        .and_then(|value: String| serde_json::from_str(&value).ok());
+
+    // Only set user_submitted = true if it's not already in our public list
+    let is_user_submitted = existing_server
+        .as_ref()
+        .and_then(|s| s.extra.get("user_submitted"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(true);
+
+    let check_request = serde_json::json!({
+        "host": form.url,
+        "port": form.port.unwrap_or(50002),
+        "user_submitted": is_user_submitted,  // Preserve existing status
+        "check_id": check_id
+    });
+
+    println!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}",
+        form.url, form.port.unwrap_or(50002), check_id
+    );
+
+    let nats = nats::connect("nats://nats:4222").map_err(|e| {
+        eprintln!("NATS connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to connect to NATS")
+    })?;
+
+    // Use different subjects for BTC vs ZEC
+    let subject = match network.0 {
+        "btc" => format!("hosh.check.btc.user"),  // BTC still uses separate user queue
+        "zec" => format!("hosh.check.zec"),       // ZEC uses single queue for all checks
+        _ => unreachable!("Invalid network"),
+    };
+    println!("📤 Publishing to NATS subject: {}", subject);
+    
+    nats.publish(&subject, &serde_json::to_vec(&check_request).unwrap())
+        .map_err(|e| {
+            eprintln!("NATS publish error: {}", e);
+            actix_web::error::ErrorInternalServerError("Failed to publish check request")
+        })?;
+
+    println!("✅ Successfully published check request to NATS");
+
+    // Redirect to network-specific check result page, carrying host & port
+    Ok(HttpResponse::SeeOther()
+        .insert_header((
+            "Location",
+            format!(
+                "/check/{}/{}?host={}&port={}",
+                network.0,
+                check_id,
+                form.url,
+                form.port.unwrap_or(50002)
+            ),
+        ))
+        .finish())
+}
+
+#[get("/check/{network}/{check_id}")]
+async fn check_result(
+    path: web::Path<(String, String)>,
+    query: web::Query<CheckQuery>,
+    redis: web::Data<redis::Client>,
+) -> Result<HttpResponse> {
+    let (network_str, check_id) = path.into_inner();
+
+    // Start with the query-based host/port
+    let checking_url = query.host.clone();
+    let checking_port = query.port;
+
+    // We'll actually fetch from Redis to see if the checker wrote any data
+    let mut conn = redis.get_connection().map_err(|e| {
+        eprintln!("Redis connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    })?;
+
+    let prefix = format!("{}:", network_str);
+    let keys: Vec<String> = conn.keys(format!("{}*", prefix)).map_err(|e| {
+        eprintln!("Redis keys error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
+    })?;
+
+    // We'll store the discovered server info here if we find a match
+    let mut server: Option<ServerInfo> = None;
+    let mut is_public_server = false;
+
+    for key in keys {
+        // Grab the JSON
+        let value: String = conn.get(&key).map_err(|e| {
+            eprintln!("Redis get error for key {}: {}", key, e);
+            actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
+        })?;
+
+        // Attempt to parse JSON into your ServerInfo
+        if let Ok(server_info) = serde_json::from_str::<ServerInfo>(&value) {
+            // Check if this key has the right check_id
+            let has_check_id = server_info
+                .extra
+                .get("check_id")
+                .and_then(|v| v.as_str())
+                .map(|c| c == check_id)
+                .unwrap_or(false);
+
+            if has_check_id {
+                // If found a matching check_id, we use that data
+                server = Some(server_info);
+                break;
+            }
+
+            // Otherwise, you might optionally check other conditions
+            // e.g. if it's a public server with a matching suffix
+            let user_submitted = server_info
+                .extra
+                .get("user_submitted")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true);
+
+            if !user_submitted && key.ends_with(&check_id) {
+                // Mark it as "public"
+                is_public_server = true;
+                server = Some(server_info);
+                break;
+            }
+        }
+    }
+
+    let template = CheckTemplate {
+        check_id,
+        server,
+        network: network_str.clone(),
+        is_public_server,
+        checking_url,
+        checking_port,
+    };
+
+    let html = template.render().map_err(|e| {
+        eprintln!("Template rendering error: {}", e);
+        actix_web::error::ErrorInternalServerError("Template rendering failed")
+    })?;
+
+    Ok(HttpResponse::Ok().body(html))
+}
+
+// Add this function to generate a math problem
+fn generate_math_problem() -> (u8, u8, u8) {
+    let mut rng = rand::thread_rng();
+    let a = rng.gen_range(1..10);
+    let b = rng.gen_range(1..10);
+    (a, b, a + b)
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| {
@@ -434,6 +750,8 @@ async fn main() -> std::io::Result<()> {
             .service(network_status)
             .service(server_detail)
             .service(network_api)
+            .service(check_server)
+            .service(check_result)
     })
     .bind("0.0.0.0:8080")?
     .run()

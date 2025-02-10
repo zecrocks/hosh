@@ -43,6 +43,114 @@
     </div>
 </div>
 
+<div class="check-server-form">
+    <h3>Check Custom Server</h3>
+    {% if let Some(error) = check_error %}
+        <div class="text-red-600 mb-4">
+            {{ error }}
+        </div>
+    {% endif %}
+    <form id="checkForm" method="POST" action="/{{ current_network }}/check" onsubmit="return handleSubmit(event)">
+        <div class="flex gap-2">
+            <input type="text" 
+                   name="url" 
+                   id="urlInput"
+                   placeholder="Server URL" 
+                   class="flex-grow px-3 py-2 border rounded"
+                   onchange="handleUrlInput(this.value)">
+            <input type="number" 
+                   name="port" 
+                   id="portInput"
+                   placeholder="Port" 
+                   value="50002"
+                   class="w-32 px-3 py-2 border rounded">
+        </div>
+        <!-- Add verification field -->
+        <div class="mt-2">
+            <input type="text"
+                   name="verification"
+                   placeholder="What is {{ math_problem.0 }} + {{ math_problem.1 }}?"
+                   class="px-3 py-2 border rounded"
+                   required>
+            <!-- Add hidden field for expected answer -->
+            <input type="hidden" 
+                   name="expected_answer" 
+                   value="{{ math_problem.0 + math_problem.1 }}">
+        </div>
+        <div class="mt-2">
+            <button type="submit" class="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600">Check</button>
+        </div>
+    </form>
+</div>
+
+<!-- Add back URL parsing -->
+<script>
+function handleUrlInput(value) {
+    const portInput = document.getElementById('portInput');
+    const urlInput = document.getElementById('urlInput');
+    
+    // Check if the input contains a port number
+    const match = value.match(/(.*):(\d+)$/);
+    if (match) {
+        // Extract the host and port
+        const [_, host, port] = match;
+        // Update the URL field with just the host
+        urlInput.value = host;
+        // Update the port field
+        portInput.value = port;
+    }
+}
+
+function handleSubmit(event) {
+    const urlInput = document.getElementById('urlInput');
+    if (!urlInput.value.trim()) {
+        alert('URL is required');
+        event.preventDefault();
+        return false;
+    }
+    return true;
+}
+</script>
+
+<style>
+.check-server-form {
+    margin: 2em 0;
+    padding: 1em;
+    background: #f5f5f5;
+    border-radius: 4px;
+}
+
+.form-group {
+    margin-bottom: 1em;
+}
+
+.form-group label {
+    display: block;
+    margin-bottom: 0.5em;
+}
+
+.form-group input {
+    padding: 0.5em;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    width: 100%;
+    max-width: 300px;
+}
+
+button[type="submit"] {
+    background: #4CAF50;
+    color: white;
+    padding: 0.5em 1em;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+}
+
+button[type="submit"]:hover {
+    background: #45a049;
+}
+</style>
+
 <div class="text-center mt-4">
     <a href="/api/v0/{{ current_network }}.json">JSON API ({{ current_network|upper }})</a>
     <div class="mt-4">
