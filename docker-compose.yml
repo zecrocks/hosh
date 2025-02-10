@@ -19,8 +19,6 @@ services:
   btc-backend:
     build: ./checkers/btc
     image: hosh/btc-backend
-    deploy:
-      replicas: 3
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
       interval: 5s
@@ -38,14 +36,13 @@ services:
       TOR_PROXY_PORT: 9050
       RUN_MODE: server
 
-  # Rust BTC Backend Workers (replacing checker-btc)
-  btc-worker:
+  # Rust BTC Backend Workers
+  checker-btc:
     build: ./checkers/btc
     image: hosh/btc-backend
-    deploy:
-      replicas: 3
     environment:
       RUN_MODE: worker
+      MAX_CONCURRENT_CHECKS: 1
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
@@ -60,12 +57,13 @@ services:
       tor:
         condition: service_healthy
 
-  # Rust BTC Backend User Worker (replacing checker-btc-user)
-  btc-worker-user:
+  # Rust BTC Backend User Worker
+  checker-btc-user:
     build: ./checkers/btc
     image: hosh/btc-backend
     environment:
       RUN_MODE: worker
+      MAX_CONCURRENT_CHECKS: 1
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
@@ -79,33 +77,6 @@ services:
         condition: service_healthy
       tor:
         condition: service_healthy
-
-  # # Python BTC Backend - uncomment to use
-  # btc-backend-py:
-  #   build: contrib/btc-backend-py
-  #   image: hosh/btc-backend-py
-  #   # Same name as the Rust backend to maintain internal DNS
-  #   container_name: btc-backend-py
-  #   healthcheck:
-  #     test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:5000/healthz"]
-  #     interval: 5s
-  #     timeout: 3s
-  #     retries: 5
-  #   volumes:
-  #     - btc-data:/root/.electrum
-  #     - ./contrib/btc-backend-py/api.py:/electrum/api.py
-  #   profiles:
-  #     - disabled
-  #   ports:
-  #     - "5000:5000"
-  #   depends_on:
-  #     nats:
-  #       condition: service_healthy
-  #     tor:
-  #       condition: service_healthy
-  #   environment:
-  #     TOR_PROXY_HOST: tor
-  #     TOR_PROXY_PORT: 9050
 
   dashboard:
     build: contrib/dashboard
@@ -139,28 +110,28 @@ services:
       btc-backend:
         condition: service_healthy
 
-  # publisher:
-  #   build: 
-  #     context: ./publisher
-  #     dockerfile: Dockerfile
-  #   image: hosh/publisher-rust
-  #   container_name: publisher
-  #   environment:
-  #     - RUST_LOG=info
-  #     - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
-  #     - NATS_URL=${NATS_URL:-nats://nats:4222}
-  #     - NATS_PREFIX=${NATS_PREFIX:-hosh.}
-  #     - REDIS_HOST=${REDIS_HOST:-redis}
-  #     - REDIS_PORT=${REDIS_PORT:-6379}
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
-  #     nats:
-  #       condition: service_healthy
-  #     checker-btc:
-  #       condition: service_started
-  #     checker-zec:
-  #       condition: service_started
+  publisher:
+    build: 
+      context: ./publisher
+      dockerfile: Dockerfile
+    image: hosh/publisher-rust
+    container_name: publisher
+    environment:
+      - RUST_LOG=info
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - NATS_PREFIX=${NATS_PREFIX:-hosh.}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      btc-backend:
+        condition: service_healthy
+      checker-zec:
+        condition: service_started
 
   checker-zec:
     build: checkers/zec

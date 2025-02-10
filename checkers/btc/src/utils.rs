@@ -8,11 +8,29 @@ use openssl::x509::X509StoreContextRef;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use std::env;
 use serde_json::json;
+use tokio::time::timeout;
+use std::time::Duration;
 
 
 pub enum ElectrumStream {
     Plain(TcpStream),
     Ssl(SslStream<TcpStream>),
+}
+
+impl ElectrumStream {
+    async fn read(&mut self, buf: &mut [u8]) -> Result<usize, std::io::Error> {
+        match self {
+            ElectrumStream::Plain(tcp) => tcp.read(buf).await,
+            ElectrumStream::Ssl(ssl) => ssl.read(buf).await,
+        }
+    }
+
+    async fn write_all(&mut self, buf: &[u8]) -> Result<(), std::io::Error> {
+        match self {
+            ElectrumStream::Plain(tcp) => tcp.write_all(buf).await,
+            ElectrumStream::Ssl(ssl) => ssl.write_all(buf).await,
+        }
+    }
 }
 
 pub async fn try_connect(
@@ -115,43 +133,49 @@ pub async fn send_electrum_request(
     });
 
     let request_str = serde_json::to_string(&request).unwrap() + "\n";
+    println!("📤 Sending request: {}", request_str.trim());
 
-    match stream {
-        ElectrumStream::Plain(tcp_stream) => {
-            tcp_stream.write_all(request_str.as_bytes()).await.map_err(|e| {
-                format!("❌ Failed to send request (plaintext) - {}", e)
-            })?;
-        }
-        ElectrumStream::Ssl(ssl_stream) => {
-            ssl_stream.write_all(request_str.as_bytes()).await.map_err(|e| {
-                format!("❌ Failed to send request (SSL) - {}", e)
-            })?;
-        }
-    }
+    // Write with timeout
+    timeout(Duration::from_secs(5), stream.write_all(request_str.as_bytes()))
+        .await
+        .map_err(|_| "Write timeout".to_string())?
+        .map_err(|e| format!("Write error: {}", e))?;
 
     let mut buffer = Vec::new();
     let mut temp_buf = [0u8; 4096];
 
-    loop {
-        let n = match stream {
-            ElectrumStream::Plain(tcp_stream) => tcp_stream.read(&mut temp_buf).await,
-            ElectrumStream::Ssl(ssl_stream) => ssl_stream.read(&mut temp_buf).await,
-        }.map_err(|e| format!("❌ Failed to read response - {}", e))?;
+    // Read with timeout
+    let read_future = async {
+        loop {
+            let n = match stream.read(&mut temp_buf).await {
+                Ok(n) => n,
+                Err(e) => return Err(format!("Read error: {}", e)),
+            };
+            
+            if n == 0 {
+                if buffer.is_empty() {
+                    return Err("Empty response".to_string());
+                }
+                break;
+            }
+            buffer.extend_from_slice(&temp_buf[..n]);
+            if buffer.ends_with(b"\n") {
+                break;
+            }
+        }
+        Ok(buffer)
+    };
 
-        if n == 0 {
-            break;
-        }
-        buffer.extend_from_slice(&temp_buf[..n]);
-        if buffer.ends_with(b"\n") {
-            break;
-        }
-    }
+    let buffer = timeout(Duration::from_secs(5), read_future)
+        .await
+        .map_err(|_| "Read timeout".to_string())?
+        .map_err(|e| format!("Read error: {}", e))?;
 
     let response_str = String::from_utf8_lossy(&buffer);
-    let response: serde_json::Value = serde_json::from_str(&response_str)
-        .map_err(|e| format!("❌ Failed to parse JSON response - {}", e))?;
+    println!("📥 Received response: {}", response_str.trim());
 
-    Ok(response)
+    serde_json::from_str(&response_str)
+        .map_err(|e| format!("JSON parse error: {}", e))
 }
 
 

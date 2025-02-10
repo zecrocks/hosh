@@ -43,12 +43,19 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
     let host = &params.url;
     let port = params.port.unwrap_or(50002);
     
-    println!("📥 Received query request for {}:{}", host, port);  // Add request received log
-    
-    let is_onion_address = host.ends_with(".onion");
+    println!("📥 Starting query for {}:{}", host, port);
 
-    let (self_signed, mut stream) = try_connect(host, port).await
+    // Add timeout for the connection
+    let (self_signed, mut stream) = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        try_connect(host, port)
+    ).await
+        .map_err(|_| error_response(
+            &format!("Connection timeout for {}:{}", host, port),
+            "timeout_error"
+        ))?
         .map_err(|e| {
+            println!("❌ Connection error for {}:{}: {}", host, port, e);
             if e.contains("Failed to connect to .onion via Tor") {
                 error_response(&format!("Failed to connect to {}:{} - {}", host, port, e), "tor_error")
             } else if e.contains("connection refused") || e.contains("Host unreachable") {
@@ -58,20 +65,30 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
             }
         })?;
 
-    // Get server version first
-    let version = match send_electrum_request(&mut stream, "server.version", vec![
-        json!("btc-backend"), 
-        json!(["1.4", "1.4.5"])
-    ]).await {
-        Ok(response) => {
+    println!("✅ Connected successfully to {}:{}", host, port);
+
+    // Get server version with timeout
+    let version = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        send_electrum_request(&mut stream, "server.version", vec![
+            json!("btc-backend"), 
+            json!(["1.4", "1.4.5"])
+        ])
+    ).await {
+        Ok(Ok(response)) => {
+            println!("✅ Version response: {:?}", response);
             response.get("result")
                 .and_then(|v| v.as_array())
                 .and_then(|arr| arr.get(0))
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown").to_string()
         },
-        Err(e) => {
-            eprintln!("Failed to get server version: {}", e);
+        Ok(Err(e)) => {
+            println!("❌ Version request failed: {}", e);
+            "unknown".to_string()
+        },
+        Err(_) => {
+            println!("❌ Version request timed out");
             "unknown".to_string()
         }
     };
@@ -86,7 +103,7 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
         host, port, tls_version, self_signed
     );
 
-    let connection_type = if is_onion_address {
+    let connection_type = if host.ends_with(".onion") {
         "Tor"
     } else if matches!(stream, ElectrumStream::Ssl(_)) {
         "SSL"
@@ -94,7 +111,7 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
         "Plaintext"
     };
 
-    let resolved_ips = if !is_onion_address {
+    let resolved_ips = if !host.ends_with(".onion") {
         // Only attempt DNS lookup for non-.onion addresses
         match tokio::net::lookup_host(format!("{}:{}", host, port)).await {
             Ok(addrs) => addrs.map(|addr| addr.ip().to_string()).collect::<Vec<String>>(),
