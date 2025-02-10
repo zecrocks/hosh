@@ -15,7 +15,7 @@ services:
       timeout: 3s
       retries: 5
 
-  # Rust BTC Backend API Server
+  # HTTP Server
   btc-backend:
     build: ./checkers/btc
     image: hosh/btc-backend
@@ -36,13 +36,11 @@ services:
       TOR_PROXY_PORT: 9050
       RUN_MODE: server
 
-  # Rust BTC Backend Workers
   checker-btc:
     build: ./checkers/btc
     image: hosh/btc-backend
     environment:
       RUN_MODE: worker
-      MAX_CONCURRENT_CHECKS: 1
       REDIS_HOST: redis
       REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
@@ -57,7 +55,6 @@ services:
       tor:
         condition: service_healthy
 
-  # Rust BTC Backend User Worker
   checker-btc-user:
     build: ./checkers/btc
     image: hosh/btc-backend
