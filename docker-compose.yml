@@ -14,9 +14,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-    profiles:
-      - default
-      - dev
 
   # Rust BTC Backend
   btc-backend:
@@ -39,8 +36,6 @@ services:
     environment:
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
-    profiles:
-      - default
 
   # # Python BTC Backend - uncomment to use
   # btc-backend-py:
@@ -100,33 +95,29 @@ services:
         condition: service_healthy
       btc-backend:
         condition: service_healthy
-    profiles:
-      - default
 
-  publisher:
-    build: 
-      context: ./publisher
-      dockerfile: Dockerfile
-    image: hosh/publisher-rust
-    container_name: publisher
-    environment:
-      - RUST_LOG=info
-      - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
-      - NATS_URL=${NATS_URL:-nats://nats:4222}
-      - NATS_PREFIX=${NATS_PREFIX:-hosh.}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
-    depends_on:
-      redis:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-      checker-btc:
-        condition: service_started
-      checker-zec:
-        condition: service_started
-    profiles:
-      - default
+  # publisher:
+  #   build: 
+  #     context: ./publisher
+  #     dockerfile: Dockerfile
+  #   image: hosh/publisher-rust
+  #   container_name: publisher
+  #   environment:
+  #     - RUST_LOG=info
+  #     - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
+  #     - NATS_URL=${NATS_URL:-nats://nats:4222}
+  #     - NATS_PREFIX=${NATS_PREFIX:-hosh.}
+  #     - REDIS_HOST=${REDIS_HOST:-redis}
+  #     - REDIS_PORT=${REDIS_PORT:-6379}
+  #   depends_on:
+  #     redis:
+  #       condition: service_healthy
+  #     nats:
+  #       condition: service_healthy
+  #     checker-btc:
+  #       condition: service_started
+  #     checker-zec:
+  #       condition: service_started
 
   checker-btc:
     build: checkers/btc
@@ -148,8 +139,7 @@ services:
         condition: service_healthy
     volumes:
       - ./checkers/btc:/app
-    profiles:
-      - default
+
   checker-btc-user:
     build: checkers/btc
     image: hosh/checker-btc
@@ -168,8 +158,6 @@ services:
         condition: service_healthy
     volumes:
       - ./checkers/btc:/app
-    profiles:
-      - default
 
   checker-zec:
     build: checkers/zec
@@ -185,8 +173,6 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    profiles:
-      - default
 
   redis:
     image: redis:alpine
@@ -201,9 +187,6 @@ services:
       - redis-data:/data
     command: redis-server --appendonly yes
     restart: always
-    profiles:
-      - default
-      - dev
 
   tor:
     image: osminogin/tor-simple
@@ -228,8 +211,6 @@ services:
         delay: 10s
         max_attempts: 5
         window: 120s
-    profiles:
-      - default
 
   web:
     build: web
@@ -248,9 +229,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-    profiles:
-      - default
-
 
   architecture:
     image: terrastruct/d2:v0.1.2
