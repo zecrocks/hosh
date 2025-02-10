@@ -15,9 +15,9 @@ services:
       timeout: 3s
       retries: 5
 
-  # Rust BTC Backend
+  # Rust BTC Backend API Server
   btc-backend:
-    build: ./btc-backend
+    build: ./checkers/btc
     image: hosh/btc-backend
     deploy:
       replicas: 3
@@ -36,6 +36,49 @@ services:
     environment:
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
+      RUN_MODE: server
+
+  # Rust BTC Backend Workers (replacing checker-btc)
+  btc-worker:
+    build: ./checkers/btc
+    image: hosh/btc-backend
+    deploy:
+      replicas: 3
+    environment:
+      RUN_MODE: worker
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NATS_URL: "nats://nats:4222"
+      NATS_SUBJECT: "hosh.check.btc"
+      TOR_PROXY_HOST: tor
+      TOR_PROXY_PORT: 9050
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+
+  # Rust BTC Backend User Worker (replacing checker-btc-user)
+  btc-worker-user:
+    build: ./checkers/btc
+    image: hosh/btc-backend
+    environment:
+      RUN_MODE: worker
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NATS_URL: "nats://nats:4222"
+      NATS_SUBJECT: "hosh.check.btc.user"
+      TOR_PROXY_HOST: tor
+      TOR_PROXY_PORT: 9050
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
 
   # # Python BTC Backend - uncomment to use
   # btc-backend-py:
@@ -118,46 +161,6 @@ services:
   #       condition: service_started
   #     checker-zec:
   #       condition: service_started
-
-  checker-btc:
-    build: checkers/btc
-    image: hosh/checker-btc
-    deploy:
-      replicas: 3
-    environment:
-      BTC_WORKER: http://btc-backend:5000
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      NATS_URL: "nats://nats:4222"
-      NATS_SUBJECT: "hosh.check.btc"
-    depends_on:
-      btc-backend:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-    volumes:
-      - ./checkers/btc:/app
-
-  checker-btc-user:
-    build: checkers/btc
-    image: hosh/checker-btc
-    environment:
-      BTC_WORKER: http://btc-backend:5000
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
-      NATS_URL: "nats://nats:4222"
-      NATS_SUBJECT: "hosh.check.btc.user"
-    depends_on:
-      btc-backend:
-        condition: service_healthy
-      redis:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-    volumes:
-      - ./checkers/btc:/app
 
   checker-zec:
     build: checkers/zec

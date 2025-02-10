@@ -42,3 +42,9 @@ openssl = { version = "0.10" }
 # Tor Support
 arti-client = "0.26"
 
+# New dependencies for worker functionality
+async-nats = "0.33"
+redis = { version = "0.24", features = ["tokio-comp"] }
+futures = "0.3"
+futures-util = "0.3"
+
