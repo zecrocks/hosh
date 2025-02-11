@@ -35,8 +35,7 @@ struct ServerData {
     last_updated: chrono::DateTime<chrono::Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ping: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    error: Option<String>,
+    error: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -113,7 +112,7 @@ impl Worker {
                         .to_string(),
                     last_updated: chrono::Utc::now(),
                     ping: data.get("ping").and_then(|v| v.as_f64()),
-                    error: None,
+                    error: false,
                     error_type: None,
                     error_message: None,
                     user_submitted: request.user_submitted,
@@ -130,7 +129,7 @@ impl Worker {
                     electrum_version: request.version.clone(),
                     last_updated: chrono::Utc::now(),
                     ping: None,
-                    error: Some("Failed to connect".to_string()),
+                    error: true,
                     error_type: Some("connection_error".to_string()),
                     error_message: Some(format!("Failed to query server: {:?}", error_response)),
                     user_submitted: request.user_submitted,
