@@ -606,17 +606,16 @@ async fn check_server(
         .ok()
         .and_then(|value: String| serde_json::from_str(&value).ok());
 
-    // Only set user_submitted = true if it's not already in our public list
     let is_user_submitted = existing_server
-        .as_ref()
-        .and_then(|s| s.extra.get("user_submitted"))
-        .and_then(|v| v.as_bool())
+        .map(|s| s.extra.get("user_submitted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true))
         .unwrap_or(true);
 
     let check_request = serde_json::json!({
         "host": form.url,
         "port": form.port.unwrap_or(50002),
-        "user_submitted": is_user_submitted,  // Preserve existing status
+        "user_submitted": is_user_submitted,
         "check_id": check_id
     });
 
