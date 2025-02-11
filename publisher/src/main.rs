@@ -7,6 +7,7 @@ use std::env;
 use std::time::Duration;
 use tokio::time;
 use futures;
+use tracing::{info, error, debug};
 
 // Custom deserializer to allow numbers or strings (or null) to become Option<String>
 fn int_or_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -175,7 +176,7 @@ fn is_stale(data: &ServerData, network: &str, config: &Config) -> bool {
     if data.user_submitted {
         let age = now.signed_duration_since(last_updated);
         if age.num_seconds() < 60 {  // Skip if checked within last minute
-            tracing::debug!("Skipping recently user-submitted check ({}s ago)", age.num_seconds());
+            debug!("Skipping recently user-submitted check ({}s ago)", age.num_seconds());
             return false;
         }
     }
@@ -219,13 +220,13 @@ async fn publish_checks_for_chain(
         let keys: Vec<String> = match redis.clone().keys(format!("{prefix}*")).await {
             Ok(keys) => keys,
             Err(e) => {
-                tracing::error!("Failed to get Redis keys for prefix {}: {}", prefix, e);
+                error!("Failed to get Redis keys for prefix {}: {}", prefix, e);
                 continue;
             }
         };
 
         if keys.is_empty() {
-            tracing::info!("No keys found for prefix {prefix}");
+            info!("No keys found for prefix {prefix}");
             continue;
         }
 
@@ -233,14 +234,14 @@ async fn publish_checks_for_chain(
             let raw_data: String = match redis.clone().get(&key).await {
                 Ok(data) => data,
                 Err(e) => {
-                    tracing::error!("Failed to get Redis data for key {}: {}", key, e);
+                    error!("Failed to get Redis data for key {}: {}", key, e);
                     continue;
                 }
             };
 
             // Log the raw data when it's corrupted
             if let Err(e) = serde_json::from_str::<ServerData>(&raw_data) {
-                tracing::error!(
+                error!(
                     "Invalid JSON for key {}: {}\nRaw data: {:?}",
                     key, 
                     e,
@@ -252,7 +253,7 @@ async fn publish_checks_for_chain(
             let data: ServerData = serde_json::from_str(&raw_data).unwrap(); // Safe because we checked above
             
             if !is_stale(&data, network, &config) {
-                tracing::debug!(%key, "Skipping recently checked server");
+                debug!(%key, "Skipping recently checked server");
                 continue;
             }
 
@@ -283,11 +284,11 @@ async fn publish_checks_for_chain(
             };
 
             if let Err(e) = nats.publish(subject.clone(), message.to_string().into()).await {
-                tracing::error!("Failed to publish message for {}: {}", key, e);
+                error!("Failed to publish message for {}: {}", key, e);
                 continue;
             }
 
-            tracing::info!(%key, %subject, "Published check request");
+            info!(%key, %subject, "Published check request");
         }
     }
 }
@@ -342,7 +343,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to connect to NATS")?;
 
-    tracing::info!("Connected to Redis and NATS, starting publisher");
+    info!("Connected to Redis and NATS, starting publisher");
     
     publish_checks(nats, redis_conn, config)
         .await
