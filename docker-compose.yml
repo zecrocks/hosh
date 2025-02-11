@@ -93,6 +93,7 @@ services:
     environment:
       - RUST_LOG=info
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
+      - CHECK_INTERVAL_BTC=600
       - NATS_URL=${NATS_URL:-nats://nats:4222}
       - NATS_PREFIX=${NATS_PREFIX:-hosh.}
       - REDIS_HOST=${REDIS_HOST:-redis}

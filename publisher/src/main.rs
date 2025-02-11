@@ -6,6 +6,7 @@ use serde_json::Value;
 use std::env;
 use std::time::Duration;
 use tokio::time;
+use futures;
 
 // Custom deserializer to allow numbers or strings (or null) to become Option<String>
 fn int_or_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -93,9 +94,10 @@ struct ServerData {
     check_id: Option<String>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct Config {
     refresh_interval: Duration,
+    chain_intervals: std::collections::HashMap<String, Duration>,
     nats_url: String,
     nats_prefix: String,
     redis_host: String,
@@ -106,12 +108,28 @@ impl Config {
     fn from_env() -> Result<Self> {
         dotenvy::dotenv().ok();
 
-        let refresh_interval = Duration::from_secs(
+        let default_interval = Duration::from_secs(
             env::var("CHECK_INTERVAL")
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(DEFAULT_REFRESH_INTERVAL),
         );
+
+        let mut chain_intervals = std::collections::HashMap::new();
+        
+        for chain in PREFIXES {
+            let chain_name = chain.trim_end_matches(':').to_uppercase();
+            let env_var = format!("CHECK_INTERVAL_{}", chain_name);
+            
+            if let Ok(interval_str) = env::var(&env_var) {
+                if let Ok(secs) = interval_str.parse::<u64>() {
+                    chain_intervals.insert(
+                        chain_name.to_lowercase(),
+                        Duration::from_secs(secs)
+                    );
+                }
+            }
+        }
 
         let nats_url = env::var("NATS_URL")
             .unwrap_or_else(|_| "nats://nats:4222".into());
@@ -128,7 +146,8 @@ impl Config {
             .unwrap_or(DEFAULT_REDIS_PORT);
 
         Ok(Self {
-            refresh_interval,
+            refresh_interval: default_interval,
+            chain_intervals,
             nats_url,
             nats_prefix,
             redis_host,
@@ -137,7 +156,14 @@ impl Config {
     }
 }
 
-fn is_stale(data: &ServerData, stale_duration: Duration) -> bool {
+fn get_interval_for_network(network: &str, config: &Config) -> Duration {
+    config.chain_intervals
+        .get(network)
+        .copied()
+        .unwrap_or(config.refresh_interval)
+}
+
+fn is_stale(data: &ServerData, network: &str, config: &Config) -> bool {
     let last_updated = match data.last_updated {
         Some(updated) => updated,
         None => return true,
@@ -154,8 +180,8 @@ fn is_stale(data: &ServerData, stale_duration: Duration) -> bool {
         }
     }
 
-    // Normal staleness check
-    let stale_time = last_updated + chrono::Duration::from_std(stale_duration).unwrap();
+    let interval = get_interval_for_network(network, config);
+    let stale_time = last_updated + chrono::Duration::from_std(interval).unwrap();
     now > stale_time
 }
 
@@ -177,93 +203,123 @@ fn default_port_for_network(network: &str) -> u16 {
     }
 }
 
-async fn publish_checks(
+async fn publish_checks_for_chain(
     nats: async_nats::Client,
-    mut redis: redis::aio::MultiplexedConnection,
-    config: &Config,
+    redis: redis::aio::MultiplexedConnection,
+    config: Config,
+    prefix: &'static str,
 ) -> Result<()> {
-    let mut interval = time::interval(config.refresh_interval);
+    let network = prefix.trim_end_matches(':');
+    let interval = get_interval_for_network(network, &config);
+    let mut interval_timer = time::interval(interval);
     
     loop {
-        interval.tick().await;
+        interval_timer.tick().await;
         
-        for prefix in PREFIXES {
-            let keys: Vec<String> = match redis.keys(format!("{prefix}*")).await {
-                Ok(keys) => keys,
+        let keys: Vec<String> = match redis.clone().keys(format!("{prefix}*")).await {
+            Ok(keys) => keys,
+            Err(e) => {
+                tracing::error!("Failed to get Redis keys for prefix {}: {}", prefix, e);
+                continue;
+            }
+        };
+
+        if keys.is_empty() {
+            tracing::info!("No keys found for prefix {prefix}");
+            continue;
+        }
+
+        for key in keys {
+            let raw_data: String = match redis.clone().get(&key).await {
+                Ok(data) => data,
                 Err(e) => {
-                    tracing::error!("Failed to get Redis keys for prefix {}: {}", prefix, e);
+                    tracing::error!("Failed to get Redis data for key {}: {}", key, e);
                     continue;
                 }
             };
 
-            if keys.is_empty() {
-                tracing::info!("No keys found for prefix {prefix}");
+            // Log the raw data when it's corrupted
+            if let Err(e) = serde_json::from_str::<ServerData>(&raw_data) {
+                tracing::error!(
+                    "Invalid JSON for key {}: {}\nRaw data: {:?}",
+                    key, 
+                    e,
+                    raw_data
+                );
                 continue;
             }
 
-            for key in keys {
-                let raw_data: String = match redis.get(&key).await {
-                    Ok(data) => data,
-                    Err(e) => {
-                        tracing::error!("Failed to get Redis data for key {}: {}", key, e);
-                        continue;
-                    }
-                };
-
-                // Log the raw data when it's corrupted
-                if let Err(e) = serde_json::from_str::<ServerData>(&raw_data) {
-                    tracing::error!(
-                        "Invalid JSON for key {}: {}\nRaw data: {:?}",
-                        key, 
-                        e,
-                        raw_data
-                    );
-                    continue;
-                }
-
-                let data: ServerData = serde_json::from_str(&raw_data).unwrap(); // Safe because we checked above
-
-                if !is_stale(&data, config.refresh_interval) {
-                    tracing::debug!(%key, "Skipping recently checked server");
-                    continue;
-                }
-
-                let network = network_from_key(&key);
-                let host = key.split_once(':')
-                    .map(|(_, host)| host)
-                    .unwrap_or(&key);
-
-                let port = data.port.unwrap_or_else(|| default_port_for_network(network));
-
-                let subject = format!("{}check.{}", config.nats_prefix, network);
-                let message = match network {
-                    "btc" => serde_json::json!({
-                        "type": network,
-                        "host": host,
-                        "port": port,
-                        "version": data.version.as_deref().or(data.electrum_version.as_deref()).unwrap_or("unknown"),
-                        "user_submitted": data.user_submitted,
-                        "check_id": data.check_id
-                    }),
-                    "zec" => serde_json::json!({
-                        "type": network,
-                        "host": host,
-                        "port": port,
-                        "user_submitted": data.user_submitted,
-                        "check_id": data.check_id
-                    }),
-                    _ => continue,
-                };
-
-                if let Err(e) = nats.publish(subject.clone(), message.to_string().into()).await {
-                    tracing::error!("Failed to publish message for {}: {}", key, e);
-                    continue;
-                }
-
-                tracing::info!(%key, %subject, "Published check request");
+            let data: ServerData = serde_json::from_str(&raw_data).unwrap(); // Safe because we checked above
+            
+            if !is_stale(&data, network, &config) {
+                tracing::debug!(%key, "Skipping recently checked server");
+                continue;
             }
+
+            let host = key.split_once(':')
+                .map(|(_, host)| host)
+                .unwrap_or(&key);
+
+            let port = data.port.unwrap_or_else(|| default_port_for_network(network));
+
+            let subject = format!("{}check.{}", config.nats_prefix, network);
+            let message = match network {
+                "btc" => serde_json::json!({
+                    "type": network,
+                    "host": host,
+                    "port": port,
+                    "version": data.version.as_deref().or(data.electrum_version.as_deref()).unwrap_or("unknown"),
+                    "user_submitted": data.user_submitted,
+                    "check_id": data.check_id
+                }),
+                "zec" => serde_json::json!({
+                    "type": network,
+                    "host": host,
+                    "port": port,
+                    "user_submitted": data.user_submitted,
+                    "check_id": data.check_id
+                }),
+                _ => continue,
+            };
+
+            if let Err(e) = nats.publish(subject.clone(), message.to_string().into()).await {
+                tracing::error!("Failed to publish message for {}: {}", key, e);
+                continue;
+            }
+
+            tracing::info!(%key, %subject, "Published check request");
         }
     }
+}
+
+async fn publish_checks(
+    nats: async_nats::Client,
+    redis: redis::aio::MultiplexedConnection,
+    config: Config,
+) -> Result<()> {
+    let mut handles = Vec::new();
+    
+    // Spawn a task for each chain
+    for &prefix in PREFIXES {
+        let nats = nats.clone();
+        let redis = redis.clone();
+        let config = config.clone();
+        let handle = tokio::spawn(publish_checks_for_chain(
+            nats,
+            redis,
+            config,
+            prefix,
+        ));
+        handles.push(handle);
+    }
+
+    // Wait for all tasks (they should never complete normally)
+    let results = futures::future::join_all(handles).await;
+    for result in results {
+        result??;  // Handle both the JoinError and the Result<(), anyhow::Error>
+    }
+    
+    Ok(())
 }
 
 #[tokio::main]
@@ -288,7 +344,7 @@ async fn main() -> Result<()> {
 
     tracing::info!("Connected to Redis and NATS, starting publisher");
     
-    publish_checks(nats, redis_conn, &config)
+    publish_checks(nats, redis_conn, config)
         .await
         .context("Publisher task failed")?;
 
