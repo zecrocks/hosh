@@ -1,10 +1,10 @@
 [package]
-name = "example-zec"
-version = "0.0.1"
+name = "zec-doinfo"
+version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1.43.0", features = ["full"] }
-http = { version = "1.2.0" }
+tokio = { version = "1.0", features = ["full"] }
+http = "1.2"
 rustls = { version = "0.23", default-features = false, features = ["ring", "logging", "tls12"] }
 zingolib = { git = "https://github.com/zingolabs/zingolib.git", tag = "1.10.3", features = ["test-elevation"] }
