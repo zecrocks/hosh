@@ -12,6 +12,22 @@ use rand::Rng;
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::FmtSubscriber;
 
+mod filters {
+    use askama::Result;
+    use serde_json::Value;
+
+    #[allow(dead_code)]
+    pub fn format_value(v: &Value) -> Result<String> {
+        match v {
+            Value::String(s) => Ok(s.to_string()),
+            Value::Number(n) => Ok(n.to_string()),
+            Value::Bool(b) => Ok(b.to_string()),
+            Value::Null => Ok("null".to_string()),
+            _ => Ok(v.to_string())
+        }
+    }
+}
+
 fn upper(s: &str) -> askama::Result<String> {
     Ok(s.to_uppercase())
 }
@@ -173,11 +189,22 @@ impl ServerInfo {
     }
 
     fn formatted_version(&self) -> String {
-        self.server_version
+        let lwd_version = self.server_version
             .as_ref()
             .map(String::as_str)
             .unwrap_or("-")
-            .to_string()
+            .to_string();
+
+        // Display both LWD and Zebra versions for ZEC if available
+        if let Some(subversion) = self.extra.get("zcashd_subversion") {
+            if let Some(subversion_str) = subversion.as_str() {
+                // Remove slashes from subversion string
+                let cleaned_subversion = subversion_str.replace('/', "");
+                return format!("{}\nLWD: {}", cleaned_subversion, lwd_version);
+            }
+        }
+        
+        lwd_version
     }
 }
 
@@ -199,7 +226,7 @@ impl SafeNetwork {
 }
 
 #[derive(Template)]
-#[template(path = "server.html")]
+#[template(path = "server.html", escape = "none")]
 struct ServerTemplate {
     data: HashMap<String, Value>,
     host: String,
@@ -225,7 +252,7 @@ struct ApiResponse {
 }
 
 #[derive(Template)]
-#[template(path = "check.html")]
+#[template(path = "check.html", escape = "none")]
 struct CheckTemplate {
     check_id: String,
     server: Option<ServerInfo>,
@@ -233,6 +260,7 @@ struct CheckTemplate {
     is_public_server: bool,
     checking_url: Option<String>,
     checking_port: Option<u16>,
+    server_data: Option<HashMap<String, Value>>,
 }
 
 impl CheckTemplate {
@@ -656,8 +684,9 @@ async fn check_result(
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
     })?;
 
-    // We'll store the discovered server info here if we find a match
+    // We'll store the discovered server info and raw data here if we find a match
     let mut server: Option<ServerInfo> = None;
+    let mut server_data: Option<HashMap<String, Value>> = None;
     let mut is_public_server = false;
 
     for key in keys {
@@ -667,34 +696,30 @@ async fn check_result(
             actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
         })?;
 
-        // Attempt to parse JSON into your ServerInfo
-        if let Ok(server_info) = serde_json::from_str::<ServerInfo>(&value) {
+        // Parse the raw JSON data
+        if let Ok(data) = serde_json::from_str::<HashMap<String, Value>>(&value) {
             // Check if this key has the right check_id
-            let has_check_id = server_info
-                .extra
-                .get("check_id")
+            let has_check_id = data.get("check_id")
                 .and_then(|v| v.as_str())
                 .map(|c| c == check_id)
                 .unwrap_or(false);
 
             if has_check_id {
                 // If found a matching check_id, we use that data
-                server = Some(server_info);
+                server = serde_json::from_str(&value).ok();
+                server_data = Some(data);
                 break;
             }
 
-            // Otherwise, you might optionally check other conditions
-            // e.g. if it's a public server with a matching suffix
-            let user_submitted = server_info
-                .extra
-                .get("user_submitted")
+            // Otherwise, check if it's a public server
+            let user_submitted = data.get("user_submitted")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
 
             if !user_submitted && key.ends_with(&check_id) {
-                // Mark it as "public"
                 is_public_server = true;
-                server = Some(server_info);
+                server = serde_json::from_str(&value).ok();
+                server_data = Some(data);
                 break;
             }
         }
@@ -707,6 +732,7 @@ async fn check_result(
         is_public_server,
         checking_url,
         checking_port,
+        server_data,
     };
 
     let html = template.render().map_err(|e| {

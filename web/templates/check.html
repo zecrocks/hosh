@@ -38,6 +38,24 @@
                     {% endif %}
                 </dl>
             </div>
+
+            {% if let Some(data) = server_data %}
+                <div class="mt-8">
+                    <h3 class="text-xl font-semibold mb-4">Advanced Details</h3>
+                    <div class="bg-white shadow rounded-lg overflow-hidden">
+                        <table class="table-auto w-full">
+                            <tbody>
+                                {% for (key, value) in data.iter() %}
+                                <tr class="border-b">
+                                    <td class="px-4 py-2 bg-gray-50 font-medium">{{ key }}</td>
+                                    <td class="px-4 py-2">{{ value|format_value }}</td>
+                                </tr>
+                                {% endfor %}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            {% endif %}
         {% else %}
             <p>
                 Checking server 

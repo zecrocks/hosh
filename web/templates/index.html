@@ -31,7 +31,7 @@
                             <td class="status-{% if server.height > 0 %}online{% else %}offline{% endif %}">
                                 {% if server.height > 0 %}Online{% else %}Offline{% endif %}
                             </td>
-                            <td>{{ server.formatted_version() }}</td>
+                            <td style="white-space: pre-line">{{ server.formatted_version() }}</td>
                             <td>{{ server.formatted_last_updated() }}</td>
                             <td>{{ server.formatted_ping() }}</td>
                         </tr>
