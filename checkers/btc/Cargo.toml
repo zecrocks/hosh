@@ -48,3 +48,5 @@ redis = { version = "0.24", features = ["tokio-comp"] }
 futures = "0.3"
 futures-util = "0.3"
 
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }

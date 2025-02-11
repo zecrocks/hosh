@@ -7,6 +7,7 @@ use chrono::{DateTime, Utc};
 use bitcoin::blockdata::block::Header as BlockHeader;
 use bitcoin::consensus::encode::deserialize;
 use crate::utils::ElectrumStream;
+use tracing::{debug, error, info};
 
 
 
@@ -43,7 +44,7 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
     let host = &params.url;
     let port = params.port.unwrap_or(50002);
     
-    println!("📥 Starting query for {}:{}", host, port);
+    info!("📥 Starting query for {}:{}", host, port);
 
     // Add timeout for the connection
     let (self_signed, mut stream) = tokio::time::timeout(
@@ -55,7 +56,7 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
             "timeout_error"
         ))?
         .map_err(|e| {
-            println!("❌ Connection error for {}:{}: {}", host, port, e);
+            error!("Connection error for {}:{}: {}", host, port, e);
             if e.contains("Failed to connect to .onion via Tor") {
                 error_response(&format!("Failed to connect to {}:{} - {}", host, port, e), "tor_error")
             } else if e.contains("connection refused") || e.contains("Host unreachable") {
@@ -65,9 +66,6 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
             }
         })?;
 
-    println!("✅ Connected successfully to {}:{}", host, port);
-
-    // Get server version with timeout
     let version = match tokio::time::timeout(
         std::time::Duration::from_secs(5),
         send_electrum_request(&mut stream, "server.version", vec![
@@ -76,7 +74,7 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
         ])
     ).await {
         Ok(Ok(response)) => {
-            println!("✅ Version response: {:?}", response);
+            info!("✅ Version response: {:?}", response);
             response.get("result")
                 .and_then(|v| v.as_array())
                 .and_then(|arr| arr.get(0))
@@ -84,11 +82,11 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
                 .unwrap_or("unknown").to_string()
         },
         Ok(Err(e)) => {
-            println!("❌ Version request failed: {}", e);
+            error!("Version request failed: {}", e);
             "unknown".to_string()
         },
         Err(_) => {
-            println!("❌ Version request timed out");
+            error!("Version request timed out");
             "unknown".to_string()
         }
     };
@@ -98,8 +96,8 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
         ElectrumStream::Plain(_) => "None (plaintext)".to_string(),
     };
 
-    println!(
-        "🔍 Connected to {}:{} | TLS Version: {} | Self-signed: {:?}",
+    debug!(
+        "Connected to {}:{} | TLS Version: {} | Self-signed: {:?}",
         host, port, tls_version, self_signed
     );
 
@@ -127,11 +125,13 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
 
     let start_time = std::time::Instant::now(); // ✅ Start timing the request
 
+    info!("✅ Connected successfully to {}:{}", host, port);
+
     match send_electrum_request(&mut stream, "blockchain.headers.subscribe", vec![]).await {
         Ok(response) => {
             let ping = start_time.elapsed().as_millis() as f64;
 
-            println!("Electrum response: {:?}", response);
+            debug!("Electrum response: {:?}", response);
 
             let height = response
                 .get("result")
@@ -188,7 +188,7 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
             })))
         },
         Err(e) => {
-            eprintln!("Error calling blockchain.headers.subscribe: {}", e);
+            error!("Error calling blockchain.headers.subscribe: {}", e);
             Err(error_response(
                 &format!("Failed to query headers for {}:{} - {}", host, port, e),
                 "protocol_error"

@@ -32,14 +32,16 @@ services:
       tor:
         condition: service_healthy
     environment:
+      RUST_LOG: info
+      RUN_MODE: server
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
-      RUN_MODE: server
 
   checker-btc:
     build: ./checkers/btc
     image: hosh/btc-backend
     environment:
+      RUST_LOG: info
       RUN_MODE: worker
       REDIS_HOST: redis
       REDIS_PORT: 6379
@@ -59,6 +61,7 @@ services:
     build: ./checkers/btc
     image: hosh/btc-backend
     environment:
+      RUST_LOG: info
       RUN_MODE: worker
       MAX_CONCURRENT_CHECKS: 1
       REDIS_HOST: redis

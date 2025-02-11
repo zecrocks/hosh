@@ -10,6 +10,7 @@ use std::env;
 use serde_json::json;
 use tokio::time::timeout;
 use std::time::Duration;
+use tracing::{debug, error, info, warn};
 
 
 pub enum ElectrumStream {
@@ -37,13 +38,13 @@ pub async fn try_connect(
     host: &str,
     port: u16,
 ) -> Result<(Option<bool>, ElectrumStream), String> {
-    println!("🔗 Attempting connection to {}:{}", host, port);
+    info!("Attempting connection to {}:{}", host, port);
 
     let stream = if host.ends_with(".onion") {
         let tor_proxy_host = env::var("TOR_PROXY_HOST").unwrap_or_else(|_| "127.0.0.1".to_string());
         let tor_proxy_port = env::var("TOR_PROXY_PORT").unwrap_or_else(|_| "9050".to_string());
 
-        println!("🧅 Using Tor proxy at {}:{} for .onion address", tor_proxy_host, tor_proxy_port);
+        info!("Using Tor proxy at {}:{} for .onion address", tor_proxy_host, tor_proxy_port);
 
         // Connect through Tor SOCKS5 proxy
         Socks5Stream::connect(
@@ -51,35 +52,44 @@ pub async fn try_connect(
             (host, port),
         )
         .await
-        .map_err(|e| format!("❌ Failed to connect to .onion via Tor: {}", e))?
+        .map_err(|e| {
+            error!("Failed to connect to .onion via Tor: {}", e);
+            format!("Failed to connect to .onion via Tor: {}", e)
+        })?
         .into_inner()
     } else {
         let addr = format!("{}:{}", host, port);
         TcpStream::connect(&addr)
             .await
-            .map_err(|e| format!("❌ Failed to connect to {}:{} - {}", host, port, e))?
+            .map_err(|e| {
+                error!("Failed to connect to {}:{} - {}", host, port, e);
+                format!("Failed to connect to {}:{} - {}", host, port, e)
+            })?
     };
 
-    println!("✅ Successfully connected to {}:{}", host, port);
+    info!("Successfully connected to {}:{}", host, port);
 
     // Plaintext connection (Port 50001)
     if port == 50001 {
-        println!("⚡ Using plaintext connection (no SSL)");
+        info!("Using plaintext connection (no SSL)");
         return Ok((None, ElectrumStream::Plain(stream)));
     }
 
-    println!("🔐 Establishing SSL connection...");
+    debug!("Establishing SSL connection...");
 
     let mut connector_builder = SslConnector::builder(SslMethod::tls())
-        .map_err(|e| format!("❌ Failed to create OpenSSL connector: {:?}", e))?;
+        .map_err(|e| {
+            error!("Failed to create OpenSSL connector: {:?}", e);
+            format!("Failed to create OpenSSL connector: {:?}", e)
+        })?;
 
-    // ✅ Track self-signed certificates
+    // Track self-signed certificates
     let self_signed_flag = Arc::new(AtomicBool::new(false));
     let flag_clone = Arc::clone(&self_signed_flag);
 
     connector_builder.set_verify_callback(SslVerifyMode::PEER, move |valid, _ctx: &mut X509StoreContextRef| {
         if !valid {
-            println!("⚠️ Warning: Self-signed certificate detected.");
+            warn!("Self-signed certificate detected");
             flag_clone.store(true, Ordering::Relaxed);
             return true; // Allow self-signed certs
         }
@@ -88,16 +98,25 @@ pub async fn try_connect(
 
     let connector = connector_builder.build();
     let config = connector.configure()
-        .map_err(|e| format!("❌ Failed to configure OpenSSL: {:?}", e))?;
+        .map_err(|e| {
+            error!("Failed to configure OpenSSL: {:?}", e);
+            format!("Failed to configure OpenSSL: {:?}", e)
+        })?;
 
     let domain = host.to_string();
     let mut ssl = config.into_ssl(&domain)
-        .map_err(|e| format!("❌ Failed to create OpenSSL SSL object: {:?}", e))?;
+        .map_err(|e| {
+            error!("Failed to create OpenSSL SSL object: {:?}", e);
+            format!("Failed to create OpenSSL SSL object: {:?}", e)
+        })?;
 
     ssl.set_connect_state();
 
     let mut ssl_stream = SslStream::new(ssl, stream)
-        .map_err(|e| format!("❌ Failed to create OpenSSL stream: {:?}", e))?;
+        .map_err(|e| {
+            error!("Failed to create OpenSSL stream: {:?}", e);
+            format!("Failed to create OpenSSL stream: {:?}", e)
+        })?;
 
     let mut pinned_stream = Pin::new(&mut ssl_stream);
 
@@ -105,16 +124,15 @@ pub async fn try_connect(
         Ok(()) => {
             let self_signed = self_signed_flag.load(Ordering::Relaxed);
             let tls_version = ssl_stream.ssl().version_str();
-            println!(
-                "✅ SSL handshake successful with {}:{} (TLS: {}, self_signed: {:?})",
+            info!(
+                "SSL handshake successful with {}:{} (TLS: {}, self_signed: {})",
                 host, port, tls_version, self_signed
             );
             Ok((Some(self_signed), ElectrumStream::Ssl(ssl_stream)))
         }
         Err(e) => {
-            let msg = format!("❌ SSL handshake failed with {}:{} - {:?}", host, port, e);
-            println!("{}", msg);
-            Err(msg)
+            error!("SSL handshake failed with {}:{} - {:?}", host, port, e);
+            Err(format!("SSL handshake failed with {}:{} - {:?}", host, port, e))
         }
     }
 }
@@ -133,13 +151,19 @@ pub async fn send_electrum_request(
     });
 
     let request_str = serde_json::to_string(&request).unwrap() + "\n";
-    println!("📤 Sending request: {}", request_str.trim());
+    debug!("Sending request: {}", request_str.trim());
 
     // Write with timeout
     timeout(Duration::from_secs(5), stream.write_all(request_str.as_bytes()))
         .await
-        .map_err(|_| "Write timeout".to_string())?
-        .map_err(|e| format!("Write error: {}", e))?;
+        .map_err(|_| {
+            error!("Write timeout occurred");
+            "Write timeout".to_string()
+        })?
+        .map_err(|e| {
+            error!("Write error: {}", e);
+            format!("Write error: {}", e)
+        })?;
 
     let mut buffer = Vec::new();
     let mut temp_buf = [0u8; 4096];
@@ -149,11 +173,15 @@ pub async fn send_electrum_request(
         loop {
             let n = match stream.read(&mut temp_buf).await {
                 Ok(n) => n,
-                Err(e) => return Err(format!("Read error: {}", e)),
+                Err(e) => {
+                    error!("Read error: {}", e);
+                    return Err(format!("Read error: {}", e));
+                }
             };
             
             if n == 0 {
                 if buffer.is_empty() {
+                    error!("Empty response received");
                     return Err("Empty response".to_string());
                 }
                 break;
@@ -168,19 +196,29 @@ pub async fn send_electrum_request(
 
     let buffer = timeout(Duration::from_secs(5), read_future)
         .await
-        .map_err(|_| "Read timeout".to_string())?
-        .map_err(|e| format!("Read error: {}", e))?;
+        .map_err(|_| {
+            error!("Read timeout occurred");
+            "Read timeout".to_string()
+        })?
+        .map_err(|e| {
+            error!("Read error: {}", e);
+            format!("Read error: {}", e)
+        })?;
 
     let response_str = String::from_utf8_lossy(&buffer);
-    println!("📥 Received response: {}", response_str.trim());
+    debug!("Received response: {}", response_str.trim());
 
     serde_json::from_str(&response_str)
-        .map_err(|e| format!("JSON parse error: {}", e))
+        .map_err(|e| {
+            error!("JSON parse error: {}", e);
+            format!("JSON parse error: {}", e)
+        })
 }
 
 
 
 pub fn error_response(message: &str, error_type: &str) -> axum::response::Response {
+    error!(error_type = error_type, "API error: {}", message);
     let error_body = serde_json::json!({ 
         "error": message,
         "error_type": error_type 

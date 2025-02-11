@@ -3,6 +3,8 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
+use tracing::{info, error, Level};
+use tracing_subscriber::{self, EnvFilter};
 
 mod routes;
 mod utils;
@@ -16,25 +18,34 @@ use routes::{
 
 #[tokio::main]
 async fn main() {
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter(
+            EnvFilter::builder()
+                .with_default_directive(Level::INFO.into())
+                .from_env_lossy(),
+        )
+        .init();
+
     // Check if we should run in worker mode
     let is_worker = std::env::var("RUN_MODE")
         .map(|v| v == "worker")
         .unwrap_or(false);
 
     if is_worker {
-        println!("Starting in worker mode...");
+        info!("Starting in worker mode...");
         match worker::Worker::new().await {
             Ok(worker) => {
                 if let Err(e) = worker.run().await {
-                    eprintln!("Worker error: {}", e);
+                    error!("Worker error: {}", e);
                 }
             }
             Err(e) => {
-                eprintln!("Failed to create worker: {}", e);
+                error!("Failed to create worker: {}", e);
             }
         }
     } else {
-        println!("Starting in API server mode...");
+        info!("Starting in API server mode...");
         // Define the routes for the application
         let app = Router::new()
             .route("/", get(api_info))
@@ -45,14 +56,14 @@ async fn main() {
 
         // Define the address to bind the server to
         let addr = SocketAddr::from(([0, 0, 0, 0], 5000));
-        println!("Server running on http://{}", addr);
+        info!("Server running on http://{}", addr);
 
         // Start the server
         if let Err(e) = axum::Server::bind(&addr)
             .serve(app.into_make_service())
             .await
         {
-            eprintln!("Server error: {}", e);
+            error!("Server error: {}", e);
         }
     }
 }

@@ -9,6 +9,8 @@ use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
 use rand::Rng;
+use tracing::{info, warn, error, Level};
+use tracing_subscriber::FmtSubscriber;
 
 fn upper(s: &str) -> askama::Result<String> {
     Ok(s.to_uppercase())
@@ -259,12 +261,12 @@ async fn network_status(
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
 
     let mut conn = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
     let keys: Vec<String> = conn.keys(network.redis_prefix()).map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
+        error!("Redis keys error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
     })?;
 
@@ -272,7 +274,7 @@ async fn network_status(
 
     for key in keys {
         let value: String = conn.get(&key).map_err(|e| {
-            eprintln!("Redis get error for key {}: {}", key, e);
+            error!("Redis get error for key {}: {}", key, e);
             actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
         })?;
 
@@ -298,7 +300,7 @@ async fn network_status(
                 servers.push(server_info);
             },
             Err(e) => {
-                eprintln!("Failed to deserialize JSON for key {}: {}", key, e);
+                error!("Failed to deserialize JSON for key {}: {}", key, e);
                 println!("Retrieved JSON for key {}: {}", key, value);
             }
         }
@@ -350,7 +352,7 @@ async fn network_status(
     };
     
     let html = template.render().map_err(|e| {
-        eprintln!("Template rendering error: {}", e);
+        error!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
 
@@ -371,22 +373,22 @@ async fn server_detail(
     let key = format!("{}:{}", network, host);
     
     let mut conn = _redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
     
     let value: String = conn.get(&key).map_err(|e| {
-        eprintln!("Redis get error for key {}: {}", key, e);
+        error!("Redis get error for key {}: {}", key, e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
     })?;
     
     let data: HashMap<String, Value> = serde_json::from_str(&value).map_err(|e| {
-        eprintln!("JSON deserialization error for key {}: {}", key, e);
+        error!("JSON deserialization error for key {}: {}", key, e);
         actix_web::error::ErrorInternalServerError("Failed to parse server data")
     })?;
     
     let keys: Vec<String> = conn.keys(safe_network.redis_prefix()).map_err(|e| {
-        eprintln!("Redis error: {}", e);
+        error!("Redis error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis error")
     })?;
     
@@ -419,7 +421,7 @@ async fn server_detail(
     };
     
     let html = template.render().map_err(|e| {
-        eprintln!("Template rendering error: {}", e);
+        error!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
     
@@ -464,26 +466,26 @@ async fn network_api(
 // Helper function to reduce code duplication
 async fn fetch_network_servers(redis: &redis::Client, network: &str) -> Result<Vec<ServerInfo>> {
     let mut conn = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
     let keys: Vec<String> = conn.keys(format!("{}:*", network)).map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
+        error!("Redis keys error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
     })?;
 
     let mut servers = Vec::new();
     for key in keys {
         let value: String = conn.get(&key).map_err(|e| {
-            eprintln!("Redis get error for key {}: {}", key, e);
+            error!("Redis get error for key {}: {}", key, e);
             actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
         })?;
 
         match serde_json::from_str::<ServerInfo>(&value) {
             Ok(server_info) => servers.push(server_info),
             Err(e) => {
-                eprintln!("Failed to deserialize JSON for key {}: {}", key, e);
+                error!("Failed to deserialize JSON for key {}: {}", key, e);
                 println!("Retrieved JSON for key {}: {}", key, value);
             }
         }
@@ -549,7 +551,7 @@ async fn check_server(
         };
 
         let html = template.render().map_err(|e| {
-            eprintln!("Template rendering error: {}", e);
+            error!("Template rendering error: {}", e);
             actix_web::error::ErrorInternalServerError("Template rendering failed")
         })?;
 
@@ -567,7 +569,7 @@ async fn check_server(
     
     // Check if this server is already in our public list
     let mut conn = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
@@ -590,12 +592,12 @@ async fn check_server(
         "check_id": check_id
     });
 
-    println!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}",
+    info!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}",
         form.url, form.port.unwrap_or(50002), check_id
     );
 
     let nats = nats::connect("nats://nats:4222").map_err(|e| {
-        eprintln!("NATS connection error: {}", e);
+        error!("NATS connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to connect to NATS")
     })?;
 
@@ -605,15 +607,15 @@ async fn check_server(
         "zec" => format!("hosh.check.zec"),       // ZEC uses single queue for all checks
         _ => unreachable!("Invalid network"),
     };
-    println!("📤 Publishing to NATS subject: {}", subject);
+    info!("📤 Publishing to NATS subject: {}", subject);
     
     nats.publish(&subject, &serde_json::to_vec(&check_request).unwrap())
         .map_err(|e| {
-            eprintln!("NATS publish error: {}", e);
+            error!("NATS publish error: {}", e);
             actix_web::error::ErrorInternalServerError("Failed to publish check request")
         })?;
 
-    println!("✅ Successfully published check request to NATS");
+    info!("✅ Successfully published check request to NATS");
 
     // Redirect to network-specific check result page, carrying host & port
     Ok(HttpResponse::SeeOther()
@@ -644,13 +646,13 @@ async fn check_result(
 
     // We'll actually fetch from Redis to see if the checker wrote any data
     let mut conn = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
     let prefix = format!("{}:", network_str);
     let keys: Vec<String> = conn.keys(format!("{}*", prefix)).map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
+        error!("Redis keys error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
     })?;
 
@@ -661,7 +663,7 @@ async fn check_result(
     for key in keys {
         // Grab the JSON
         let value: String = conn.get(&key).map_err(|e| {
-            eprintln!("Redis get error for key {}: {}", key, e);
+            error!("Redis get error for key {}: {}", key, e);
             actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
         })?;
 
@@ -708,7 +710,7 @@ async fn check_result(
     };
 
     let html = template.render().map_err(|e| {
-        eprintln!("Template rendering error: {}", e);
+        error!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
 
@@ -725,22 +727,34 @@ fn generate_math_problem() -> (u8, u8, u8) {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Initialize tracing subscriber
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::INFO)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_ansi(true)
+        .pretty()
+        .init();
+
     let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| {
-        println!("⚠️  REDIS_HOST not set, using default 'redis'");
+        warn!("⚠️  REDIS_HOST not set, using default 'redis'");
         "redis".to_string()
     });
     let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| {
-        println!("⚠️  REDIS_PORT not set, using default '6379'");
+        warn!("⚠️  REDIS_PORT not set, using default '6379'");
         "6379".to_string()
     });
     let redis_url = format!("redis://{}:{}", redis_host, redis_port);
     
-    println!("🔌 Connecting to Redis at {}", redis_url);
+    info!("🔌 Connecting to Redis at {}", redis_url);
 
     let redis_client = redis::Client::open(redis_url.as_str())
         .expect("Failed to create Redis client");
 
-    println!("🚀 Starting server at http://0.0.0.0:8080");
+    info!("🚀 Starting server at http://0.0.0.0:8080");
 
     HttpServer::new(move || {
         App::new()

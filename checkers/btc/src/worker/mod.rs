@@ -5,6 +5,7 @@ use std::env;
 use futures_util::stream::StreamExt;
 use crate::routes::electrum::query::{electrum_query, QueryParams};
 use axum::extract::Query;
+use tracing::{debug, error, info};
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CheckRequest {
@@ -142,15 +143,15 @@ impl Worker {
     }
 
     async fn process_check_request(&self, msg: async_nats::Message) {
-        println!("📦 Raw message payload: {:?}", String::from_utf8_lossy(&msg.payload));
+        debug!("Raw message payload: {:?}", String::from_utf8_lossy(&msg.payload));
 
         let data = match String::from_utf8(msg.payload.to_vec()) {
             Ok(data) => {
-                println!("📄 Parsed UTF-8 string: {}", data);
+                debug!("Parsed UTF-8 string: {}", data);
                 data
             }
             Err(e) => {
-                eprintln!("❌ Failed to parse message payload as UTF-8: {}", e);
+                error!("Failed to parse message payload as UTF-8: {}", e);
                 return;
             }
         };
@@ -158,22 +159,24 @@ impl Worker {
         let request = match serde_json::from_str::<CheckRequest>(&data) {
             Ok(req) => {
                 if !req.is_valid() {
-                    eprintln!("❌ Invalid request - missing required fields: {:?}", req);
+                    error!(?req, "Invalid request - missing required fields");
                     return;
                 }
-                println!("✅ Successfully parsed request: {:?}", req);
+                debug!(?req, "Successfully parsed request");
                 req
             }
             Err(e) => {
-                eprintln!("❌ Failed to parse check request: {}", e);
-                println!("🔍 Attempted to parse JSON: {}", data);
-                println!("🔍 Error details: {:#?}", e);
+                error!(%e, data = %data, "Failed to parse check request");
                 return;
             }
         };
 
-        println!("📥 Received check request - host: {}, check_id: {}, user_submitted: {}", 
-                request.host, request.get_check_id(), request.user_submitted);
+        info!(
+            host = %request.host,
+            check_id = %request.get_check_id(),
+            user_submitted = %request.user_submitted,
+            "Processing check request"
+        );
 
         if let Some(server_data) = self.query_server_data(&request).await {
             let redis_key = format!("btc:{}", request.host);
@@ -182,7 +185,7 @@ impl Worker {
             let mut redis_conn = match self.redis.get_async_connection().await {
                 Ok(conn) => conn,
                 Err(e) => {
-                    eprintln!("Failed to connect to Redis: {}", e);
+                    error!(%e, "Failed to connect to Redis");
                     return;
                 }
             };
@@ -193,17 +196,23 @@ impl Worker {
                 .query_async::<_, ()>(&mut redis_conn)
                 .await
             {
-                eprintln!("Failed to save data to Redis: {}", e);
+                error!(%e, "Failed to save data to Redis");
             } else {
-                println!("✅ Data saved to Redis - host: {}, check_id: {}", 
-                        request.host, request.get_check_id());
+                info!(
+                    host = %request.host,
+                    check_id = %request.get_check_id(),
+                    "Successfully saved check data to Redis"
+                );
             }
         }
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
-        println!("🎯 Subscribing to NATS subject: {} with max concurrency: {}", 
-                self.nats_subject, self.max_concurrent_checks);
+        info!(
+            subject = %self.nats_subject,
+            max_concurrent = %self.max_concurrent_checks,
+            "Starting BTC checker worker"
+        );
 
         let mut subscriber = self.nats.subscribe(self.nats_subject.clone()).await?;
         
@@ -219,7 +228,6 @@ impl Worker {
             
             while let Some(msg) = rx.recv().await {
                 if handles.len() >= worker.max_concurrent_checks {
-                    // Wait for at least one task to complete if we hit the limit
                     handles.next().await;
                 }
                 
@@ -229,17 +237,16 @@ impl Worker {
                 }));
             }
             
-            // Wait for remaining tasks to complete
             while let Some(result) = handles.next().await {
                 if let Err(e) = result {
-                    eprintln!("Task error: {}", e);
+                    error!("Task error: {}", e);
                 }
             }
         });
 
         while let Some(msg) = subscriber.next().await {
             if let Err(e) = tx.send(msg).await {
-                eprintln!("Failed to queue message: {}", e);
+                error!("Failed to queue message: {}", e);
             }
         }
 
