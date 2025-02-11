@@ -155,8 +155,9 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-    ports:
-      - "6379:6379"
+    # Uncomment for local development, or use "docker compose exec -ti redis redis-cli"
+    # ports:
+    #   - "6379:6379"
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes
