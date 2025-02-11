@@ -108,11 +108,6 @@ impl Publisher {
             }
         };
 
-        if !Self::is_stale(&data, network, config) {
-            debug!(%key, "Skipping recently checked server");
-            return Ok(());
-        }
-
         let host = key.split_once(':')
             .map(|(_, host)| host)
             .unwrap_or(key);
@@ -128,34 +123,6 @@ impl Publisher {
 
         info!(%key, %subject, "Published check request");
         Ok(())
-    }
-
-    fn is_stale(data: &ServerData, network: &str, config: &Config) -> bool {
-        let last_updated = match data.last_updated {
-            Some(updated) => updated,
-            None => return true,
-        };
-
-        let now = Utc::now();
-        let age = now.signed_duration_since(last_updated);
-        let age_secs = age.num_seconds() as u64;
-
-        if age_secs < 30 {
-            debug!("Skipping recently checked server ({}s ago)", age_secs);
-            return false;
-        }
-
-        let interval = config.get_interval_for_network(network);
-        let interval_secs = interval.as_secs();
-
-        debug!(
-            "Age: {}s, Interval: {}s, Network: {}", 
-            age_secs, 
-            interval_secs, 
-            network
-        );
-
-        age_secs >= interval_secs
     }
 
     fn default_port_for_network(network: &str) -> u16 {
