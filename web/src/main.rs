@@ -9,6 +9,7 @@ use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
 use rand::Rng;
+use std::collections::HashSet;
 
 fn upper(s: &str) -> askama::Result<String> {
     Ok(s.to_uppercase())
@@ -243,6 +244,30 @@ impl CheckTemplate {
 struct CheckQuery {
     host: Option<String>,
     port: Option<u16>,
+}
+
+#[derive(Template)]
+#[template(path = "blockchain_heights.html")]
+struct BlockchainHeightsTemplate {
+    explorer_data: HashMap<String, HashMap<String, u64>>,
+    current_network: &'static str,
+    total_count: usize,
+    online_count: usize,
+    percentile_height: u64,
+}
+
+impl BlockchainHeightsTemplate {
+    fn get_all_symbols(&self) -> Vec<String> {
+        let mut symbols = HashSet::new();
+        for (_, heights) in &self.explorer_data {
+            for symbol in heights.keys() {
+                symbols.insert(symbol.clone());  // Store owned String
+            }
+        }
+        let mut symbols: Vec<_> = symbols.into_iter().collect();
+        symbols.sort_unstable();
+        symbols
+    }
 }
 
 #[get("/")]
@@ -723,6 +748,69 @@ fn generate_math_problem() -> (u8, u8, u8) {
     (a, b, a + b)
 }
 
+#[get("/explorers")]
+async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpResponse> {
+    let mut con = redis.get_connection().map_err(|e| {
+        eprintln!("Redis connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    })?;
+
+    // Get all http:* keys from Redis
+    let keys: Vec<String> = con.keys("http:*").map_err(|e| {
+        eprintln!("Redis keys error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch keys from Redis")
+    })?;
+
+    // Group heights by source in a specific order
+    let mut explorer_data = HashMap::new();
+    let sources = ["blockchair", "blockchain"];  // Define order of sources
+    
+    for source in sources {
+        explorer_data.insert(source.to_string(), HashMap::new());
+    }
+    
+    for key in keys {
+        // Parse the key format "http:source.coin"
+        let parts: Vec<&str> = key.split('.').collect();
+        if parts.len() != 2 {
+            continue;
+        }
+
+        let source = parts[0].replace("http:", ""); // Remove http: prefix
+        let coin = parts[1].to_string();
+
+        // Get the height value
+        let height: u64 = con.get(&key).map_err(|e| {
+            eprintln!("Redis get error for {}: {}", key, e);
+            actix_web::error::ErrorInternalServerError("Failed to fetch height from Redis")
+        })?;
+
+        // Only insert if it's one of our known sources
+        if explorer_data.contains_key(&source) {
+            explorer_data.get_mut(&source)
+                .unwrap()
+                .insert(coin, height);
+        }
+    }
+
+    let template = BlockchainHeightsTemplate {
+        explorer_data,
+        current_network: "",
+        total_count: 0,
+        online_count: 0,
+        percentile_height: 0,
+    };
+
+    let html = template.render().map_err(|e| {
+        eprintln!("Template rendering error: {}", e);
+        actix_web::error::ErrorInternalServerError("Template rendering failed")
+    })?;
+
+    Ok(HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(html))
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| {
@@ -747,6 +835,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(redis_client.clone()))
             .service(fs::Files::new("/static", "./static"))
             .service(root)
+            .service(blockchain_heights)
             .service(network_status)
             .service(server_detail)
             .service(network_api)

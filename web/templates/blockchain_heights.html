@@ -1,0 +1,50 @@
+{% extends "layout.html" %}
+
+{% block content %}
+<div class="row">
+    <div class="col">
+        <div class="card shadow-sm">
+            <div class="table-responsive">
+                <table class="table table-hover table-striped mb-0">
+                    <thead class="table-light">
+                        <tr>
+                            <th>Symbol</th>
+                            <th>Blockchair</th>
+                            <th>Blockchain</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for symbol in self.get_all_symbols() %}
+                            <tr>
+                                <td>{{ symbol }}</td>
+                                <td>
+                                    {% if let Some(heights) = explorer_data.get("blockchair") %}
+                                        {% if let Some(height) = heights.get(symbol) %}
+                                            {{ height }}
+                                        {% else %}
+                                            -
+                                        {% endif %}
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                                <td>
+                                    {% if let Some(heights) = explorer_data.get("blockchain") %}
+                                        {% if let Some(height) = heights.get(symbol) %}
+                                            {{ height }}
+                                        {% else %}
+                                            -
+                                        {% endif %}
+                                    {% else %}
+                                        -
+                                    {% endif %}
+                                </td>
+                            </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %} 

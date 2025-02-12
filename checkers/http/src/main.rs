@@ -1,9 +1,8 @@
 use redis::Commands;
-use std::env;
-use std::collections::HashMap;
-use serde_json::json;
 use std::error::Error;
 use std::fmt;
+use std::time::Duration;
+use tokio::time::sleep;
 
 mod blockchair;
 mod blockchain;
@@ -48,68 +47,60 @@ impl From<std::env::VarError> for CheckerError {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), CheckerError> {
-    // Get Redis connection details from environment variables
-    let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
-    let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let redis_host = std::env::var("REDIS_HOST").unwrap_or_else(|_| {
+        println!("⚠️  REDIS_HOST not set, using default 'redis'");
+        "redis".to_string()
+    });
+    let redis_port = std::env::var("REDIS_PORT").unwrap_or_else(|_| {
+        println!("⚠️  REDIS_PORT not set, using default '6379'");
+        "6379".to_string()
+    });
+    let redis_url = format!("redis://{redis_host}:{redis_port}");
     
-    println!("Connecting to Redis at {}", redis_url);
-
-    // Connect to Redis with retry logic
+    println!("🔌 Connecting to Redis at {}", redis_url);
     let client = redis::Client::open(redis_url.as_str())?;
-    let mut con = match client.get_connection() {
-        Ok(con) => con,
-        Err(e) => {
-            eprintln!("Failed to connect to Redis: {}", e);
-            eprintln!("Make sure Redis is running and accessible at {}", redis_url);
-            return Err(e.into());
+    let mut con = client.get_connection()?;
+
+    loop {
+        // Get blockchain.com heights
+        match blockchain::get_blockchain_info().await {
+            Ok(heights) => {
+                println!("\nBlockchain.com Block Heights:");
+                for (symbol, info) in &heights {
+                    if let Some(height) = info.height {
+                        println!("{}: Height=\"{}\"", symbol, height);
+                        let _: () = con.set(
+                            format!("http:blockchain.{}", symbol),
+                            height
+                        )?;
+                    }
+                }
+                println!("\nTotal blockchain.com heights tracked: {}", heights.len());
+            }
+            Err(e) => println!("Error fetching blockchain.com heights: {}", e),
         }
-    };
 
-    let mut explorer_data = HashMap::new();
-
-    // Fetch blockchain heights from blockchain.com
-    match blockchain::get_blockchain_info().await {
-        Ok(blockchain_heights) => {
-            println!("\nBlockchain.com Block Heights:");
-            let mut heights = HashMap::new();
-            for (symbol, info) in &blockchain_heights {
-                if let Some(height) = info.height {
-                    println!("{}: Height=\"{}\"", symbol, height);
-                    heights.insert(symbol.to_string(), height);
+        // Get blockchair heights
+        match blockchair::get_blockchain_info().await {
+            Ok(heights) => {
+                println!("\nBlockchair Block Heights:");
+                for (symbol, info) in &heights {
+                    if let Some(height) = info.height {
+                        println!("{}: Height=\"{}\"", symbol, height);
+                        let _: () = con.set(
+                            format!("http:blockchair.{}", symbol),
+                            height
+                        )?;
+                    }
                 }
+                println!("\nTotal blockchair heights tracked: {}", heights.len());
             }
-            explorer_data.insert("https://www.blockchain.com/explorer", heights);
-            println!("\nTotal blockchain.com heights tracked: {}", blockchain_heights.len());
-        },
-        Err(e) => println!("Error fetching blockchain.com heights: {}", e),
+            Err(e) => println!("Error fetching blockchair heights: {}", e),
+        }
+
+        // Sleep for 5 minutes
+        println!("\nSleeping for 5 minutes...");
+        sleep(Duration::from_secs(300)).await;
     }
-
-    // Fetch blockchain heights from blockchair
-    match blockchair::get_blockchain_info().await {
-        Ok(blockchair_heights) => {
-            println!("\nBlockchair Block Heights:");
-            let mut heights = HashMap::new();
-            for (chain, info) in &blockchair_heights {
-                if let Some(height) = info.height {
-                    let display_name = info.ticker.as_ref().unwrap_or(chain);
-                    println!("{}: Height=\"{}\"", display_name, height);
-                    heights.insert(chain.to_string(), height);
-                }
-            }
-            explorer_data.insert("https://blockchair.com", heights);
-            println!("\nTotal blockchair heights tracked: {}", blockchair_heights.len());
-        },
-        Err(e) => println!("Error fetching blockchair heights: {}", e),
-    }
-
-    // Store all heights in Redis as a single JSON value
-    let json_value = json!(explorer_data);
-    let _: () = con.set("http:heights", json_value.to_string())?;
-
-    println!("\nTotal explorers tracked: {}", explorer_data.len());
-    println!("Successfully stored blockchain heights in Redis");
-
-    Ok(())
 }

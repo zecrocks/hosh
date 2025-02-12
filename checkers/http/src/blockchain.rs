@@ -13,7 +13,15 @@ async fn fetch_block_height(
     client: &reqwest::Client,
     symbol: &str,
 ) -> Result<Option<u64>, Box<dyn std::error::Error>> {
-    let url = format!("https://www.blockchain.com/explorer/blocks/{}", symbol.to_lowercase());
+    // Map the Redis key name to the correct URL path
+    let url_path = match symbol {
+        "bitcoin" => "btc",
+        "ethereum" => "eth",
+        "bitcoin-cash" => "bch",
+        _ => symbol,
+    };
+
+    let url = format!("https://www.blockchain.com/explorer/blocks/{}", url_path);
     let response = client.get(&url).send().await?;
     
     if !response.status().is_success() {
@@ -42,11 +50,11 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
 
     let mut blockchain_data = HashMap::new();
     
-    // Define the supported blockchains
+    // Define the supported blockchains with their URLs and display names
     let supported_chains = vec![
-        ("BTC", "Bitcoin"),
-        ("ETH", "Ethereum"),
-        ("BCH", "Bitcoin Cash"),
+        ("bitcoin", "Bitcoin"),
+        ("ethereum", "Ethereum"),
+        ("bitcoin-cash", "Bitcoin Cash"),
     ];
 
     for (symbol, name) in supported_chains {
@@ -72,8 +80,6 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
 
 // Move market data fetching to a utility module
 pub mod utils {
-    use super::*;
-
     #[derive(Debug)]
     pub struct CryptoMarketInfo {
         pub name: String,

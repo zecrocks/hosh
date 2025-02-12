@@ -96,28 +96,28 @@ services:
       btc-backend:
         condition: service_healthy
 
-  # publisher:
-  #   build: 
-  #     context: ./publisher
-  #     dockerfile: Dockerfile
-  #   image: hosh/publisher-rust
-  #   container_name: publisher
-  #   environment:
-  #     - RUST_LOG=info
-  #     - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
-  #     - NATS_URL=${NATS_URL:-nats://nats:4222}
-  #     - NATS_PREFIX=${NATS_PREFIX:-hosh.}
-  #     - REDIS_HOST=${REDIS_HOST:-redis}
-  #     - REDIS_PORT=${REDIS_PORT:-6379}
-  #   depends_on:
-  #     redis:
-  #       condition: service_healthy
-  #     nats:
-  #       condition: service_healthy
-  #     checker-btc:
-  #       condition: service_started
-  #     checker-zec:
-  #       condition: service_started
+  publisher:
+    build: 
+      context: ./publisher
+      dockerfile: Dockerfile
+    image: hosh/publisher-rust
+    container_name: publisher
+    environment:
+      - RUST_LOG=info
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - NATS_PREFIX=${NATS_PREFIX:-hosh.}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      checker-btc:
+        condition: service_started
+      checker-zec:
+        condition: service_started
 
   checker-btc:
     build: checkers/btc
