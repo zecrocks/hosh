@@ -242,38 +242,28 @@ def update_tables(clear_servers_clicks, clear_explorers_clicks, auto_refresh_int
     # Get current time in UTC
     now = datetime.now(timezone.utc)
 
-    # Process LastUpdated timestamps
-    for record in server_data:
-        if 'LastUpdated' in record:
-            last_updated_str = record['LastUpdated'].strip()
-
-            if last_updated_str in ["0001-01-01T00:00:00", "0001-01-01T00:00:00Z"]:
-                record['LastUpdated'] = "Never Updated"
-                continue
-
+    # Convert 'last_updated' to time delta
+    for record in data:
+        if 'last_updated' in record:
+            last_updated_str = record['last_updated'].strip()
             try:
-                if last_updated_str.isdigit():
-                    last_updated = datetime.fromtimestamp(int(last_updated_str), tz=timezone.utc)
-                else:
-                    last_updated = datetime.fromisoformat(last_updated_str)
-                    if last_updated.tzinfo is None:
-                        last_updated = last_updated.replace(tzinfo=timezone.utc)
-
-                time_delta = now - last_updated
-                seconds = int(time_delta.total_seconds())
+                last_updated = datetime.fromisoformat(last_updated_str.replace('Z', '+00:00'))
+                delta = now - last_updated
+                seconds = int(delta.total_seconds())
                 
-                if seconds < 60:
-                    record['LastUpdated'] = f"{seconds}s ago"
+                if seconds < 0:
+                    record['last_updated'] = "Never Updated"
+                elif seconds < 60:
+                    record['last_updated'] = f"{seconds}s ago"
                 elif seconds < 3600:
-                    record['LastUpdated'] = f"{seconds // 60}m ago"
+                    record['last_updated'] = f"{seconds // 60}m ago"
                 elif seconds < 86400:
-                    record['LastUpdated'] = f"{seconds // 3600}h {(seconds % 3600) // 60}m ago"
+                    record['last_updated'] = f"{seconds // 3600}h {(seconds % 3600) // 60}m ago"
                 else:
-                    record['LastUpdated'] = f"{seconds // 86400}d {(seconds % 86400) // 3600}h ago"
-
+                    record['last_updated'] = f"{seconds // 86400}d {(seconds % 86400) // 3600}h ago"
             except Exception as e:
-                print(f"Error parsing LastUpdated: {e} (Value: {last_updated_str})")
-                record['LastUpdated'] = "Invalid Time"
+                print(f"Error parsing last_updated: {e} (Value: {last_updated_str})")
+                record['last_updated'] = "Invalid Time"
 
     # Sort the server data
     sorted_data = sorted(server_data, key=lambda record: record.get("host", "").lower())
