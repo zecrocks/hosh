@@ -37,7 +37,6 @@ struct ServerData {
     #[serde(default)]
     status: String,
     error: Option<String>,
-    #[serde(rename = "LastUpdated")]
     last_updated: DateTime<Utc>,
     #[serde(default)]
     ping: f64,
