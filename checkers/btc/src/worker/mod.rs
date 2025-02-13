@@ -109,7 +109,7 @@ impl Worker {
                         .and_then(|v| v.as_str())
                         .unwrap_or(&request.version)
                         .to_string(),
-                    last_updated: Utc::now(),
+                    last_updated: chrono::Utc::now(),
                     ping: data.get("ping").and_then(|v| v.as_f64()),
                     error: false,
                     error_type: None,
@@ -126,7 +126,7 @@ impl Worker {
                     port: request.port,
                     height: 0,
                     electrum_version: request.version.clone(),
-                    last_updated: Utc::now(),
+                    last_updated: chrono::Utc::now(),
                     ping: None,
                     error: true,
                     error_type: Some("connection_error".to_string()),
