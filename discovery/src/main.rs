@@ -44,13 +44,9 @@ struct ServerData {
 
 #[derive(Debug, Deserialize)]
 struct BtcServerDetails {
-    s: Option<u16>,
+    #[serde(default)]
+    s: Option<String>,
     version: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct BtcServersResponse {
-    servers: std::collections::HashMap<String, BtcServerDetails>,
 }
 
 async fn fetch_btc_servers() -> Result<std::collections::HashMap<String, BtcServerDetails>, Box<dyn Error>> {
@@ -61,8 +57,9 @@ async fn fetch_btc_servers() -> Result<std::collections::HashMap<String, BtcServ
         .send()
         .await?;
     
-    let servers: BtcServersResponse = response.json().await?;
-    Ok(servers.servers)
+    // Directly deserialize the response
+    let servers: std::collections::HashMap<String, BtcServerDetails> = response.json().await?;
+    Ok(servers)
 }
 
 async fn update_servers(redis_client: redis::Client) -> Result<(), Box<dyn Error>> {
@@ -74,9 +71,13 @@ async fn update_servers(redis_client: redis::Client) -> Result<(), Box<dyn Error
                 for (host, details) in btc_servers {
                     let redis_key = format!("btc:{}", host);
                     if !conn.exists::<_, bool>(&redis_key)? {
+                        let port = details.s
+                            .and_then(|s| s.parse::<u16>().ok())
+                            .unwrap_or(50002);
+
                         let server_data = ServerData {
                             host: host.clone(),
-                            port: details.s.unwrap_or(50002),
+                            port,
                             height: 0,
                             status: "new".to_string(),
                             error: None,
