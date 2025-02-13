@@ -1,18 +1,22 @@
-FROM python:3.11-slim
-
-ENV PYTHONUNBUFFERED=1
+FROM rust:1.75-slim as builder
 
 RUN apt-get update && apt-get install -y \
-    wget \
-    redis-tools \
-    && apt-get clean \
+    pkg-config \
+    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /app
+WORKDIR /usr/src/app
+COPY . .
 
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+RUN cargo build --release
 
-COPY discovery.py .
+FROM debian:bookworm-slim
 
-CMD ["python", "discovery.py"] 
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    libssl3 \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY --from=builder /usr/src/app/target/release/discovery /usr/local/bin/discovery
+
+CMD ["discovery"] 
