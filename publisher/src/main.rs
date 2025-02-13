@@ -82,8 +82,8 @@ struct ServerData {
     #[serde(rename = "electrum_version", default, deserialize_with = "int_or_string")]
     electrum_version: Option<String>,
 
-    // Make LastUpdated optional and use a custom deserializer
-    #[serde(rename = "LastUpdated", default, deserialize_with = "deserialize_datetime")]
+    // Make last_updated optional and use a custom deserializer
+    #[serde(default, deserialize_with = "deserialize_datetime")]
     last_updated: Option<DateTime<Utc>>,
 
     #[serde(default)]

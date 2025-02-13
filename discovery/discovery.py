@@ -54,7 +54,7 @@ async def update_servers(redis_client):
                         'port': details.get('s', 50002),
                         'version': details.get('version', 'unknown'),
                         'height': 0,
-                        'LastUpdated': datetime.datetime.min.isoformat()
+                        'last_updated': datetime.datetime.min.isoformat()
                     }
                     redis_client.set(redis_key, json.dumps(server_data))
                     print(f"Added new BTC server: {host}")
@@ -67,7 +67,7 @@ async def update_servers(redis_client):
                         'host': server['host'],
                         'port': server['port'],
                         'height': 0,
-                        'LastUpdated': datetime.datetime.min.isoformat()
+                        'last_updated': datetime.datetime.min.isoformat()
                     }
                     redis_client.set(redis_key, json.dumps(server_data))
                     print(f"Added new ZEC server: {server['host']}")
