@@ -250,24 +250,33 @@ struct CheckQuery {
 #[template(path = "blockchain_heights.html")]
 struct BlockchainHeightsTemplate {
     explorer_data: HashMap<String, HashMap<String, u64>>,
-    current_network: &'static str,
-    total_count: usize,
-    online_count: usize,
-    percentile_height: u64,
 }
 
 impl BlockchainHeightsTemplate {
     fn get_all_symbols(&self) -> Vec<String> {
         let mut symbols = HashSet::new();
+        
+        // Collect all unique chain names from all sources
         for (_, heights) in &self.explorer_data {
             for symbol in heights.keys() {
-                symbols.insert(symbol.clone());  // Store owned String
+                symbols.insert(symbol.clone());
             }
         }
+        
+        // Sort them for consistent display
         let mut symbols: Vec<_> = symbols.into_iter().collect();
         symbols.sort_unstable();
         symbols
     }
+}
+
+#[derive(Debug)]
+struct ExplorerRow {
+    chain: String,
+    blockchair: Option<u64>,
+    blockchain_com: Option<u64>,
+    blockstream: Option<u64>,
+    zecrocks: Option<u64>,
 }
 
 #[get("/")]
@@ -755,52 +764,36 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
-    // Get all http:* keys from Redis
-    let keys: Vec<String> = con.keys("http:*").map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to fetch keys from Redis")
-    })?;
-
-    // Group heights by source in a specific order
+    // Group heights by source
     let mut explorer_data = HashMap::new();
-    let sources = ["blockchair", "blockchain"];  // Define order of sources
+    let sources = ["blockchair", "blockchain", "blockstream", "zecrocks"];
     
     for source in sources {
         explorer_data.insert(source.to_string(), HashMap::new());
     }
+
+    // Get all keys matching http:*
+    let keys: Vec<String> = con.keys("http:*").map_err(|e| {
+        eprintln!("Redis keys error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch keys from Redis")
+    })?;
     
     for key in keys {
-        // Parse the key format "http:source.coin"
-        let parts: Vec<&str> = key.split('.').collect();
-        if parts.len() != 2 {
-            continue;
-        }
-
-        let source = parts[0].replace("http:", ""); // Remove http: prefix
-        let coin = parts[1].to_string();
-
-        // Get the height value
-        let height: u64 = con.get(&key).map_err(|e| {
-            eprintln!("Redis get error for {}: {}", key, e);
-            actix_web::error::ErrorInternalServerError("Failed to fetch height from Redis")
-        })?;
-
-        // Only insert if it's one of our known sources
-        if explorer_data.contains_key(&source) {
-            explorer_data.get_mut(&source)
-                .unwrap()
-                .insert(coin, height);
+        if let Ok(height) = con.get::<_, u64>(&key) {
+            // Parse the key format "http:source.chain"
+            let parts: Vec<&str> = key.split('.').collect();
+            if parts.len() == 2 {
+                let source = parts[0].replace("http:", "");
+                let chain = parts[1].to_string();
+                
+                if let Some(heights) = explorer_data.get_mut(&source) {
+                    heights.insert(chain, height);
+                }
+            }
         }
     }
 
-    let template = BlockchainHeightsTemplate {
-        explorer_data,
-        current_network: "",
-        total_count: 0,
-        online_count: 0,
-        percentile_height: 0,
-    };
-
+    let template = BlockchainHeightsTemplate { explorer_data };
     let html = template.render().map_err(|e| {
         eprintln!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")

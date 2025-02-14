@@ -1,11 +1,6 @@
 use scraper::{Html, Selector};
 use std::collections::HashMap;
-
-#[derive(Debug)]
-pub struct BlockchainInfo {
-    pub height: Option<u64>,
-    pub ticker: Option<String>,
-}
+use crate::blockchain::BlockchainInfo;
 
 pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
@@ -45,11 +40,14 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
                 }
 
                 // Get first ticker symbol (if any)
-                let ticker = tickers.into_iter().next();
+                let symbol = card.select(&ticker_selector)
+                    .next()
+                    .map(|el| el.text().collect::<String>().trim().to_string());
 
-                blockchain_data.insert(endpoint, BlockchainInfo {
+                blockchain_data.insert(endpoint.clone(), BlockchainInfo {
                     height,
-                    ticker,
+                    name: endpoint.to_string(),  // Use endpoint as name
+                    symbol: symbol.unwrap_or_else(|| endpoint.to_string()),
                 });
             }
         }

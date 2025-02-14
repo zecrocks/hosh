@@ -3,9 +3,16 @@ use std::error::Error;
 use std::fmt;
 use std::time::Duration;
 use tokio::time::sleep;
+use std::collections::HashMap;
 
 mod blockchair;
 mod blockchain;
+mod blockstream;
+mod mempool;
+mod zecrocks;
+
+// Keep this import since we'll use it as our canonical BlockchainInfo
+use blockchain::BlockchainInfo;
 
 #[derive(Debug)]
 enum CheckerError {
@@ -47,7 +54,7 @@ impl From<std::env::VarError> for CheckerError {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
+async fn main() -> Result<(), Box<dyn Error>> {
     let redis_host = std::env::var("REDIS_HOST").unwrap_or_else(|_| {
         println!("⚠️  REDIS_HOST not set, using default 'redis'");
         "redis".to_string()
@@ -63,40 +70,65 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut con = client.get_connection()?;
 
     loop {
-        // Get blockchain.com heights
-        match blockchain::get_blockchain_info().await {
-            Ok(heights) => {
-                println!("\nBlockchain.com Block Heights:");
-                for (symbol, info) in &heights {
-                    if let Some(height) = info.height {
-                        println!("{}: Height=\"{}\"", symbol, height);
-                        let _: () = con.set(
-                            format!("http:blockchain.{}", symbol),
-                            height
-                        )?;
-                    }
+        // Fetch data from all sources concurrently
+        let (blockstream_result, /*mempool_result,*/ zecrocks_result, blockchair_result, blockchain_result) = tokio::join!(
+            blockstream::get_blockchain_info(),
+            // mempool::get_blockchain_info(),  // Commented out until we can parse it properly
+            zecrocks::get_blockchain_info(),
+            blockchair::get_blockchain_info(),
+            blockchain::get_blockchain_info()
+        );
+
+        // Add blockstream data
+        if let Ok(data) = blockstream_result {
+            for (chain, info) in data {
+                if let Some(height) = info.height {
+                    println!("{} height: {} (blockstream)", info.name, height);
+                    let _: () = con.set(
+                        format!("http:blockstream.{}", chain),
+                        height
+                    )?;
                 }
-                println!("\nTotal blockchain.com heights tracked: {}", heights.len());
             }
-            Err(e) => println!("Error fetching blockchain.com heights: {}", e),
         }
 
-        // Get blockchair heights
-        match blockchair::get_blockchain_info().await {
-            Ok(heights) => {
-                println!("\nBlockchair Block Heights:");
-                for (symbol, info) in &heights {
-                    if let Some(height) = info.height {
-                        println!("{}: Height=\"{}\"", symbol, height);
-                        let _: () = con.set(
-                            format!("http:blockchair.{}", symbol),
-                            height
-                        )?;
-                    }
+        // Add zecrocks data
+        if let Ok(data) = zecrocks_result {
+            for (chain, info) in data {
+                if let Some(height) = info.height {
+                    println!("{} height: {} (zecrocks)", info.name, height);
+                    let _: () = con.set(
+                        format!("http:zecrocks.{}", chain),
+                        height
+                    )?;
                 }
-                println!("\nTotal blockchair heights tracked: {}", heights.len());
             }
-            Err(e) => println!("Error fetching blockchair heights: {}", e),
+        }
+
+        // Add blockchair data
+        if let Ok(data) = blockchair_result {
+            for (chain, info) in data {
+                if let Some(height) = info.height {
+                    println!("{} height: {} (blockchair)", info.name, height);
+                    let _: () = con.set(
+                        format!("http:blockchair.{}", chain),
+                        height
+                    )?;
+                }
+            }
+        }
+
+        // Add blockchain.com data
+        if let Ok(data) = blockchain_result {
+            for (chain, info) in data {
+                if let Some(height) = info.height {
+                    println!("{} height: {} (blockchain)", info.name, height);
+                    let _: () = con.set(
+                        format!("http:blockchain.{}", chain),
+                        height
+                    )?;
+                }
+            }
         }
 
         // Sleep for 5 minutes

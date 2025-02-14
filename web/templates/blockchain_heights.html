@@ -1,50 +1,100 @@
-{% extends "layout.html" %}
+{% extends "base.html" %}
 
 {% block content %}
-<div class="row">
-    <div class="col">
-        <div class="card shadow-sm">
-            <div class="table-responsive">
-                <table class="table table-hover table-striped mb-0">
-                    <thead class="table-light">
-                        <tr>
-                            <th>Symbol</th>
-                            <th>Blockchair</th>
-                            <th>Blockchain</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                        {% for symbol in self.get_all_symbols() %}
-                            <tr>
-                                <td>{{ symbol }}</td>
-                                <td>
-                                    {% if let Some(heights) = explorer_data.get("blockchair") %}
-                                        {% if let Some(height) = heights.get(symbol) %}
-                                            {{ height }}
-                                        {% else %}
-                                            -
-                                        {% endif %}
-                                    {% else %}
-                                        -
-                                    {% endif %}
-                                </td>
-                                <td>
-                                    {% if let Some(heights) = explorer_data.get("blockchain") %}
-                                        {% if let Some(height) = heights.get(symbol) %}
-                                            {{ height }}
-                                        {% else %}
-                                            -
-                                        {% endif %}
-                                    {% else %}
-                                        -
-                                    {% endif %}
-                                </td>
-                            </tr>
-                        {% endfor %}
-                    </tbody>
-                </table>
-            </div>
-        </div>
+<div class="container mx-auto px-4 py-8">
+    <div class="mb-6">
+        <a href="/zec" class="text-indigo-600 hover:text-indigo-800 flex items-center gap-2">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 19l-7-7m0 0l7-7m-7 7h18"/>
+            </svg>
+            Back to Light Wallet Uptime
+        </a>
+    </div>
+
+    <h1 class="text-2xl font-bold mb-4">Blockchain Heights</h1>
+    <div class="overflow-x-auto">
+        <table class="min-w-full bg-white border border-gray-300">
+            <thead>
+                <tr class="bg-gray-100">
+                    <th class="px-4 py-2 border">Chain</th>
+                    <th class="px-4 py-2 border">
+                        <div class="flex items-center gap-2">
+                            <img src="https://blockchair.com/favicon.ico" alt="Blockchair" class="w-4 h-4">
+                            Blockchair
+                        </div>
+                    </th>
+                    <th class="px-4 py-2 border">
+                        <div class="flex items-center gap-2">
+                            <img src="https://www.blockchain.com/favicon.ico" alt="Blockchain.com" class="w-4 h-4">
+                            Blockchain.com
+                        </div>
+                    </th>
+                    <th class="px-4 py-2 border">
+                        <div class="flex items-center gap-2">
+                            <img src="https://blockstream.info/favicon.ico" alt="Blockstream" class="w-4 h-4">
+                            Blockstream
+                        </div>
+                    </th>
+                    <th class="px-4 py-2 border">
+                        <div class="flex items-center gap-2">
+                            <img src="https://explorer.zec.rocks/favicon.ico" alt="Zec.rocks" class="w-4 h-4">
+                            Zec.rocks
+                        </div>
+                    </th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for symbol in self.get_all_symbols() %}
+                <tr>
+                    <td class="px-4 py-2 border">{{ symbol }}</td>
+                    <td class="px-4 py-2 border">
+                        {% if let Some(heights) = explorer_data.get("blockchair") %}
+                            {% if let Some(height) = heights.get(symbol) %}
+                                {{ height }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-2 border">
+                        {% if let Some(heights) = explorer_data.get("blockchain") %}
+                            {% if let Some(height) = heights.get(symbol) %}
+                                {{ height }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-2 border">
+                        {% if let Some(heights) = explorer_data.get("blockstream") %}
+                            {% if let Some(height) = heights.get(symbol) %}
+                                {{ height }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-2 border">
+                        {% if let Some(heights) = explorer_data.get("zecrocks") %}
+                            {% if let Some(height) = heights.get(symbol) %}
+                                {{ height }}
+                            {% else %}
+                                -
+                            {% endif %}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
     </div>
 </div>
 {% endblock %} 
