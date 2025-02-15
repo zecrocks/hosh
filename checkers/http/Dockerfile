@@ -1,4 +1,4 @@
-FROM rust:1.84-slim-bullseye as builder
+FROM rust:1.75-slim-bullseye as builder
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
@@ -10,26 +10,32 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /usr/src/app
 
 # Copy manifests
-COPY checkers/http/Cargo.toml checkers/http/Cargo.lock ./
+COPY Cargo.toml Cargo.lock ./
 
-# Build dummy main to cache dependencies
+# Create dummy source and build dependencies
 RUN mkdir -p src && \
     echo "fn main() {println!(\"dummy\");}" > src/main.rs && \
+    # cargo generate-lockfile && \
     cargo build --release && \
-    rm -rf src target/release/deps/checker_http*
+    rm -rf src target/release/checker-http
 
-# Copy source code
-COPY checkers/http/src ./src
+# Copy actual source
+COPY src ./src
 
-# Build actual binary
+# Build for release
 RUN touch ./src/main.rs && cargo build --release
 
 FROM debian:bullseye-slim
+
+WORKDIR /usr/src/app
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/src/app/target/release/checker-http /usr/local/bin/
+# Copy the app directory from builder
+COPY --from=builder /usr/src/app /usr/src/app
+
+COPY --from=builder /usr/src/app/target/release/checker-http /usr/local/bin/checker-http
 
 CMD ["checker-http"] 

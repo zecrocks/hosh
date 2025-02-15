@@ -249,18 +249,21 @@ struct CheckQuery {
 #[derive(Template)]
 #[template(path = "blockchain_heights.html")]
 struct BlockchainHeightsTemplate {
-    explorer_data: HashMap<String, HashMap<String, u64>>,
+    rows: Vec<ExplorerRow>,
 }
 
 impl BlockchainHeightsTemplate {
+    // Helper function to format chain names
+    fn format_chain_name(&self, chain: &str) -> String {
+        chain.replace("-", " ")
+    }
+
     fn get_all_symbols(&self) -> Vec<String> {
         let mut symbols = HashSet::new();
         
         // Collect all unique chain names from all sources
-        for (_, heights) in &self.explorer_data {
-            for symbol in heights.keys() {
-                symbols.insert(symbol.clone());
-            }
+        for row in &self.rows {
+            symbols.insert(row.chain.clone());
         }
         
         // Sort them for consistent display
@@ -277,6 +280,7 @@ struct ExplorerRow {
     blockchain_com: Option<u64>,
     blockstream: Option<u64>,
     zecrocks: Option<u64>,
+    zcashexplorer: Option<u64>,
 }
 
 #[get("/")]
@@ -766,9 +770,9 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
 
     // Group heights by source
     let mut explorer_data = HashMap::new();
-    let sources = ["blockchair", "blockchain", "blockstream", "zecrocks"];
+    let sources = ["blockchair", "blockchain", "blockstream", "zecrocks", "zcashexplorer"];
     
-    for source in sources {
+    for source in &sources {
         explorer_data.insert(source.to_string(), HashMap::new());
     }
 
@@ -778,6 +782,9 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
         actix_web::error::ErrorInternalServerError("Failed to fetch keys from Redis")
     })?;
     
+    // Collect all unique chains
+    let mut chains = HashSet::new();
+    
     for key in keys {
         if let Ok(height) = con.get::<_, u64>(&key) {
             // Parse the key format "http:source.chain"
@@ -786,6 +793,8 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
                 let source = parts[0].replace("http:", "");
                 let chain = parts[1].to_string();
                 
+                chains.insert(chain.clone());
+                
                 if let Some(heights) = explorer_data.get_mut(&source) {
                     heights.insert(chain, height);
                 }
@@ -793,7 +802,48 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
         }
     }
 
-    let template = BlockchainHeightsTemplate { explorer_data };
+    // Sort chains for consistent display
+    let mut chains: Vec<_> = chains.into_iter().collect();
+    chains.sort_unstable();
+
+    // Build rows
+    let mut rows = Vec::new();
+    for chain in &chains {
+        let row = ExplorerRow {
+            chain: chain.clone(),
+            blockchair:    explorer_data.get("blockchair").and_then(|h| h.get(chain)).copied(),
+            blockchain_com: explorer_data.get("blockchain").and_then(|h| h.get(chain)).copied(),
+            blockstream:   explorer_data.get("blockstream").and_then(|h| h.get(chain)).copied(),
+            zecrocks:      explorer_data.get("zecrocks").and_then(|h| h.get(chain)).copied(),
+            zcashexplorer: explorer_data.get("zcashexplorer").and_then(|h| h.get(chain)).copied(),
+        };
+        rows.push(row);
+    }
+
+    // After building rows, before creating template
+    // Sort rows by number of active explorers (non-None values) in descending order
+    rows.sort_by(|a, b| {
+        let a_count = [
+            a.blockchair.is_some(),
+            a.blockchain_com.is_some(),
+            a.blockstream.is_some(),
+            a.zecrocks.is_some(),
+            a.zcashexplorer.is_some()
+        ].iter().filter(|&&x| x).count();
+
+        let b_count = [
+            b.blockchair.is_some(),
+            b.blockchain_com.is_some(),
+            b.blockstream.is_some(),
+            b.zecrocks.is_some(),
+            b.zcashexplorer.is_some()
+        ].iter().filter(|&&x| x).count();
+
+        // Sort by count descending, then by chain name ascending for ties
+        b_count.cmp(&a_count).then(a.chain.cmp(&b.chain))
+    });
+
+    let template = BlockchainHeightsTemplate { rows };
     let html = template.render().map_err(|e| {
         eprintln!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")

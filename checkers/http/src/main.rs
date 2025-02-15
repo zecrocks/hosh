@@ -10,6 +10,7 @@ mod blockchain;
 mod blockstream;
 mod mempool;
 mod zecrocks;
+mod zcashexplorer;
 
 // Keep this import since we'll use it as our canonical BlockchainInfo
 use blockchain::BlockchainInfo;
@@ -71,12 +72,13 @@ async fn main() -> Result<(), Box<dyn Error>> {
 
     loop {
         // Fetch data from all sources concurrently
-        let (blockstream_result, /*mempool_result,*/ zecrocks_result, blockchair_result, blockchain_result) = tokio::join!(
+        let (blockstream_result, /*mempool_result,*/ zecrocks_result, blockchair_result, blockchain_result, zcashexplorer_result) = tokio::join!(
             blockstream::get_blockchain_info(),
             // mempool::get_blockchain_info(),  // Commented out until we can parse it properly
             zecrocks::get_blockchain_info(),
             blockchair::get_blockchain_info(),
-            blockchain::get_blockchain_info()
+            blockchain::get_blockchain_info(),
+            zcashexplorer::get_blockchain_info()
         );
 
         // Add blockstream data
@@ -125,6 +127,19 @@ async fn main() -> Result<(), Box<dyn Error>> {
                     println!("{} height: {} (blockchain)", info.name, height);
                     let _: () = con.set(
                         format!("http:blockchain.{}", chain),
+                        height
+                    )?;
+                }
+            }
+        }
+
+        // Add zcashexplorer data
+        if let Ok(data) = zcashexplorer_result {
+            for (chain, info) in data {
+                if let Some(height) = info.height {
+                    println!("{} height: {} (zcashexplorer)", info.name, height);
+                    let _: () = con.set(
+                        format!("http:zcashexplorer.{}", chain),
                         height
                     )?;
                 }

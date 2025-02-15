@@ -178,9 +178,13 @@ services:
     build: checkers/http
     image: hosh/checker-http
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      NATS_HOST: nats
+      NATS_PORT: 4222
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
     depends_on:
+      nats:
+        condition: service_healthy
       redis:
         condition: service_healthy
 

@@ -20,73 +20,88 @@
                     <th class="px-4 py-2 border">
                         <div class="flex items-center gap-2">
                             <img src="https://blockchair.com/favicon.ico" alt="Blockchair" class="w-4 h-4">
-                            Blockchair
+                            <a href="https://blockchair.com" class="hover:text-indigo-600" target="_blank" rel="noopener">
+                                Blockchair
+                            </a>
                         </div>
                     </th>
                     <th class="px-4 py-2 border">
                         <div class="flex items-center gap-2">
                             <img src="https://www.blockchain.com/favicon.ico" alt="Blockchain.com" class="w-4 h-4">
-                            Blockchain.com
+                            <a href="https://www.blockchain.com/explorer" class="hover:text-indigo-600" target="_blank" rel="noopener">
+                                Blockchain.com
+                            </a>
                         </div>
                     </th>
                     <th class="px-4 py-2 border">
                         <div class="flex items-center gap-2">
                             <img src="https://blockstream.info/favicon.ico" alt="Blockstream" class="w-4 h-4">
-                            Blockstream
+                            <a href="https://blockstream.info" class="hover:text-indigo-600" target="_blank" rel="noopener">
+                                Blockstream
+                            </a>
                         </div>
                     </th>
                     <th class="px-4 py-2 border">
                         <div class="flex items-center gap-2">
                             <img src="https://explorer.zec.rocks/favicon.ico" alt="Zec.rocks" class="w-4 h-4">
-                            Zec.rocks
+                            <a href="https://explorer.zec.rocks" class="hover:text-indigo-600" target="_blank" rel="noopener">
+                                Zec.rocks
+                            </a>
+                        </div>
+                    </th>
+                    <th class="px-4 py-2 border">
+                        <div class="flex items-center gap-2">
+                            <img src="https://mainnet.zcashexplorer.app/favicon.ico" alt="Zcash Explorer" class="w-4 h-4">
+                            <a href="https://mainnet.zcashexplorer.app" class="hover:text-indigo-600" target="_blank" rel="noopener">
+                                Zcash Explorer
+                            </a>
                         </div>
                     </th>
                 </tr>
             </thead>
             <tbody>
-                {% for symbol in self.get_all_symbols() %}
+                {% for row in rows %}
                 <tr>
-                    <td class="px-4 py-2 border">{{ symbol }}</td>
                     <td class="px-4 py-2 border">
-                        {% if let Some(heights) = explorer_data.get("blockchair") %}
-                            {% if let Some(height) = heights.get(symbol) %}
-                                {{ height }}
-                            {% else %}
-                                -
-                            {% endif %}
+                        <div class="flex items-center gap-2">
+                            <img src="https://loutre.blockchair.io/w4/assets/images/blockchains/{{ row.chain }}/logo_light_48.webp" 
+                                 alt="{{ row.chain }}" 
+                                 class="w-6 h-6"
+                                 onerror="this.onerror=null; this.src='https://blockchair.com/favicon.ico';">
+                            <span class="capitalize">{{ self.format_chain_name(row.chain) }}</span>
+                        </div>
+                    </td>
+                    <td class="px-4 py-2 border">
+                        {% if let Some(height) = row.blockchair %}
+                            {{ height }}
                         {% else %}
                             -
                         {% endif %}
                     </td>
                     <td class="px-4 py-2 border">
-                        {% if let Some(heights) = explorer_data.get("blockchain") %}
-                            {% if let Some(height) = heights.get(symbol) %}
-                                {{ height }}
-                            {% else %}
-                                -
-                            {% endif %}
+                        {% if let Some(height) = row.blockchain_com %}
+                            {{ height }}
                         {% else %}
                             -
                         {% endif %}
                     </td>
                     <td class="px-4 py-2 border">
-                        {% if let Some(heights) = explorer_data.get("blockstream") %}
-                            {% if let Some(height) = heights.get(symbol) %}
-                                {{ height }}
-                            {% else %}
-                                -
-                            {% endif %}
+                        {% if let Some(height) = row.blockstream %}
+                            {{ height }}
                         {% else %}
                             -
                         {% endif %}
                     </td>
                     <td class="px-4 py-2 border">
-                        {% if let Some(heights) = explorer_data.get("zecrocks") %}
-                            {% if let Some(height) = heights.get(symbol) %}
-                                {{ height }}
-                            {% else %}
-                                -
-                            {% endif %}
+                        {% if let Some(height) = row.zecrocks %}
+                            {{ height }}
+                        {% else %}
+                            -
+                        {% endif %}
+                    </td>
+                    <td class="px-4 py-2 border">
+                        {% if let Some(height) = row.zcashexplorer %}
+                            {{ height }}
                         {% else %}
                             -
                         {% endif %}
