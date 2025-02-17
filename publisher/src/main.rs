@@ -187,6 +187,23 @@ async fn publish_checks(
     loop {
         interval.tick().await;
         
+        // Publish single HTTP check request
+        let subject = format!("{}check.http", config.nats_prefix);
+        let message = serde_json::json!({
+            "type": "http",
+            "host": "trigger",  // Dummy value since the checker knows what to do
+            "port": 0,
+            "user_submitted": false,
+            "check_id": None::<String>
+        });
+
+        if let Err(e) = nats.publish(subject.clone(), message.to_string().into()).await {
+            tracing::error!("Failed to publish HTTP check trigger: {}", e);
+        } else {
+            tracing::info!("Published HTTP check trigger");
+        }
+
+        // Then handle the regular BTC/ZEC checks from Redis
         for prefix in PREFIXES {
             let keys: Vec<String> = match redis.keys(format!("{prefix}*")).await {
                 Ok(keys) => keys,

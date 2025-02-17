@@ -1,9 +1,10 @@
 use redis::Commands;
 use std::error::Error;
 use std::fmt;
-use std::time::Duration;
-use tokio::time::sleep;
-use std::collections::HashMap;
+use futures_util::StreamExt;
+use serde::{Deserialize, Serialize};
+use chrono::{DateTime, Utc};
+use std::time::Instant;
 
 mod blockchair;
 mod blockchain;
@@ -54,27 +55,65 @@ impl From<std::env::VarError> for CheckerError {
     }
 }
 
+#[derive(Debug, Deserialize)]
+struct CheckRequest {
+    host: String,
+    port: u16,
+    check_id: Option<String>,
+    user_submitted: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct CheckResult {
+    host: String,
+    port: u16,
+    height: u64,
+    status: String,
+    error: Option<String>,
+    #[serde(rename = "LastUpdated")]
+    last_updated: DateTime<Utc>,
+    ping: f64,
+    check_id: Option<String>,
+    user_submitted: Option<bool>,
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    let redis_host = std::env::var("REDIS_HOST").unwrap_or_else(|_| {
-        println!("⚠️  REDIS_HOST not set, using default 'redis'");
-        "redis".to_string()
-    });
-    let redis_port = std::env::var("REDIS_PORT").unwrap_or_else(|_| {
-        println!("⚠️  REDIS_PORT not set, using default '6379'");
-        "6379".to_string()
-    });
-    let redis_url = format!("redis://{redis_host}:{redis_port}");
+    let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
+    let nats_url = format!(
+        "nats://{}:{}",
+        std::env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
+        std::env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
+    );
+
+    let redis_url = format!(
+        "redis://{}:{}",
+        std::env::var("REDIS_HOST").unwrap_or_else(|_| "redis".into()),
+        std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
+    );
     
     println!("🔌 Connecting to Redis at {}", redis_url);
     let client = redis::Client::open(redis_url.as_str())?;
     let mut con = client.get_connection()?;
 
-    loop {
+    let nc = async_nats::connect(&nats_url).await?;
+    println!("Connected to NATS at {}", nats_url);
+    
+    let mut sub = nc.subscribe(format!("{}check.http", nats_prefix)).await?;
+    println!("Subscribed to {}check.http", nats_prefix);
+
+    while let Some(msg) = sub.next().await {
+        let _check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
+            Ok(req) => req,
+            Err(e) => {
+                eprintln!("Failed to parse check request: {e}");
+                continue;
+            }
+        };
+
         // Fetch data from all sources concurrently
-        let (blockstream_result, /*mempool_result,*/ zecrocks_result, blockchair_result, blockchain_result, zcashexplorer_result) = tokio::join!(
+        let (blockstream_result, zecrocks_result, blockchair_result, blockchain_result, zcashexplorer_result) = tokio::join!(
             blockstream::get_blockchain_info(),
-            // mempool::get_blockchain_info(),  // Commented out until we can parse it properly
             zecrocks::get_blockchain_info(),
             blockchair::get_blockchain_info(),
             blockchain::get_blockchain_info(),
@@ -145,9 +184,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
                 }
             }
         }
-
-        // Sleep for 5 minutes
-        println!("\nSleeping for 5 minutes...");
-        sleep(Duration::from_secs(300)).await;
     }
+
+    Ok(())
 }

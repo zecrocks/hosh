@@ -1,4 +1,4 @@
-FROM rust:1.75-slim-bullseye as builder
+FROM rust:1.84-slim-bullseye as builder
 
 # Install dependencies
 RUN apt-get update && apt-get install -y \
