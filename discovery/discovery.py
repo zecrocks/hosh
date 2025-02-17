@@ -7,7 +7,6 @@ import datetime
 import asyncio
 
 # Environment Variables
-BTC_WORKER = os.environ.get('BTC_WORKER', 'http://btc-worker:5000')
 DISCOVERY_INTERVAL_SECONDS = int(os.environ.get('DISCOVERY_INTERVAL', 3600))  # 1 hour default
 
 # Redis Configuration
@@ -35,7 +34,7 @@ ZEC_SERVERS = [
 
 def fetch_btc_servers():
     try:
-        response = requests.get(f"{BTC_WORKER}/electrum/servers", timeout=10)
+        response = requests.get("https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/electrum/chains/servers.json", timeout=10)
         return response.json().get("servers", {})
     except Exception as e:
         print(f"Error fetching BTC servers: {e}")

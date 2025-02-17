@@ -10,6 +10,25 @@ use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
 use rand::Rng;
 use std::collections::HashSet;
+use tracing::{info, warn, error, Level};
+use tracing_subscriber::FmtSubscriber;
+
+mod filters {
+    use askama::Result;
+    use serde_json::Value;
+
+    #[allow(dead_code)]
+    pub fn format_value(v: &Value) -> Result<String> {
+        match v {
+            Value::String(s) => Ok(s.to_string()),
+            Value::Number(n) => Ok(n.to_string()),
+            Value::Bool(b) => Ok(b.to_string()),
+            Value::Null => Ok("null".to_string()),
+            _ => Ok(v.to_string())
+        }
+    }
+}
+
 
 fn upper(s: &str) -> askama::Result<String> {
     Ok(s.to_uppercase())
@@ -172,11 +191,22 @@ impl ServerInfo {
     }
 
     fn formatted_version(&self) -> String {
-        self.server_version
+        let lwd_version = self.server_version
             .as_ref()
             .map(String::as_str)
             .unwrap_or("-")
-            .to_string()
+            .to_string();
+
+        // Display both LWD and Zebra versions for ZEC if available
+        if let Some(subversion) = self.extra.get("zcashd_subversion") {
+            if let Some(subversion_str) = subversion.as_str() {
+                // Remove slashes from subversion string
+                let cleaned_subversion = subversion_str.replace('/', "");
+                return format!("{}\nLWD: {}", cleaned_subversion, lwd_version);
+            }
+        }
+        
+        lwd_version
     }
 }
 
@@ -188,6 +218,7 @@ impl SafeNetwork {
         match s {
             "btc" => Some(SafeNetwork("btc")),
             "zec" => Some(SafeNetwork("zec")),
+            "http" => Some(SafeNetwork("http")),
             _ => None
         }
     }
@@ -198,7 +229,7 @@ impl SafeNetwork {
 }
 
 #[derive(Template)]
-#[template(path = "server.html")]
+#[template(path = "server.html", escape = "none")]
 struct ServerTemplate {
     data: HashMap<String, Value>,
     host: String,
@@ -224,7 +255,7 @@ struct ApiResponse {
 }
 
 #[derive(Template)]
-#[template(path = "check.html")]
+#[template(path = "check.html", escape = "none")]
 struct CheckTemplate {
     check_id: String,
     server: Option<ServerInfo>,
@@ -232,6 +263,7 @@ struct CheckTemplate {
     is_public_server: bool,
     checking_url: Option<String>,
     checking_port: Option<u16>,
+    server_data: Option<HashMap<String, Value>>,
 }
 
 impl CheckTemplate {
@@ -297,12 +329,12 @@ async fn network_status(
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
 
     let mut conn = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
     let keys: Vec<String> = conn.keys(network.redis_prefix()).map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
+        error!("Redis keys error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
     })?;
 
@@ -310,7 +342,7 @@ async fn network_status(
 
     for key in keys {
         let value: String = conn.get(&key).map_err(|e| {
-            eprintln!("Redis get error for key {}: {}", key, e);
+            error!("Redis get error for key {}: {}", key, e);
             actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
         })?;
 
@@ -336,7 +368,7 @@ async fn network_status(
                 servers.push(server_info);
             },
             Err(e) => {
-                eprintln!("Failed to deserialize JSON for key {}: {}", key, e);
+                error!("Failed to deserialize JSON for key {}: {}", key, e);
                 println!("Retrieved JSON for key {}: {}", key, value);
             }
         }
@@ -388,7 +420,7 @@ async fn network_status(
     };
     
     let html = template.render().map_err(|e| {
-        eprintln!("Template rendering error: {}", e);
+        error!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
 
@@ -409,22 +441,22 @@ async fn server_detail(
     let key = format!("{}:{}", network, host);
     
     let mut conn = _redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
     
     let value: String = conn.get(&key).map_err(|e| {
-        eprintln!("Redis get error for key {}: {}", key, e);
+        error!("Redis get error for key {}: {}", key, e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
     })?;
     
     let data: HashMap<String, Value> = serde_json::from_str(&value).map_err(|e| {
-        eprintln!("JSON deserialization error for key {}: {}", key, e);
+        error!("JSON deserialization error for key {}: {}", key, e);
         actix_web::error::ErrorInternalServerError("Failed to parse server data")
     })?;
     
     let keys: Vec<String> = conn.keys(safe_network.redis_prefix()).map_err(|e| {
-        eprintln!("Redis error: {}", e);
+        error!("Redis error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis error")
     })?;
     
@@ -457,7 +489,7 @@ async fn server_detail(
     };
     
     let html = template.render().map_err(|e| {
-        eprintln!("Template rendering error: {}", e);
+        error!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
     
@@ -481,7 +513,8 @@ async fn network_api(
             let (port, protocol) = match network.0 {
                 "btc" => (server.port.unwrap_or(50002), "ssl"),
                 "zec" => (server.port.unwrap_or(9067), "grpc"),
-                _ => unreachable!(), // SafeNetwork::from_str ensures this
+                "http" => (server.port.unwrap_or(80), "http"),  // Add HTTP case
+                _ => unreachable!(),
             };
             
             ApiServerInfo {
@@ -502,26 +535,26 @@ async fn network_api(
 // Helper function to reduce code duplication
 async fn fetch_network_servers(redis: &redis::Client, network: &str) -> Result<Vec<ServerInfo>> {
     let mut conn = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
     let keys: Vec<String> = conn.keys(format!("{}:*", network)).map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
+        error!("Redis keys error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
     })?;
 
     let mut servers = Vec::new();
     for key in keys {
         let value: String = conn.get(&key).map_err(|e| {
-            eprintln!("Redis get error for key {}: {}", key, e);
+            error!("Redis get error for key {}: {}", key, e);
             actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
         })?;
 
         match serde_json::from_str::<ServerInfo>(&value) {
             Ok(server_info) => servers.push(server_info),
             Err(e) => {
-                eprintln!("Failed to deserialize JSON for key {}: {}", key, e);
+                error!("Failed to deserialize JSON for key {}: {}", key, e);
                 println!("Retrieved JSON for key {}: {}", key, value);
             }
         }
@@ -587,7 +620,7 @@ async fn check_server(
         };
 
         let html = template.render().map_err(|e| {
-            eprintln!("Template rendering error: {}", e);
+            error!("Template rendering error: {}", e);
             actix_web::error::ErrorInternalServerError("Template rendering failed")
         })?;
 
@@ -605,7 +638,7 @@ async fn check_server(
     
     // Check if this server is already in our public list
     let mut conn = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
@@ -614,44 +647,44 @@ async fn check_server(
         .ok()
         .and_then(|value: String| serde_json::from_str(&value).ok());
 
-    // Only set user_submitted = true if it's not already in our public list
     let is_user_submitted = existing_server
-        .as_ref()
-        .and_then(|s| s.extra.get("user_submitted"))
-        .and_then(|v| v.as_bool())
+        .map(|s| s.extra.get("user_submitted")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true))
         .unwrap_or(true);
 
     let check_request = serde_json::json!({
         "host": form.url,
         "port": form.port.unwrap_or(50002),
-        "user_submitted": is_user_submitted,  // Preserve existing status
+        "user_submitted": is_user_submitted,
         "check_id": check_id
     });
 
-    println!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}",
+    info!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}",
         form.url, form.port.unwrap_or(50002), check_id
     );
 
     let nats = nats::connect("nats://nats:4222").map_err(|e| {
-        eprintln!("NATS connection error: {}", e);
+        error!("NATS connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to connect to NATS")
     })?;
 
-    // Use different subjects for BTC vs ZEC
+    // Use different subjects for BTC vs ZEC vs HTTP
     let subject = match network.0 {
-        "btc" => format!("hosh.check.btc.user"),  // BTC still uses separate user queue
-        "zec" => format!("hosh.check.zec"),       // ZEC uses single queue for all checks
+        "btc" => format!("hosh.check.btc.user"), // BTC still uses separate user queue
+        "zec" => format!("hosh.check.zec"), // ZEC uses single queue for all checks
+        "http" => format!("hosh.check.http"),  // HTTP case handles all explorers
         _ => unreachable!("Invalid network"),
     };
-    println!("📤 Publishing to NATS subject: {}", subject);
+    info!("📤 Publishing to NATS subject: {}", subject);
     
     nats.publish(&subject, &serde_json::to_vec(&check_request).unwrap())
         .map_err(|e| {
-            eprintln!("NATS publish error: {}", e);
+            error!("NATS publish error: {}", e);
             actix_web::error::ErrorInternalServerError("Failed to publish check request")
         })?;
 
-    println!("✅ Successfully published check request to NATS");
+    info!("✅ Successfully published check request to NATS");
 
     // Redirect to network-specific check result page, carrying host & port
     Ok(HttpResponse::SeeOther()
@@ -682,55 +715,52 @@ async fn check_result(
 
     // We'll actually fetch from Redis to see if the checker wrote any data
     let mut conn = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
     let prefix = format!("{}:", network_str);
     let keys: Vec<String> = conn.keys(format!("{}*", prefix)).map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
+        error!("Redis keys error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
     })?;
 
-    // We'll store the discovered server info here if we find a match
+    // We'll store the discovered server info and raw data here if we find a match
     let mut server: Option<ServerInfo> = None;
+    let mut server_data: Option<HashMap<String, Value>> = None;
     let mut is_public_server = false;
 
     for key in keys {
         // Grab the JSON
         let value: String = conn.get(&key).map_err(|e| {
-            eprintln!("Redis get error for key {}: {}", key, e);
+            error!("Redis get error for key {}: {}", key, e);
             actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
         })?;
 
-        // Attempt to parse JSON into your ServerInfo
-        if let Ok(server_info) = serde_json::from_str::<ServerInfo>(&value) {
+        // Parse the raw JSON data
+        if let Ok(data) = serde_json::from_str::<HashMap<String, Value>>(&value) {
             // Check if this key has the right check_id
-            let has_check_id = server_info
-                .extra
-                .get("check_id")
+            let has_check_id = data.get("check_id")
                 .and_then(|v| v.as_str())
                 .map(|c| c == check_id)
                 .unwrap_or(false);
 
             if has_check_id {
                 // If found a matching check_id, we use that data
-                server = Some(server_info);
+                server = serde_json::from_str(&value).ok();
+                server_data = Some(data);
                 break;
             }
 
-            // Otherwise, you might optionally check other conditions
-            // e.g. if it's a public server with a matching suffix
-            let user_submitted = server_info
-                .extra
-                .get("user_submitted")
+            // Otherwise, check if it's a public server
+            let user_submitted = data.get("user_submitted")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true);
 
             if !user_submitted && key.ends_with(&check_id) {
-                // Mark it as "public"
                 is_public_server = true;
-                server = Some(server_info);
+                server = serde_json::from_str(&value).ok();
+                server_data = Some(data);
                 break;
             }
         }
@@ -743,10 +773,11 @@ async fn check_result(
         is_public_server,
         checking_url,
         checking_port,
+        server_data,
     };
 
     let html = template.render().map_err(|e| {
-        eprintln!("Template rendering error: {}", e);
+        error!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
 
@@ -856,22 +887,34 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
+    // Initialize tracing subscriber
+    let subscriber = FmtSubscriber::builder()
+        .with_max_level(Level::INFO)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_ansi(true)
+        .pretty()
+        .init();
+
     let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| {
-        println!("⚠️  REDIS_HOST not set, using default 'redis'");
+        warn!("⚠️  REDIS_HOST not set, using default 'redis'");
         "redis".to_string()
     });
     let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| {
-        println!("⚠️  REDIS_PORT not set, using default '6379'");
+        warn!("⚠️  REDIS_PORT not set, using default '6379'");
         "6379".to_string()
     });
     let redis_url = format!("redis://{}:{}", redis_host, redis_port);
     
-    println!("🔌 Connecting to Redis at {}", redis_url);
+    info!("🔌 Connecting to Redis at {}", redis_url);
 
     let redis_client = redis::Client::open(redis_url.as_str())
         .expect("Failed to create Redis client");
 
-    println!("🚀 Starting server at http://0.0.0.0:8080");
+    info!("🚀 Starting server at http://0.0.0.0:8080");
 
     HttpServer::new(move || {
         App::new()

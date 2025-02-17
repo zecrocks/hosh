@@ -68,7 +68,7 @@ where
 const DEFAULT_REFRESH_INTERVAL: u64 = 300;
 const DEFAULT_NATS_PREFIX: &str = "hosh.";
 const DEFAULT_REDIS_PORT: u16 = 6379;
-const PREFIXES: &[&str] = &["btc:", "zec:"];
+const PREFIXES: &[&str] = &["btc:", "zec:", "http:"];
 
 #[derive(Debug, Deserialize, Serialize)]
 struct ServerData {
@@ -164,6 +164,8 @@ fn network_from_key(key: &str) -> &str {
         "btc"
     } else if key.starts_with("zec:") {
         "zec"
+    } else if key.starts_with("http:") {
+        "http"
     } else {
         unreachable!("Unhandled prefix in key: {key}")
     }
@@ -173,6 +175,7 @@ fn default_port_for_network(network: &str) -> u16 {
     match network {
         "btc" => 50002,
         "zec" => 9067,
+        "http" => 80,
         _ => unreachable!("Unknown network: {network}"),
     }
 }
@@ -187,23 +190,6 @@ async fn publish_checks(
     loop {
         interval.tick().await;
         
-        // Publish single HTTP check request
-        let subject = format!("{}check.http", config.nats_prefix);
-        let message = serde_json::json!({
-            "type": "http",
-            "host": "trigger",  // Dummy value since the checker knows what to do
-            "port": 0,
-            "user_submitted": false,
-            "check_id": None::<String>
-        });
-
-        if let Err(e) = nats.publish(subject.clone(), message.to_string().into()).await {
-            tracing::error!("Failed to publish HTTP check trigger: {}", e);
-        } else {
-            tracing::info!("Published HTTP check trigger");
-        }
-
-        // Then handle the regular BTC/ZEC checks from Redis
         for prefix in PREFIXES {
             let keys: Vec<String> = match redis.keys(format!("{prefix}*")).await {
                 Ok(keys) => keys,
@@ -269,6 +255,13 @@ async fn publish_checks(
                         "user_submitted": data.user_submitted,
                         "check_id": data.check_id
                     }),
+                    "http" => serde_json::json!({
+                        "type": network,
+                        "host": host,
+                        "port": port,
+                        "user_submitted": data.user_submitted,
+                        "check_id": data.check_id
+                    }),
                     _ => continue,
                 };
 
@@ -303,11 +296,7 @@ async fn main() -> Result<()> {
         .await
         .context("Failed to connect to NATS")?;
 
-    tracing::info!("Connected to Redis and NATS, starting publisher");
-    
-    publish_checks(nats, redis_conn, &config)
-        .await
-        .context("Publisher task failed")?;
+    let publisher = Publisher::new(nats, redis_conn, config);
 
-    Ok(())
+    publisher.run().await
 } 

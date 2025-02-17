@@ -12,7 +12,7 @@
                 {% for (key, value) in data.iter() %}
                 <tr>
                     <td class="table-key">{{ key }}</td>
-                    <td class="table-value">{{ value }}</td>
+                    <td class="table-value">{{ value|format_value }}</td>
                 </tr>
                 {% endfor %}
             </tbody>
