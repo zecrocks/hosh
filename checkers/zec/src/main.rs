@@ -55,6 +55,8 @@ struct CheckResult {
     zcashd_build: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     zcashd_subversion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    donation_address: Option<String>,
 }
 
 #[tokio::main]
@@ -148,6 +150,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             server_version: server_info.as_ref().map(|info| info.version.clone()),
             zcashd_build: server_info.as_ref().map(|info| info.zcashd_build.clone()),
             zcashd_subversion: server_info.as_ref().map(|info| info.zcashd_subversion.clone()),
+            donation_address: server_info.as_ref().map(|info| info.donation_address.clone()),
         };
 
         if let Ok(result_json) = serde_json::to_string(&result) {

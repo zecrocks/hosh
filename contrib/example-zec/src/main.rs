@@ -32,6 +32,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             println!("{:<25} {}", "LWD Version:", info.version);
             println!("{:<25} {}", "Zcashd build/version:", info.zcashd_build);
             println!("{:<25} {}", "Zcashd subversion:", info.zcashd_subversion);
+            println!("{:<25} {}", "Donation address:", info.donation_address);
         }
         Err(e) => println!("Error getting server info: {}", e),
     }
