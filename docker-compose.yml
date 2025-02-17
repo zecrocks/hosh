@@ -14,9 +14,10 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
   checker-btc:
     build: ./checkers/btc
-    image: hosh/btc-backend
+    image: hosh/checker-btc
     environment:
       RUST_LOG: info
       RUN_MODE: worker
@@ -36,7 +37,7 @@ services:
 
   checker-btc-user:
     build: ./checkers/btc
-    image: hosh/btc-backend
+    image: hosh/checker-btc
     environment:
       RUST_LOG: info
       RUN_MODE: worker
@@ -83,6 +84,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
+      # checker-btc: # TODO: Re-enable after implementing peer discovery
+      #   condition: service_healthy
 
   publisher:
     build: 
@@ -93,7 +96,6 @@ services:
     environment:
       - RUST_LOG=info
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
-      - CHECK_INTERVAL_BTC=600
       - NATS_URL=${NATS_URL:-nats://nats:4222}
       - NATS_PREFIX=${NATS_PREFIX:-hosh.}
       - REDIS_HOST=${REDIS_HOST:-redis}
@@ -107,11 +109,27 @@ services:
         condition: service_started
       checker-zec:
         condition: service_started
+      checker-http:
+        condition: service_started
 
   checker-zec:
     build: checkers/zec
     image: hosh/checker-zec
     container_name: checker-zec
+    environment:
+      NATS_HOST: nats
+      NATS_PORT: 4222
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+    depends_on:
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  checker-http:
+    build: checkers/http
+    image: hosh/checker-http
     environment:
       NATS_HOST: nats
       NATS_PORT: 4222
@@ -193,6 +211,17 @@ services:
       - "8000:8080"
     command: ["--watch", "/home/debian/src/architecture.d2"]
 
+  docs:
+    image: peaceiris/mdbook:latest
+    profiles:
+      - dev
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    volumes:
+      - ./docs:/book
+    command: ["serve", "--hostname", "0.0.0.0", "--port", "3000"]
+    working_dir: /book
 
 volumes:
   btc-data:

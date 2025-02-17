@@ -6,7 +6,7 @@ use anyhow::Result;
 const DEFAULT_REFRESH_INTERVAL: u64 = 300;
 const DEFAULT_NATS_PREFIX: &str = "hosh.";
 const DEFAULT_REDIS_PORT: u16 = 6379;
-pub const PREFIXES: &[&str] = &["btc:", "zec:"];
+pub const PREFIXES: &[&str] = &["btc:", "zec:", "http:"];
 
 #[derive(Debug, Clone)]
 pub struct Config {

@@ -9,6 +9,7 @@ use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
 use rand::Rng;
+use std::collections::HashSet;
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -27,6 +28,7 @@ mod filters {
         }
     }
 }
+
 
 fn upper(s: &str) -> askama::Result<String> {
     Ok(s.to_uppercase())
@@ -216,6 +218,7 @@ impl SafeNetwork {
         match s {
             "btc" => Some(SafeNetwork("btc")),
             "zec" => Some(SafeNetwork("zec")),
+            "http" => Some(SafeNetwork("http")),
             _ => None
         }
     }
@@ -273,6 +276,63 @@ impl CheckTemplate {
 struct CheckQuery {
     host: Option<String>,
     port: Option<u16>,
+}
+
+#[derive(Template)]
+#[template(path = "blockchain_heights.html")]
+struct BlockchainHeightsTemplate {
+    rows: Vec<ExplorerRow>,
+}
+
+impl BlockchainHeightsTemplate {
+    // Helper function to format chain names
+    fn format_chain_name(&self, chain: &str) -> String {
+        chain.replace("-", " ")
+    }
+
+    fn get_all_symbols(&self) -> Vec<String> {
+        let mut symbols = HashSet::new();
+        
+        // Collect all unique chain names from all sources
+        for row in &self.rows {
+            symbols.insert(row.chain.clone());
+        }
+        
+        // Sort them for consistent display
+        let mut symbols: Vec<_> = symbols.into_iter().collect();
+        symbols.sort_unstable();
+        symbols
+    }
+
+    fn get_height_difference(&self, height: &u64, row: &ExplorerRow) -> Option<String> {
+        // Collect all heights for this row
+        let mut heights: Vec<u64> = vec![];
+        if let Some(h) = row.blockchair { heights.push(h); }
+        if let Some(h) = row.blockchain_com { heights.push(h); }
+        if let Some(h) = row.blockstream { heights.push(h); }
+        if let Some(h) = row.zecrocks { heights.push(h); }
+        if let Some(h) = row.zcashexplorer { heights.push(h); }
+
+        // If we have at least 2 heights (to compare), and this height exists
+        if heights.len() >= 2 {
+            let min_height = heights.iter().copied().min()?;
+            let diff = (*height).saturating_sub(min_height);
+            if diff > 0 {
+                return Some(format!(" (+{})", diff));
+            }
+        }
+        None
+    }
+}
+
+#[derive(Debug)]
+struct ExplorerRow {
+    chain: String,
+    blockchair: Option<u64>,
+    blockchain_com: Option<u64>,
+    blockstream: Option<u64>,
+    zecrocks: Option<u64>,
+    zcashexplorer: Option<u64>,
 }
 
 #[get("/")]
@@ -473,7 +533,8 @@ async fn network_api(
             let (port, protocol) = match network.0 {
                 "btc" => (server.port.unwrap_or(50002), "ssl"),
                 "zec" => (server.port.unwrap_or(9067), "grpc"),
-                _ => unreachable!(), // SafeNetwork::from_str ensures this
+                "http" => (server.port.unwrap_or(80), "http"),  // Add HTTP case
+                _ => unreachable!(),
             };
             
             ApiServerInfo {
@@ -628,10 +689,11 @@ async fn check_server(
         actix_web::error::ErrorInternalServerError("Failed to connect to NATS")
     })?;
 
-    // Use different subjects for BTC vs ZEC
+    // Use different subjects for BTC vs ZEC vs HTTP
     let subject = match network.0 {
-        "btc" => format!("hosh.check.btc.user"),  // BTC still uses separate user queue
-        "zec" => format!("hosh.check.zec"),       // ZEC uses single queue for all checks
+        "btc" => format!("hosh.check.btc.user"), // BTC still uses separate user queue
+        "zec" => format!("hosh.check.zec"), // ZEC uses single queue for all checks
+        "http" => format!("hosh.check.http"),  // HTTP case handles all explorers
         _ => unreachable!("Invalid network"),
     };
     info!("📤 Publishing to NATS subject: {}", subject);
@@ -750,10 +812,103 @@ fn generate_math_problem() -> (u8, u8, u8) {
     (a, b, a + b)
 }
 
+#[get("/explorers")]
+async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpResponse> {
+    let mut con = redis.get_connection().map_err(|e| {
+        eprintln!("Redis connection error: {}", e);
+        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    })?;
+
+    // Group heights by source
+    let mut explorer_data = HashMap::new();
+    let sources = ["blockchair", "blockchain", "blockstream", "zecrocks", "zcashexplorer"];
+    
+    for source in &sources {
+        explorer_data.insert(source.to_string(), HashMap::new());
+    }
+
+    // Get all keys matching http:*
+    let keys: Vec<String> = con.keys("http:*").map_err(|e| {
+        eprintln!("Redis keys error: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to fetch keys from Redis")
+    })?;
+    
+    // Collect all unique chains
+    let mut chains = HashSet::new();
+    
+    for key in keys {
+        if let Ok(height) = con.get::<_, u64>(&key) {
+            // Parse the key format "http:source.chain"
+            let parts: Vec<&str> = key.split('.').collect();
+            if parts.len() == 2 {
+                let source = parts[0].replace("http:", "");
+                let chain = parts[1].to_string();
+                
+                chains.insert(chain.clone());
+                
+                if let Some(heights) = explorer_data.get_mut(&source) {
+                    heights.insert(chain, height);
+                }
+            }
+        }
+    }
+
+    // Sort chains for consistent display
+    let mut chains: Vec<_> = chains.into_iter().collect();
+    chains.sort_unstable();
+
+    // Build rows
+    let mut rows = Vec::new();
+    for chain in &chains {
+        let row = ExplorerRow {
+            chain: chain.clone(),
+            blockchair:    explorer_data.get("blockchair").and_then(|h| h.get(chain)).copied(),
+            blockchain_com: explorer_data.get("blockchain").and_then(|h| h.get(chain)).copied(),
+            blockstream:   explorer_data.get("blockstream").and_then(|h| h.get(chain)).copied(),
+            zecrocks:      explorer_data.get("zecrocks").and_then(|h| h.get(chain)).copied(),
+            zcashexplorer: explorer_data.get("zcashexplorer").and_then(|h| h.get(chain)).copied(),
+        };
+        rows.push(row);
+    }
+
+    // After building rows, before creating template
+    // Sort rows by number of active explorers (non-None values) in descending order
+    rows.sort_by(|a, b| {
+        let a_count = [
+            a.blockchair.is_some(),
+            a.blockchain_com.is_some(),
+            a.blockstream.is_some(),
+            a.zecrocks.is_some(),
+            a.zcashexplorer.is_some()
+        ].iter().filter(|&&x| x).count();
+
+        let b_count = [
+            b.blockchair.is_some(),
+            b.blockchain_com.is_some(),
+            b.blockstream.is_some(),
+            b.zecrocks.is_some(),
+            b.zcashexplorer.is_some()
+        ].iter().filter(|&&x| x).count();
+
+        // Sort by count descending, then by chain name ascending for ties
+        b_count.cmp(&a_count).then(a.chain.cmp(&b.chain))
+    });
+
+    let template = BlockchainHeightsTemplate { rows };
+    let html = template.render().map_err(|e| {
+        eprintln!("Template rendering error: {}", e);
+        actix_web::error::ErrorInternalServerError("Template rendering failed")
+    })?;
+
+    Ok(HttpResponse::Ok()
+        .content_type("text/html; charset=utf-8")
+        .body(html))
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize tracing subscriber
-    let subscriber = FmtSubscriber::builder()
+    let _subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
         .with_thread_ids(false)
@@ -786,6 +941,7 @@ async fn main() -> std::io::Result<()> {
             .app_data(web::Data::new(redis_client.clone()))
             .service(fs::Files::new("/static", "./static"))
             .service(root)
+            .service(blockchain_heights)
             .service(network_status)
             .service(server_detail)
             .service(network_api)

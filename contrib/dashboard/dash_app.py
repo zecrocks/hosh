@@ -5,6 +5,10 @@ import redis
 import json
 import os
 from datetime import datetime, timezone
+import asyncio
+import nats
+from dash.long_callback import DiskcacheLongCallbackManager
+import diskcache
 
 
 # Initialize the Dash app
@@ -14,6 +18,12 @@ app.title = "Electrum Servers Dashboard"
 # Redis Configuration
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+
+# NATS Configuration
+NATS_HOST = os.environ.get('NATS_HOST', 'nats')
+NATS_PORT = int(os.environ.get('NATS_PORT', 4222))
+NATS_URL = f"nats://{NATS_HOST}:{NATS_PORT}"
+NATS_PREFIX = os.environ.get('NATS_PREFIX', 'hosh.')  # Match Rust config default
 
 # Connect to Redis
 try:
@@ -27,14 +37,14 @@ except redis.exceptions.ConnectionError as e:
 
 def fetch_data_from_redis():
     """
-    Fetch all data from Redis and return it as a list of dictionaries.
+    Fetch server data from Redis and return it as a list of dictionaries.
     """
     try:
-        # Fetch all keys from Redis
-        keys = redis_client.keys('*')
+        # Fetch all keys from Redis except http:* keys
+        keys = [key.decode() for key in redis_client.keys('*') if not key.decode().startswith('http:')]
 
         if not keys:
-            print("No data found in Redis.")
+            print("No server data found in Redis.")
             return []
 
         data = []
@@ -52,30 +62,114 @@ def fetch_data_from_redis():
         return data
 
     except Exception as e:
-        print(f"Error fetching data from Redis: {e}")
+        print(f"Error fetching server data from Redis: {e}")
         return []
 
+
+def fetch_blockchain_heights():
+    """
+    Fetch blockchain heights data from Redis.
+    """
+    try:
+        # Get all http: keys
+        keys = [key.decode() for key in redis_client.keys('http:*')]
+        
+        # Group heights by source
+        heights = {}
+        for key in keys:
+            # Parse the key format "http:source.coin"
+            parts = key.split('.')
+            if len(parts) != 2:
+                continue
+                
+            source = parts[0]  # http:blockchain or http:blockchair
+            coin = parts[1]
+            
+            # Get the height value
+            height = redis_client.get(key)
+            if height:
+                height = int(height)
+                
+                # Initialize source dict if needed
+                if source not in heights:
+                    heights[source] = {}
+                    
+                heights[source][coin] = height
+        
+        # Convert to records for table display
+        records = []
+        for source, coins in heights.items():
+            source_name = source.replace('http:', '')  # Remove http: prefix
+            for coin, height in coins.items():
+                records.append({
+                    'Source': source_name.capitalize(),
+                    'Coin': coin.upper(),
+                    'Height': height,
+                })
+        
+        # Sort by Source and Coin
+        records.sort(key=lambda x: (x['Source'], x['Coin']))
+        return records
+
+    except Exception as e:
+        print(f"Error fetching blockchain heights from Redis: {e}")
+        return []
 
 
 ### Layout of the App ###
 app.layout = html.Div([
     html.H1("Electrum Servers Dashboard", style={'textAlign': 'center'}),
+    
+    # Controls section
     html.Div([
-        html.Button('Clear Redis', id='clear-redis-button', n_clicks=0, style={'backgroundColor': 'red', 'color': 'white'}),
+        html.Div([
+            html.Button('Clear Server Data', id='clear-servers-button', n_clicks=0, 
+                       style={'backgroundColor': 'red', 'color': 'white', 'marginRight': '10px'}),
+            html.Button('Clear Explorer Data', id='clear-explorers-button', n_clicks=0,
+                       style={'backgroundColor': 'orange', 'color': 'white', 'marginRight': '10px'}),
+            html.Button('Trigger HTTP Checks', id='trigger-http-button', n_clicks=0,
+                       style={'backgroundColor': 'green', 'color': 'white'}),
+        ], style={'display': 'flex', 'gap': '10px'}),
         html.Div([
             html.Label("Auto-Refresh Interval (seconds):"),
-            dcc.Input(id='refresh-interval-input', type='number', value=10, min=1, step=1, style={'marginLeft': '10px'})
+            dcc.Input(id='refresh-interval-input', type='number', value=10, min=1, step=1, 
+                     style={'marginLeft': '10px'})
         ], style={'marginTop': '10px', 'marginBottom': '10px'}),
     ], style={'marginBottom': '20px'}),
-    dash_table.DataTable(
-        id='data-table',
-        columns=[],  # Columns will be dynamically updated
-        data=[],  # Data will be dynamically updated
-        style_table={'overflowX': 'auto'},
-        style_cell={'textAlign': 'left', 'padding': '5px'},
-        style_header={'fontWeight': 'bold', 'backgroundColor': '#f4f4f4'},
-    ),
-    dcc.Interval(id='auto-refresh-interval', interval=10000, n_intervals=0)  # Default 10 seconds
+
+    # Blockchain Heights section
+    html.Div([
+        html.H2("Blockchain Heights", style={'marginBottom': '10px'}),
+        dash_table.DataTable(
+            id='heights-table',
+            columns=[
+                {'name': 'Source', 'id': 'Source'},
+                {'name': 'Coin', 'id': 'Coin'},
+                {'name': 'Height', 'id': 'Height', 'type': 'numeric', 'format': {'specifier': ','}},
+            ],
+            data=[],
+            style_table={'overflowX': 'auto'},
+            style_cell={'textAlign': 'left', 'padding': '5px'},
+            style_header={'fontWeight': 'bold', 'backgroundColor': '#f4f4f4'},
+            sort_action='native',
+        ),
+    ], style={'marginBottom': '30px'}),
+
+    # Server Status section
+    html.Div([
+        html.H2("Server Status", style={'marginBottom': '10px'}),
+        dash_table.DataTable(
+            id='servers-table',
+            columns=[],
+            data=[],
+            style_table={'overflowX': 'auto'},
+            style_cell={'textAlign': 'left', 'padding': '5px'},
+            style_header={'fontWeight': 'bold', 'backgroundColor': '#f4f4f4'},
+            sort_action='native',
+        ),
+    ]),
+
+    dcc.Interval(id='auto-refresh-interval', interval=10000, n_intervals=0)
 ])
 
 
@@ -84,76 +178,90 @@ app.layout = html.Div([
     Input('refresh-interval-input', 'value')
 )
 def update_interval(refresh_interval):
-    """
-    Update the auto-refresh interval based on user input.
-    """
-    # Convert seconds to milliseconds; ensure a minimum of 1 second
     return max(1, refresh_interval or 10) * 1000
 
 
-
 @app.callback(
-    [Output('data-table', 'columns'),
-     Output('data-table', 'data')],
-    [Input('clear-redis-button', 'n_clicks'),
+    [Output('servers-table', 'columns'),
+     Output('servers-table', 'data'),
+     Output('heights-table', 'data')],
+    [Input('clear-servers-button', 'n_clicks'),
+     Input('clear-explorers-button', 'n_clicks'),
      Input('auto-refresh-interval', 'n_intervals')]
 )
-def update_table(clear_clicks, auto_refresh_intervals):
+def update_tables(clear_servers_clicks, clear_explorers_clicks, auto_refresh_intervals):
     """
-    Update the table display based on Redis data.
+    Update both tables based on Redis data.
     """
-    # Determine which input was triggered
     ctx = callback_context
     button_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
 
-    # Handle clear button click
-    if button_id == 'clear-redis-button':
+    # Handle clear buttons
+    if button_id == 'clear-servers-button':
         try:
-            redis_client.flushdb()  # Clear Redis database
-            print("Redis database cleared!")
+            # Delete all keys starting with btc: or zec:
+            for key in redis_client.keys('*'):
+                key_str = key.decode()
+                if key_str.startswith(('btc:', 'zec:')):
+                    redis_client.delete(key)
+            print("Server data cleared!")
         except Exception as e:
-            print(f"Error clearing Redis: {e}")
-        return [], []
+            print(f"Error clearing server data: {e}")
+        return [], [], fetch_blockchain_heights()
+    elif button_id == 'clear-explorers-button':
+        try:
+            # Delete all keys starting with http:
+            for key in redis_client.keys('http:*'):
+                redis_client.delete(key)
+            print("Explorer data cleared!")
+        except Exception as e:
+            print(f"Error clearing explorer data: {e}")
+        
+        # Get current server data
+        server_data = fetch_data_from_redis()
+        if not server_data:
+            return [], [], []
+            
+        # Process columns
+        sorted_keys = sorted(server_data[0].keys())
+        columns = [{"name": key, "id": key} for key in sorted_keys]
+        
+        return columns, server_data, []
 
-    # Fetch data from Redis
-    data = fetch_data_from_redis()
+    # Regular update
+    server_data = fetch_data_from_redis()
+    heights_data = fetch_blockchain_heights()
 
-    if not data:
-        return [], []
+    if not server_data:
+        return [], [], heights_data
 
-    # Sort keys alphabetically for the columns
-    sorted_keys = sorted(data[0].keys())  # Sort the keys alphabetically
+    # Process server data
+    sorted_keys = sorted(server_data[0].keys())
     columns = [{"name": key, "id": key} for key in sorted_keys]
 
     # Get current time in UTC
     now = datetime.now(timezone.utc)
 
-    # Convert 'LastUpdated' to time delta
-    for record in data:
+    # Process LastUpdated timestamps
+    for record in server_data:
         if 'LastUpdated' in record:
             last_updated_str = record['LastUpdated'].strip()
 
-            # Handle uninitialized timestamps
             if last_updated_str in ["0001-01-01T00:00:00", "0001-01-01T00:00:00Z"]:
                 record['LastUpdated'] = "Never Updated"
                 continue
 
             try:
-                # Detect if it's a Unix timestamp (all digits)
                 if last_updated_str.isdigit():
                     last_updated = datetime.fromtimestamp(int(last_updated_str), tz=timezone.utc)
                 else:
-                    # Assume ISO 8601 format
                     last_updated = datetime.fromisoformat(last_updated_str)
-                    
-                    # If the datetime is naive (no timezone info), set it to UTC
                     if last_updated.tzinfo is None:
                         last_updated = last_updated.replace(tzinfo=timezone.utc)
 
                 time_delta = now - last_updated
-                
-                # Format time delta (e.g., "5m ago", "2h 15m ago")
                 seconds = int(time_delta.total_seconds())
+                
                 if seconds < 60:
                     record['LastUpdated'] = f"{seconds}s ago"
                 elif seconds < 3600:
@@ -167,17 +275,52 @@ def update_table(clear_clicks, auto_refresh_intervals):
                 print(f"Error parsing LastUpdated: {e} (Value: {last_updated_str})")
                 record['LastUpdated'] = "Invalid Time"
 
-    # Sort the data records by 'host'
-    sorted_data = sorted(data, key=lambda record: record.get("host", "").lower())
-
-    # Reorder the sorted data to match the sorted keys
+    # Sort the server data
+    sorted_data = sorted(server_data, key=lambda record: record.get("host", "").lower())
     sorted_data = [
         {key: record.get(key, "") for key in sorted_keys} for record in sorted_data
     ]
 
-    return columns, sorted_data
+    return columns, sorted_data, heights_data
 
 
+@app.long_callback(
+    Output('trigger-http-button', 'n_clicks'),
+    Input('trigger-http-button', 'n_clicks'),
+    manager=DiskcacheLongCallbackManager(diskcache.Cache("./cache"))
+)
+def trigger_http_checks(n_clicks):
+    if not n_clicks:
+        return 0
+        
+    async def publish_message():
+        try:
+            # Connect to NATS
+            nc = await nats.connect(NATS_URL)
+            
+            # Prepare the message - exactly matching Rust format
+            message = {
+                "type": "http",
+                "host": "trigger",
+                "port": 80
+            }
+            
+            # Use same subject format as Rust code
+            subject = f"{NATS_PREFIX}check.http"
+            
+            # Publish the message
+            await nc.publish(subject, json.dumps(message).encode())
+            print(f"Published HTTP check trigger to NATS subject: {subject}")
+            
+            # Close NATS connection
+            await nc.close()
+            
+        except Exception as e:
+            print(f"Error triggering HTTP checks: {e}")
+    
+    # Run the async function
+    asyncio.run(publish_message())
+    return 0
 
 
 # Run the app
