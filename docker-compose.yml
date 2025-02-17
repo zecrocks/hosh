@@ -14,9 +14,10 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
+
   checker-btc:
     build: ./checkers/btc
-    image: hosh/btc-backend
+    image: hosh/checker-btc
     environment:
       RUST_LOG: info
       RUN_MODE: worker
@@ -36,7 +37,7 @@ services:
 
   checker-btc-user:
     build: ./checkers/btc
-    image: hosh/btc-backend
+    image: hosh/checker-btc
     environment:
       RUST_LOG: info
       RUN_MODE: worker
@@ -83,8 +84,8 @@ services:
     depends_on:
       redis:
         condition: service_healthy
-      btc-backend:
-        condition: service_healthy
+      # checker-btc: # TODO: Re-enable after implementing peer discovery
+      #   condition: service_healthy
 
   publisher:
     build: 
@@ -108,28 +109,7 @@ services:
         condition: service_started
       checker-zec:
         condition: service_started
-
-  checker-btc:
-    build: checkers/btc
-    image: hosh/checker-btc
-    deploy:
-      replicas: 3
-    environment:
-      - RUST_LOG=info
-      - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
-      - CHECK_INTERVAL_BTC=600
-      - NATS_URL=${NATS_URL:-nats://nats:4222}
-      - NATS_PREFIX=${NATS_PREFIX:-hosh.}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
-    depends_on:
-      redis:
-        condition: service_healthy
-      nats:
-        condition: service_healthy
-      checker-btc:
-        condition: service_started
-      checker-zec:
+      checker-http:
         condition: service_started
 
   checker-zec:

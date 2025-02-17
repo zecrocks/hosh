@@ -17,10 +17,12 @@ COPY dash_app.py /app/dash_app.py
 # Install Python dependencies
 RUN pip install --no-cache-dir \
     pandas \
-    dash \
+    "dash[diskcache]" \
     dash-bootstrap-components \
     requests \
-    redis  # Added Redis support
+    redis \
+    nats-py>=2.6.0 \
+    diskcache
 
 # Expose the default port for the Dash app
 EXPOSE 8050

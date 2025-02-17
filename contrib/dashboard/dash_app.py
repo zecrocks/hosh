@@ -5,6 +5,10 @@ import redis
 import json
 import os
 from datetime import datetime, timezone
+import asyncio
+import nats
+from dash.long_callback import DiskcacheLongCallbackManager
+import diskcache
 
 
 # Initialize the Dash app
@@ -14,6 +18,12 @@ app.title = "Electrum Servers Dashboard"
 # Redis Configuration
 REDIS_HOST = os.environ.get('REDIS_HOST', 'redis')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+
+# NATS Configuration
+NATS_HOST = os.environ.get('NATS_HOST', 'nats')
+NATS_PORT = int(os.environ.get('NATS_PORT', 4222))
+NATS_URL = f"nats://{NATS_HOST}:{NATS_PORT}"
+NATS_PREFIX = os.environ.get('NATS_PREFIX', 'hosh.')  # Match Rust config default
 
 # Connect to Redis
 try:
@@ -116,7 +126,9 @@ app.layout = html.Div([
             html.Button('Clear Server Data', id='clear-servers-button', n_clicks=0, 
                        style={'backgroundColor': 'red', 'color': 'white', 'marginRight': '10px'}),
             html.Button('Clear Explorer Data', id='clear-explorers-button', n_clicks=0,
-                       style={'backgroundColor': 'orange', 'color': 'white'}),
+                       style={'backgroundColor': 'orange', 'color': 'white', 'marginRight': '10px'}),
+            html.Button('Trigger HTTP Checks', id='trigger-http-button', n_clicks=0,
+                       style={'backgroundColor': 'green', 'color': 'white'}),
         ], style={'display': 'flex', 'gap': '10px'}),
         html.Div([
             html.Label("Auto-Refresh Interval (seconds):"),
@@ -204,7 +216,17 @@ def update_tables(clear_servers_clicks, clear_explorers_clicks, auto_refresh_int
             print("Explorer data cleared!")
         except Exception as e:
             print(f"Error clearing explorer data: {e}")
-        return fetch_data_from_redis(), fetch_blockchain_heights()
+        
+        # Get current server data
+        server_data = fetch_data_from_redis()
+        if not server_data:
+            return [], [], []
+            
+        # Process columns
+        sorted_keys = sorted(server_data[0].keys())
+        columns = [{"name": key, "id": key} for key in sorted_keys]
+        
+        return columns, server_data, []
 
     # Regular update
     server_data = fetch_data_from_redis()
@@ -260,6 +282,45 @@ def update_tables(clear_servers_clicks, clear_explorers_clicks, auto_refresh_int
     ]
 
     return columns, sorted_data, heights_data
+
+
+@app.long_callback(
+    Output('trigger-http-button', 'n_clicks'),
+    Input('trigger-http-button', 'n_clicks'),
+    manager=DiskcacheLongCallbackManager(diskcache.Cache("./cache"))
+)
+def trigger_http_checks(n_clicks):
+    if not n_clicks:
+        return 0
+        
+    async def publish_message():
+        try:
+            # Connect to NATS
+            nc = await nats.connect(NATS_URL)
+            
+            # Prepare the message - exactly matching Rust format
+            message = {
+                "type": "http",
+                "host": "trigger",
+                "port": 80
+            }
+            
+            # Use same subject format as Rust code
+            subject = f"{NATS_PREFIX}check.http"
+            
+            # Publish the message
+            await nc.publish(subject, json.dumps(message).encode())
+            print(f"Published HTTP check trigger to NATS subject: {subject}")
+            
+            # Close NATS connection
+            await nc.close()
+            
+        except Exception as e:
+            print(f"Error triggering HTTP checks: {e}")
+    
+    # Run the async function
+    asyncio.run(publish_message())
+    return 0
 
 
 # Run the app

@@ -77,37 +77,38 @@ struct CheckResult {
     user_submitted: Option<bool>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
-    let nats_url = format!(
-        "nats://{}:{}",
-        std::env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
-        std::env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
-    );
+#[derive(Clone)]
+struct Worker {
+    nats: async_nats::Client,
+    redis: redis::Client,
+}
 
-    let redis_url = format!(
-        "redis://{}:{}",
-        std::env::var("REDIS_HOST").unwrap_or_else(|_| "redis".into()),
-        std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
-    );
-    
-    println!("🔌 Connecting to Redis at {}", redis_url);
-    let client = redis::Client::open(redis_url.as_str())?;
-    let mut con = client.get_connection()?;
+impl Worker {
+    async fn new() -> Result<Self, Box<dyn Error>> {
+        let nats_url = format!(
+            "nats://{}:{}",
+            std::env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
+            std::env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
+        );
 
-    let nc = async_nats::connect(&nats_url).await?;
-    println!("Connected to NATS at {}", nats_url);
-    
-    let mut sub = nc.subscribe(format!("{}check.http", nats_prefix)).await?;
-    println!("Subscribed to {}check.http", nats_prefix);
+        let redis_url = format!(
+            "redis://{}:{}",
+            std::env::var("REDIS_HOST").unwrap_or_else(|_| "redis".into()),
+            std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
+        );
 
-    while let Some(msg) = sub.next().await {
+        let nats = async_nats::connect(&nats_url).await?;
+        let redis = redis::Client::open(redis_url.as_str())?;
+
+        Ok(Worker { nats, redis })
+    }
+
+    async fn process_check(&self, msg: async_nats::Message) {
         let _check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
             Ok(req) => req,
             Err(e) => {
                 eprintln!("Failed to parse check request: {e}");
-                continue;
+                return;
             }
         };
 
@@ -120,71 +121,53 @@ async fn main() -> Result<(), Box<dyn Error>> {
             zcashexplorer::get_blockchain_info()
         );
 
-        // Add blockstream data
-        if let Ok(data) = blockstream_result {
-            for (chain, info) in data {
-                if let Some(height) = info.height {
-                    println!("{} height: {} (blockstream)", info.name, height);
-                    let _: () = con.set(
-                        format!("http:blockstream.{}", chain),
-                        height
-                    )?;
-                }
+        let mut con = match self.redis.get_connection() {
+            Ok(con) => con,
+            Err(e) => {
+                eprintln!("Failed to get Redis connection: {e}");
+                return;
             }
-        }
+        };
 
-        // Add zecrocks data
-        if let Ok(data) = zecrocks_result {
-            for (chain, info) in data {
-                if let Some(height) = info.height {
-                    println!("{} height: {} (zecrocks)", info.name, height);
-                    let _: () = con.set(
-                        format!("http:zecrocks.{}", chain),
-                        height
-                    )?;
-                }
-            }
-        }
+        // Process results and store in Redis
+        let results = [
+            ("blockstream", blockstream_result),
+            ("zecrocks", zecrocks_result),
+            ("blockchair", blockchair_result),
+            ("blockchain", blockchain_result),
+            ("zcashexplorer", zcashexplorer_result),
+        ];
 
-        // Add blockchair data
-        if let Ok(data) = blockchair_result {
-            for (chain, info) in data {
-                if let Some(height) = info.height {
-                    println!("{} height: {} (blockchair)", info.name, height);
-                    let _: () = con.set(
-                        format!("http:blockchair.{}", chain),
-                        height
-                    )?;
-                }
-            }
-        }
-
-        // Add blockchain.com data
-        if let Ok(data) = blockchain_result {
-            for (chain, info) in data {
-                if let Some(height) = info.height {
-                    println!("{} height: {} (blockchain)", info.name, height);
-                    let _: () = con.set(
-                        format!("http:blockchain.{}", chain),
-                        height
-                    )?;
-                }
-            }
-        }
-
-        // Add zcashexplorer data
-        if let Ok(data) = zcashexplorer_result {
-            for (chain, info) in data {
-                if let Some(height) = info.height {
-                    println!("{} height: {} (zcashexplorer)", info.name, height);
-                    let _: () = con.set(
-                        format!("http:zcashexplorer.{}", chain),
-                        height
-                    )?;
+        for (source, result) in results {
+            if let Ok(data) = result {
+                for (chain, info) in data {
+                    if let Some(height) = info.height {
+                        println!("{} height: {} ({})", info.name, height, source);
+                        let _: Result<(), _> = con.set(
+                            format!("http:{}.{}", source, chain),
+                            height
+                        );
+                    }
                 }
             }
         }
     }
 
-    Ok(())
+    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
+        let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
+        let mut sub = self.nats.subscribe(format!("{}check.http", nats_prefix)).await?;
+        println!("Subscribed to {}check.http", nats_prefix);
+
+        while let Some(msg) = sub.next().await {
+            self.process_check(msg).await;
+        }
+
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let worker = Worker::new().await?;
+    worker.run().await
 }

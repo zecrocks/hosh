@@ -73,35 +73,35 @@
                     </td>
                     <td class="px-4 py-2 border">
                         {% if let Some(height) = row.blockchair %}
-                            {{ height }}
+                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
                         {% else %}
                             -
                         {% endif %}
                     </td>
                     <td class="px-4 py-2 border">
                         {% if let Some(height) = row.blockchain_com %}
-                            {{ height }}
+                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
                         {% else %}
                             -
                         {% endif %}
                     </td>
                     <td class="px-4 py-2 border">
                         {% if let Some(height) = row.blockstream %}
-                            {{ height }}
+                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
                         {% else %}
                             -
                         {% endif %}
                     </td>
                     <td class="px-4 py-2 border">
                         {% if let Some(height) = row.zecrocks %}
-                            {{ height }}
+                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
                         {% else %}
                             -
                         {% endif %}
                     </td>
                     <td class="px-4 py-2 border">
                         {% if let Some(height) = row.zcashexplorer %}
-                            {{ height }}
+                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
                         {% else %}
                             -
                         {% endif %}

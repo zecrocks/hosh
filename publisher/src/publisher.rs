@@ -61,6 +61,22 @@ impl Publisher {
             interval_timer.tick().await;
             tracing::debug!("Timer tick for network {}", network);
             
+            if network == "http" {
+                let subject = format!("{}check.{}", config.nats_prefix, network);
+                let message = serde_json::json!({
+                    "type": "http",
+                    "host": "trigger",
+                    "port": 80
+                });
+
+                nats.publish(subject.clone(), message.to_string().into())
+                    .await
+                    .context("Failed to publish HTTP trigger message")?;
+
+                info!(%subject, "Published HTTP check trigger");
+                continue;
+            }
+
             let keys = match redis.get_keys(prefix).await {
                 Ok(keys) => keys,
                 Err(e) => {
@@ -129,6 +145,7 @@ impl Publisher {
         match network {
             "btc" => 50002,
             "zec" => 9067,
+            "http" => 80,
             _ => unreachable!("Unknown network: {network}"),
         }
     }

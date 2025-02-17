@@ -303,6 +303,26 @@ impl BlockchainHeightsTemplate {
         symbols.sort_unstable();
         symbols
     }
+
+    fn get_height_difference(&self, height: &u64, row: &ExplorerRow) -> Option<String> {
+        // Collect all heights for this row
+        let mut heights: Vec<u64> = vec![];
+        if let Some(h) = row.blockchair { heights.push(h); }
+        if let Some(h) = row.blockchain_com { heights.push(h); }
+        if let Some(h) = row.blockstream { heights.push(h); }
+        if let Some(h) = row.zecrocks { heights.push(h); }
+        if let Some(h) = row.zcashexplorer { heights.push(h); }
+
+        // If we have at least 2 heights (to compare), and this height exists
+        if heights.len() >= 2 {
+            let min_height = heights.iter().copied().min()?;
+            let diff = (*height).saturating_sub(min_height);
+            if diff > 0 {
+                return Some(format!(" (+{})", diff));
+            }
+        }
+        None
+    }
 }
 
 #[derive(Debug)]
@@ -888,7 +908,7 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize tracing subscriber
-    let subscriber = FmtSubscriber::builder()
+    let _subscriber = FmtSubscriber::builder()
         .with_max_level(Level::INFO)
         .with_target(false)
         .with_thread_ids(false)
