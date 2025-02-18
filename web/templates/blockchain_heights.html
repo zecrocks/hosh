@@ -43,12 +43,17 @@
                         </div>
                     </td>
                     {% for row in rows %}
-                    <td class="px-4 py-2 border w-40 text-right font-mono">
-                        {% if let Some(height) = row.blockchair %}
-                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
-                        {% else %}
-                            -
-                        {% endif %}
+                    <td class="px-4 py-2 border w-40">
+                        <div class="flex justify-end items-baseline gap-1 font-mono">
+                            {% if let Some(height) = row.blockchair %}
+                                <span>{{ height }}</span>
+                                {% if let Some(diff) = self.get_height_difference(height, row) %}
+                                    <span class="text-sm text-gray-600">{{ diff }}</span>
+                                {% endif %}
+                            {% else %}
+                                <span>-</span>
+                            {% endif %}
+                        </div>
                     </td>
                     {% endfor %}
                 </tr>
