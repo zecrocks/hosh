@@ -17,6 +17,17 @@ mod filters {
     use askama::Result;
     use serde_json::Value;
 
+    pub fn filter<T, F>(items: &[T], pred: F) -> Vec<&T>
+    where
+        F: Fn(&&T) -> bool,
+    {
+        items.iter().filter(pred).collect()
+    }
+
+    pub fn first<T>(items: &[T]) -> Option<&T> {
+        items.first()
+    }
+
     #[allow(dead_code)]
     pub fn format_value(v: &Value) -> Result<String> {
         match v {
@@ -278,6 +289,29 @@ struct CheckQuery {
     port: Option<u16>,
 }
 
+#[derive(Debug)]
+struct ExplorerRow {
+    chain: String,
+    blockchair: Option<u64>,
+    blockchain_com: Option<u64>,
+    blockstream: Option<u64>,
+    zecrocks: Option<u64>,
+    zcashexplorer: Option<u64>,
+}
+
+impl ExplorerRow {
+    // Helper method to count how many heights are available for this chain
+    fn available_height_count(&self) -> usize {
+        let mut count = 0;
+        if self.blockchair.is_some() { count += 1; }
+        if self.blockchain_com.is_some() { count += 1; }
+        if self.blockstream.is_some() { count += 1; }
+        if self.zecrocks.is_some() { count += 1; }
+        if self.zcashexplorer.is_some() { count += 1; }
+        count
+    }
+}
+
 #[derive(Template)]
 #[template(path = "blockchain_heights.html")]
 struct BlockchainHeightsTemplate {
@@ -288,20 +322,6 @@ impl BlockchainHeightsTemplate {
     // Helper function to format chain names
     fn format_chain_name(&self, chain: &str) -> String {
         chain.replace("-", " ")
-    }
-
-    fn get_all_symbols(&self) -> Vec<String> {
-        let mut symbols = HashSet::new();
-        
-        // Collect all unique chain names from all sources
-        for row in &self.rows {
-            symbols.insert(row.chain.clone());
-        }
-        
-        // Sort them for consistent display
-        let mut symbols: Vec<_> = symbols.into_iter().collect();
-        symbols.sort_unstable();
-        symbols
     }
 
     fn get_height_difference(&self, height: &u64, row: &ExplorerRow) -> Option<String> {
@@ -323,16 +343,6 @@ impl BlockchainHeightsTemplate {
         }
         None
     }
-}
-
-#[derive(Debug)]
-struct ExplorerRow {
-    chain: String,
-    blockchair: Option<u64>,
-    blockchain_com: Option<u64>,
-    blockstream: Option<u64>,
-    zecrocks: Option<u64>,
-    zcashexplorer: Option<u64>,
 }
 
 #[get("/")]
@@ -815,88 +825,63 @@ fn generate_math_problem() -> (u8, u8, u8) {
 #[get("/explorers")]
 async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpResponse> {
     let mut con = redis.get_connection().map_err(|e| {
-        eprintln!("Redis connection error: {}", e);
+        error!("Redis connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Redis connection failed")
     })?;
 
-    // Group heights by source
-    let mut explorer_data = HashMap::new();
-    let sources = ["blockchair", "blockchain", "blockstream", "zecrocks", "zcashexplorer"];
-    
-    for source in &sources {
-        explorer_data.insert(source.to_string(), HashMap::new());
-    }
-
     // Get all keys matching http:*
     let keys: Vec<String> = con.keys("http:*").map_err(|e| {
-        eprintln!("Redis keys error: {}", e);
+        error!("Redis keys error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to fetch keys from Redis")
     })?;
-    
-    // Collect all unique chains
-    let mut chains = HashSet::new();
-    
-    for key in keys {
-        if let Ok(height) = con.get::<_, u64>(&key) {
+
+    // Create a map to collect heights by chain
+    let mut chain_heights: HashMap<String, ExplorerRow> = HashMap::new();
+
+    // Process all keys
+    for key in &keys {
+        if let Ok(height) = con.get::<_, u64>(key) {
             // Parse the key format "http:source.chain"
             let parts: Vec<&str> = key.split('.').collect();
             if parts.len() == 2 {
                 let source = parts[0].replace("http:", "");
                 let chain = parts[1].to_string();
-                
-                chains.insert(chain.clone());
-                
-                if let Some(heights) = explorer_data.get_mut(&source) {
-                    heights.insert(chain, height);
+
+                // Get or create the ExplorerRow for this chain
+                let row = chain_heights.entry(chain.clone()).or_insert_with(|| ExplorerRow {
+                    chain,
+                    blockchair: None,
+                    blockchain_com: None,
+                    blockstream: None,
+                    zecrocks: None,
+                    zcashexplorer: None,
+                });
+
+                // Update the appropriate height based on the source
+                match source.as_str() {
+                    "blockchair" => row.blockchair = Some(height),
+                    "blockchain" => row.blockchain_com = Some(height),
+                    "blockstream" => row.blockstream = Some(height),
+                    "zecrocks" => row.zecrocks = Some(height),
+                    "zcashexplorer" => row.zcashexplorer = Some(height),
+                    _ => {}
                 }
             }
         }
     }
 
-    // Sort chains for consistent display
-    let mut chains: Vec<_> = chains.into_iter().collect();
-    chains.sort_unstable();
-
-    // Build rows
-    let mut rows = Vec::new();
-    for chain in &chains {
-        let row = ExplorerRow {
-            chain: chain.clone(),
-            blockchair:    explorer_data.get("blockchair").and_then(|h| h.get(chain)).copied(),
-            blockchain_com: explorer_data.get("blockchain").and_then(|h| h.get(chain)).copied(),
-            blockstream:   explorer_data.get("blockstream").and_then(|h| h.get(chain)).copied(),
-            zecrocks:      explorer_data.get("zecrocks").and_then(|h| h.get(chain)).copied(),
-            zcashexplorer: explorer_data.get("zcashexplorer").and_then(|h| h.get(chain)).copied(),
-        };
-        rows.push(row);
-    }
-
-    // After building rows, before creating template
-    // Sort rows by number of active explorers (non-None values) in descending order
+    // Convert the map to a vector and sort by number of available heights (descending) then chain name
+    let mut rows: Vec<ExplorerRow> = chain_heights.into_values().collect();
     rows.sort_by(|a, b| {
-        let a_count = [
-            a.blockchair.is_some(),
-            a.blockchain_com.is_some(),
-            a.blockstream.is_some(),
-            a.zecrocks.is_some(),
-            a.zcashexplorer.is_some()
-        ].iter().filter(|&&x| x).count();
-
-        let b_count = [
-            b.blockchair.is_some(),
-            b.blockchain_com.is_some(),
-            b.blockstream.is_some(),
-            b.zecrocks.is_some(),
-            b.zcashexplorer.is_some()
-        ].iter().filter(|&&x| x).count();
-
-        // Sort by count descending, then by chain name ascending for ties
-        b_count.cmp(&a_count).then(a.chain.cmp(&b.chain))
+        // First sort by number of available heights (descending)
+        b.available_height_count().cmp(&a.available_height_count())
+            // Then by chain name for stable ordering of equal counts
+            .then(a.chain.cmp(&b.chain))
     });
 
     let template = BlockchainHeightsTemplate { rows };
     let html = template.render().map_err(|e| {
-        eprintln!("Template rendering error: {}", e);
+        error!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
 
