@@ -4,10 +4,19 @@ services:
     ports:
       - "4222:4222"
       - "8222:8222"
-    command: ["--http_port", "8222"]
+    command: [
+      "--http_port", "8222",
+      "--user",
+      "${NATS_USERNAME}",
+      "--pass",
+      "${NATS_PASSWORD}",
+      "-DV"
+    ]
     environment:
-      - NATS_SERVER_NAME=hosh-nats
-      - NATS_CLUSTER_NAME=hosh-cluster
+      NATS_SERVER_NAME: hosh-nats
+      NATS_CLUSTER_NAME: hosh-cluster
+      NATS_ENABLE_AUTH: "yes"
+
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8222/healthz"]
       start_period: 2s
@@ -19,11 +28,11 @@ services:
     build: ./checkers/btc
     image: hosh/checker-btc
     environment:
-      RUST_LOG: info
+      RUST_LOG: debug
       RUN_MODE: worker
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      NATS_URL: "nats://nats:4222"
+      NATS_URL: "nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222"
       NATS_SUBJECT: "hosh.check.btc"
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
@@ -44,7 +53,7 @@ services:
       MAX_CONCURRENT_CHECKS: 1
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      NATS_URL: "nats://nats:4222"
+      NATS_URL: "nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222"
       NATS_SUBJECT: "hosh.check.btc.user"
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
@@ -94,12 +103,12 @@ services:
     image: hosh/publisher-rust
     container_name: publisher
     environment:
-      - RUST_LOG=info
-      - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
-      - NATS_URL=${NATS_URL:-nats://nats:4222}
-      - NATS_PREFIX=${NATS_PREFIX:-hosh.}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
+      RUST_LOG: info
+      CHECK_INTERVAL: ${CHECK_INTERVAL:-300}
+      NATS_URL: "nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222"
+      NATS_PREFIX: ${NATS_PREFIX:-hosh.}
+      REDIS_HOST: ${REDIS_HOST:-redis}
+      REDIS_PORT: ${REDIS_PORT:-6379}
     depends_on:
       redis:
         condition: service_healthy
@@ -117,10 +126,9 @@ services:
     image: hosh/checker-zec
     container_name: checker-zec
     environment:
-      NATS_HOST: nats
-      NATS_PORT: 4222
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      NATS_URL: "nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222"
     depends_on:
       nats:
         condition: service_healthy
@@ -131,10 +139,9 @@ services:
     build: checkers/http
     image: hosh/checker-http
     environment:
-      NATS_HOST: nats
-      NATS_PORT: 4222
       REDIS_HOST: redis
       REDIS_PORT: 6379
+      NATS_URL: "nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222"
     depends_on:
       nats:
         condition: service_healthy
