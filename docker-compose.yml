@@ -128,17 +128,22 @@ services:
         condition: service_healthy
 
   checker-http:
-    build: checkers/http
+    build:
+      context: ./checkers/http
+      dockerfile: ${CHECKER_HTTP_DOCKERFILE:-Dockerfile}  # Use dev.Dockerfile for development
     image: hosh/checker-http
     environment:
-      NATS_HOST: nats
-      NATS_PORT: 4222
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      - REDIS_HOST=redis
+      - NATS_HOST=nats
+      - TOR_PROXY_HOST=tor
+    volumes:
+      - ${CHECKER_HTTP_DOCKERFILE:+./checkers/http:/usr/src/app}  # Only mount in dev mode
     depends_on:
       nats:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      tor:
         condition: service_healthy
 
   redis:
