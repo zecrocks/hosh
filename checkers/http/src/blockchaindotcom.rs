@@ -57,7 +57,6 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
                 blockchain_data.insert(chain.to_string(), BlockchainInfo {
                     height: Some(height),
                     name: name.to_string(),
-                    symbol: chain.to_string(), // Use full chain name instead of ticker
                     extra: HashMap::new(),
                 });
             },

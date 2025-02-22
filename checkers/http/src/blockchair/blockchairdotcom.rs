@@ -50,7 +50,6 @@ pub async fn get_regular_blockchain_data(client: &reqwest::Client) -> Result<Has
                 blockchain_data.insert(endpoint.clone(), BlockchainInfo {
                     height,
                     name: endpoint.to_string(),
-                    symbol: endpoint.clone(),
                     extra,
                 });
             }

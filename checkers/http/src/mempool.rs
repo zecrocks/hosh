@@ -31,7 +31,6 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
             blockchain_data.insert("bitcoin".to_string(), BlockchainInfo {
                 height: Some(height),
                 name: "Bitcoin".to_string(),
-                symbol: "BTC".to_string(),
                 extra: HashMap::new(),
             });
         }

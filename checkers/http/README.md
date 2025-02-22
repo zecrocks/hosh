@@ -12,6 +12,24 @@ The checker fetches block height data from several block explorer websites:
 - Zec.rocks
 - ZcashExplorer.app
 
+## Redis Key Format
+
+Keys are stored in Redis using the format: `http:{source}.{chain}`
+
+where:
+- `source` is the explorer name (e.g., blockchair, blockchain, blockstream)
+- `chain` is the canonical chain identifier from the explorer's URL
+
+Examples:
+- `http:blockchair.bitcoin` (from https://blockchair.com/bitcoin)
+- `http:blockchair.ethereum` (from https://blockchair.com/ethereum)
+- `http:blockchair.bitcoin-cash` (from https://blockchair.com/bitcoin-cash)
+- `http:blockchain.bitcoin`
+- `http:blockstream.bitcoin`
+- `http:blockstream.liquid-network`
+- `http:zecrocks.zcash`
+- `http:zcashexplorer.zcash`
+
 ## How It Works
 
 1. The service subscribes to NATS messages on the topic `{prefix}check.http`
@@ -36,16 +54,6 @@ The checker fetches block height data from several block explorer websites:
 #### Zcash-specific Explorers
 - Zec.rocks: `http:zecrocks.zcash`
 - ZcashExplorer: `http:zcashexplorer.zcash`
-
-## Redis Key Format
-
-The Redis keys follow the pattern: `http:{source}.{chain}`
-
-Where:
-- `source`: The explorer source (blockchair, blockchain, blockstream, zecrocks, zcashexplorer)
-- `chain`: The blockchain identifier (bitcoin, ethereum, zcash, etc.)
-
-The value stored is the current block height as a u64 integer.
 
 ## Configuration
 

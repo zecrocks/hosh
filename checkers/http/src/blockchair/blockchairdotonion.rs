@@ -65,7 +65,6 @@ pub async fn get_blockchain_data(client: &reqwest::Client) -> Result<HashMap<Str
                                 blockchain_data.insert(chain.clone(), BlockchainInfo {
                                     height: None,
                                     name,
-                                    symbol: chain.clone(), // Just use the chain name from the URL
                                     extra: HashMap::new(),
                                 });
 

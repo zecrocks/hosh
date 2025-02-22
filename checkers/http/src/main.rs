@@ -150,12 +150,12 @@ impl Worker {
 
         for (source, result) in results {
             if let Ok(data) = result {
-                for (_chain, info) in data {
+                for (chain_id, info) in data {
                     if let Some(height) = info.height {
-                        println!("DEBUG: source={}, name={}, symbol={}", source, info.name, info.symbol);
-                        let key = format!("http:{}.{}", source, info.symbol.to_lowercase());
-                        println!("DEBUG: writing key={}", key);
-                        let _: Result<(), _> = con.set(key, height);
+                        println!("{} height: {} ({})", info.name, height, source);
+                        let redis_key = format!("http:{}.{}", source, chain_id);
+                        println!("DEBUG: storing height for {} at key={}", info.name, redis_key);
+                        let _: Result<(), _> = con.set(redis_key, height);
                     }
                 }
             }

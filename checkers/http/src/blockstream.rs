@@ -32,7 +32,6 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
             blockchain_data.insert("bitcoin".to_string(), BlockchainInfo {
                 height: Some(height),
                 name: "Bitcoin".to_string(),
-                symbol: "bitcoin".to_string(),
                 extra: HashMap::new(),
             });
         }
@@ -45,7 +44,6 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
             blockchain_data.insert("liquid-network".to_string(), BlockchainInfo {
                 height: Some(height),
                 name: "Liquid Network".to_string(),
-                symbol: "liquid-network".to_string(),
                 extra: HashMap::new(),
             });
         }
