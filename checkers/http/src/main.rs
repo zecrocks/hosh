@@ -92,6 +92,9 @@ impl Worker {
             std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
         );
 
+        println!("Redis key format: http:{{source}}.{{chain}}");
+        println!("Example: http:blockchair.bitcoin, http:blockchain.bitcoin");
+
         let nats = async_nats::connect(&nats_url).await?;
         let redis = redis::Client::open(redis_url.as_str())?;
 
@@ -149,8 +152,9 @@ impl Worker {
             if let Ok(data) = result {
                 for (_chain, info) in data {
                     if let Some(height) = info.height {
-                        println!("{} height for {}: {} ({})", source, info.name, height, info.symbol);
+                        println!("DEBUG: source={}, name={}, symbol={}", source, info.name, info.symbol);
                         let key = format!("http:{}.{}", source, info.symbol.to_lowercase());
+                        println!("DEBUG: writing key={}", key);
                         let _: Result<(), _> = con.set(key, height);
                     }
                 }

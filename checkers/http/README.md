@@ -6,6 +6,7 @@ This service monitors various blockchain block explorers to track block heights 
 
 The checker fetches block height data from several block explorer websites:
 - Blockchair.com
+- Blockchair.onion
 - Blockchain.com
 - Blockstream.info
 - Zec.rocks
@@ -21,6 +22,7 @@ The checker fetches block height data from several block explorer websites:
 
 #### Blockchair
 - Supports multiple chains including Bitcoin, Ethereum, Zcash, and many others
+- Fetches from both clearnet (blockchair.com) and Tor (.onion) sites
 - Example key: `http:blockchair.ethereum`
 
 #### Blockchain.com
@@ -53,6 +55,8 @@ The service can be configured using environment variables:
 - `REDIS_HOST`: Redis server hostname (default: "redis")
 - `REDIS_PORT`: Redis server port (default: 6379)
 - `NATS_PREFIX`: Prefix for NATS topics (default: "hosh.")
+- `TOR_PROXY_HOST`: Tor proxy hostname (default: "tor")
+- `TOR_PROXY_PORT`: Tor proxy port (default: 9050)
 
 ## Error Handling
 
@@ -64,14 +68,17 @@ The service implements robust error handling:
 ## Development
 
 The checker is written in Rust and uses:
-- `reqwest` for HTTP requests
+- `reqwest` for HTTP requests (with SOCKS5 proxy support for Tor)
 - `scraper` for HTML parsing
 - `redis` for data storage
 - `async-nats` for message queue integration
 - `tokio` for async runtime
 
 Each explorer implementation is in its own module:
-- `blockchair.rs`
+- `blockchair/`
+  - `blockchairdotcom.rs` - Clearnet implementation
+  - `blockchairdotonion.rs` - Tor implementation
+  - `mod.rs` - Module exports
 - `blockchain.rs`
 - `blockstream.rs`
 - `zecrocks.rs`

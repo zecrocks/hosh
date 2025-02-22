@@ -62,29 +62,10 @@ pub async fn get_blockchain_data(client: &reqwest::Client) -> Result<HashMap<Str
 
                                 println!("🧅 Found blockchain: {} ({})", name, chain);
                                 
-                                // Create a mapping for standardized symbols
-                                let symbol = match chain.as_str() {
-                                    "bitcoin" => "btc",
-                                    "ethereum" => "eth",
-                                    "bitcoin-cash" => "bch",
-                                    "litecoin" => "ltc",
-                                    "dogecoin" => "doge",
-                                    "zcash" => "zec",
-                                    "dash" => "dash",
-                                    "monero" => "xmr",
-                                    "ethereum-classic" => "etc",
-                                    "cardano" => "ada",
-                                    "polkadot" => "dot",
-                                    "solana" => "sol",
-                                    "tron" => "trx",
-                                    "ripple" => "xrp",
-                                    _ => chain.as_str()
-                                }.to_string();
-
                                 blockchain_data.insert(chain.clone(), BlockchainInfo {
                                     height: None,
                                     name,
-                                    symbol, // Use the standardized symbol
+                                    symbol: chain.clone(), // Just use the chain name from the URL
                                     extra: HashMap::new(),
                                 });
 

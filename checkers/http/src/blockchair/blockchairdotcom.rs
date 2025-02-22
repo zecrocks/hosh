@@ -28,14 +28,6 @@ pub async fn get_regular_blockchain_data(client: &reqwest::Client) -> Result<Has
                     .next()
                     .map(|el| el.text().collect::<String>().trim().to_string());
 
-                // Normalize chain identifiers for consistent Redis keys
-                let normalized_endpoint = match endpoint.as_str() {
-                    "bitcoin" => "btc",
-                    "bitcoin-cash" => "bch", 
-                    "ethereum" => "eth",
-                    _ => &endpoint
-                }.to_string();
-
                 // Get the logo URL based on endpoint
                 let logo_url = match endpoint.as_str() {
                     "bitcoin" => "https://loutre.blockchair.io/w4/assets/images/blockchains/bitcoin/logo_light_48.webp",
@@ -55,10 +47,10 @@ pub async fn get_regular_blockchain_data(client: &reqwest::Client) -> Result<Has
                 let mut extra = HashMap::new();
                 extra.insert("logo_url".to_string(), serde_json::Value::String(logo_url.to_string()));
 
-                blockchain_data.insert(normalized_endpoint.clone(), BlockchainInfo {
+                blockchain_data.insert(endpoint.clone(), BlockchainInfo {
                     height,
                     name: endpoint.to_string(),
-                    symbol: symbol.unwrap_or_else(|| normalized_endpoint.to_string()),
+                    symbol: endpoint.clone(),
                     extra,
                 });
             }

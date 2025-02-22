@@ -28,7 +28,7 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
             blockchain_data.insert("zcash".to_string(), BlockchainInfo {
                 height: Some(height),
                 name: "Zcash".to_string(),
-                symbol: "ZEC".to_string(),
+                symbol: "zcash".to_string(),
                 extra: HashMap::new(),
             });
         }

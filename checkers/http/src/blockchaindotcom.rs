@@ -41,31 +41,31 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .build()?;
-
+    
     let mut blockchain_data = HashMap::new();
     
     // Define the supported blockchains with their URLs and display names
     let supported_chains = vec![
-        ("bitcoin", "Bitcoin", "BTC"),
-        ("ethereum", "Ethereum", "ETH"),
-        ("bitcoin-cash", "Bitcoin Cash", "BCH"),
+        ("bitcoin", "Bitcoin"),
+        ("ethereum", "Ethereum"),
+        ("bitcoin-cash", "Bitcoin Cash"),
     ];
 
-    for (symbol, name, ticker) in supported_chains {
-        match fetch_block_height(&client, symbol).await {
+    for (chain, name) in supported_chains {
+        match fetch_block_height(&client, chain).await {
             Ok(Some(height)) => {
-                blockchain_data.insert(ticker.to_lowercase(), BlockchainInfo {
+                blockchain_data.insert(chain.to_string(), BlockchainInfo {
                     height: Some(height),
                     name: name.to_string(),
-                    symbol: ticker.to_string(),
+                    symbol: chain.to_string(), // Use full chain name instead of ticker
                     extra: HashMap::new(),
                 });
             },
             Ok(None) => {
-                println!("Warning: Could not fetch height for {}", symbol);
+                println!("Warning: Could not fetch height for {}", chain);
             },
             Err(e) => {
-                println!("Error fetching {} block height: {}", symbol, e);
+                println!("Error fetching {} block height: {}", chain, e);
             }
         }
     }
