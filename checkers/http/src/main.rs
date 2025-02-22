@@ -4,7 +4,7 @@ use std::fmt;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
-use std::collections::HashMap;
+use futures::try_join;
 
 mod blockchair;
 mod blockchaindotcom;
@@ -13,8 +13,6 @@ mod mempool;
 mod zecrocks;
 mod zcashexplorer;
 mod types;
-
-use crate::types::BlockchainInfo;
 
 #[derive(Debug)]
 enum CheckerError {
@@ -110,27 +108,6 @@ impl Worker {
             }
         };
 
-        // Fetch data from all sources concurrently
-        let (
-            blockstream_result,
-            zecrocks_result,
-            blockchair_result,
-            blockchaindotcom_result,
-            zcashexplorer_result
-        ): (
-            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>,
-            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>,
-            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>,
-            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>,
-            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>
-        ) = tokio::join!(
-            blockstream::get_blockchain_info(),
-            zecrocks::get_blockchain_info(),
-            blockchair::get_blockchain_info(),
-            blockchaindotcom::get_blockchain_info(),
-            zcashexplorer::get_blockchain_info()
-        );
-
         let mut con = match self.redis.get_connection() {
             Ok(con) => con,
             Err(e) => {
@@ -139,23 +116,38 @@ impl Worker {
             }
         };
 
-        // Process results and store in Redis
-        let results = [
-            ("blockstream", blockstream_result),
-            ("zecrocks", zecrocks_result),
-            ("blockchair", blockchair_result),
-            ("blockchain", blockchaindotcom_result),
-            ("zcashexplorer", zcashexplorer_result),
-        ];
+        let results = match try_join!(
+            blockstream::get_blockchain_info(),
+            zecrocks::get_blockchain_info(),
+            blockchair::get_blockchain_info(),
+            blockchair::get_onion_blockchain_info(),
+            blockchaindotcom::get_blockchain_info(),
+            zcashexplorer::get_blockchain_info()
+        ) {
+            Ok((blockstream, zecrocks, blockchair, blockchair_onion, blockchain, zcashexplorer)) => {
+                vec![
+                    ("blockstream", blockstream),
+                    ("zecrocks", zecrocks),
+                    ("blockchair", blockchair),
+                    ("blockchair-onion", blockchair_onion),
+                    ("blockchain", blockchain),
+                    ("zcashexplorer", zcashexplorer),
+                ]
+            }
+            Err(e) => {
+                eprintln!("Error during concurrent fetching: {}", e);
+                vec![]
+            }
+        };
 
-        for (source, result) in results {
-            if let Ok(data) = result {
-                for (chain_id, info) in data {
-                    if let Some(height) = info.height {
-                        println!("{} height: {} ({})", info.name, height, source);
-                        let redis_key = format!("http:{}.{}", source, chain_id);
-                        println!("DEBUG: storing height for {} at key={}", info.name, redis_key);
-                        let _: Result<(), _> = con.set(redis_key, height);
+        // Process results immediately
+        for (source, data) in results {
+            for (chain_id, info) in data {
+                if let Some(height) = info.height {
+                    let redis_key = format!("http:{}.{}", source, chain_id);
+                    match con.set::<_, _, ()>(&redis_key, height) {
+                        Ok(_) => println!("📝 {} height: {} ({})", info.name, height, source),
+                        Err(e) => eprintln!("Failed to set Redis key {}: {}", redis_key, e),
                     }
                 }
             }
@@ -177,6 +169,13 @@ impl Worker {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    println!("Testing Tor connection...");
+    if let Ok(_client) = blockchair::blockchairdotonion::create_client() {
+        println!("Successfully created Tor client");
+    } else {
+        println!("Failed to create Tor client");
+    }
+
     let worker = Worker::new().await?;
     worker.run().await
 }

@@ -24,7 +24,7 @@ pub async fn get_regular_blockchain_data(client: &reqwest::Client) -> Result<Has
                     .and_then(|el| el.value().attr("data-current-value"))
                     .and_then(|h| h.parse::<u64>().ok());
 
-                let symbol = card.select(&ticker_selector)
+                let _symbol = card.select(&ticker_selector)
                     .next()
                     .map(|el| el.text().collect::<String>().trim().to_string());
 
@@ -64,10 +64,20 @@ pub async fn get_regular_blockchain_data(client: &reqwest::Client) -> Result<Has
 }
 
 pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error + Send + Sync>> {
+    println!("Starting clearnet blockchain info request...");
+    
     let regular_client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .timeout(Duration::from_secs(10))
         .build()?;
 
-    get_regular_blockchain_data(&regular_client).await
+    println!("Created clearnet client, making request...");
+    let result = get_regular_blockchain_data(&regular_client).await;
+    
+    match &result {
+        Ok(data) => println!("Clearnet request successful, found {} chains", data.len()),
+        Err(e) => println!("Clearnet request failed: {}", e),
+    }
+    
+    result
 } 
