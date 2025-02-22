@@ -99,11 +99,11 @@ def fetch_blockchain_heights():
         # Convert to records for table display
         records = []
         for source, coins in heights.items():
-            source_name = source.replace('http:', '')  # Remove http: prefix
+            source_name = source.replace('http:', '')  # Remove http: prefix but don't capitalize
             for coin, height in coins.items():
                 records.append({
-                    'Source': source_name.capitalize(),
-                    'Coin': coin.upper(),
+                    'Source': source_name,  # Keep original case
+                    'Coin': coin,  # Keep original case
                     'Height': height,
                 })
         
