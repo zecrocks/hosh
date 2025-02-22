@@ -4,33 +4,29 @@ use std::fmt;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
-use std::time::Instant;
+use std::collections::HashMap;
 
 mod blockchair;
-mod blockchain;
+mod blockchaindotcom;
 mod blockstream;
 mod mempool;
 mod zecrocks;
 mod zcashexplorer;
+mod types;
 
-// Keep this import since we'll use it as our canonical BlockchainInfo
-use blockchain::BlockchainInfo;
+use crate::types::BlockchainInfo;
 
 #[derive(Debug)]
 enum CheckerError {
     Redis(redis::RedisError),
-    Reqwest(reqwest::Error),
-    Var(std::env::VarError),
-    Other(String),
+    Nats(async_nats::Error),
 }
 
 impl fmt::Display for CheckerError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             CheckerError::Redis(e) => write!(f, "Redis error: {}", e),
-            CheckerError::Reqwest(e) => write!(f, "Request error: {}", e),
-            CheckerError::Var(e) => write!(f, "Environment variable error: {}", e),
-            CheckerError::Other(e) => write!(f, "Error: {}", e),
+            CheckerError::Nats(e) => write!(f, "NATS error: {}", e),
         }
     }
 }
@@ -43,26 +39,25 @@ impl From<redis::RedisError> for CheckerError {
     }
 }
 
-impl From<reqwest::Error> for CheckerError {
-    fn from(err: reqwest::Error) -> CheckerError {
-        CheckerError::Reqwest(err)
-    }
-}
-
-impl From<std::env::VarError> for CheckerError {
-    fn from(err: std::env::VarError) -> CheckerError {
-        CheckerError::Var(err)
+impl From<async_nats::Error> for CheckerError {
+    fn from(err: async_nats::Error) -> CheckerError {
+        CheckerError::Nats(err)
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct CheckRequest {
+    #[allow(dead_code)]
     host: String,
+    #[allow(dead_code)]
     port: u16,
+    #[allow(dead_code)]
     check_id: Option<String>,
+    #[allow(dead_code)]
     user_submitted: Option<bool>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct CheckResult {
     host: String,
@@ -84,7 +79,7 @@ struct Worker {
 }
 
 impl Worker {
-    async fn new() -> Result<Self, Box<dyn Error>> {
+    async fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
         let nats_url = format!(
             "nats://{}:{}",
             std::env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
@@ -113,11 +108,23 @@ impl Worker {
         };
 
         // Fetch data from all sources concurrently
-        let (blockstream_result, zecrocks_result, blockchair_result, blockchain_result, zcashexplorer_result) = tokio::join!(
+        let (
+            blockstream_result,
+            zecrocks_result,
+            blockchair_result,
+            blockchaindotcom_result,
+            zcashexplorer_result
+        ): (
+            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>,
+            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>,
+            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>,
+            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>,
+            Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>
+        ) = tokio::join!(
             blockstream::get_blockchain_info(),
             zecrocks::get_blockchain_info(),
             blockchair::get_blockchain_info(),
-            blockchain::get_blockchain_info(),
+            blockchaindotcom::get_blockchain_info(),
             zcashexplorer::get_blockchain_info()
         );
 
@@ -134,26 +141,24 @@ impl Worker {
             ("blockstream", blockstream_result),
             ("zecrocks", zecrocks_result),
             ("blockchair", blockchair_result),
-            ("blockchain", blockchain_result),
+            ("blockchain", blockchaindotcom_result),
             ("zcashexplorer", zcashexplorer_result),
         ];
 
         for (source, result) in results {
             if let Ok(data) = result {
-                for (chain, info) in data {
+                for (_chain, info) in data {
                     if let Some(height) = info.height {
-                        println!("{} height: {} ({})", info.name, height, source);
-                        let _: Result<(), _> = con.set(
-                            format!("http:{}.{}", source, chain),
-                            height
-                        );
+                        println!("{} height for {}: {} ({})", source, info.name, height, info.symbol);
+                        let key = format!("http:{}.{}", source, info.symbol.to_lowercase());
+                        let _: Result<(), _> = con.set(key, height);
                     }
                 }
             }
         }
     }
 
-    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
+    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
         let mut sub = self.nats.subscribe(format!("{}check.http", nats_prefix)).await?;
         println!("Subscribed to {}check.http", nats_prefix);
@@ -167,7 +172,7 @@ impl Worker {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let worker = Worker::new().await?;
     worker.run().await
 }

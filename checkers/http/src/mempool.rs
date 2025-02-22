@@ -1,7 +1,8 @@
 use scraper::{Html, Selector};
 use std::collections::HashMap;
-use crate::blockchain::BlockchainInfo;
+use crate::types::BlockchainInfo;
 
+#[allow(dead_code)]
 pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error>> {
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
@@ -30,7 +31,8 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
             blockchain_data.insert("bitcoin".to_string(), BlockchainInfo {
                 height: Some(height),
                 name: "Bitcoin".to_string(),
-                symbol: "bitcoin".to_string(),
+                symbol: "BTC".to_string(),
+                extra: HashMap::new(),
             });
         }
     }

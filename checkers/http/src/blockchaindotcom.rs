@@ -1,18 +1,12 @@
 use scraper::{Html, Selector};
 use std::collections::HashMap;
-
-#[derive(Debug)]
-pub struct BlockchainInfo {
-    pub height: Option<u64>,
-    pub name: String,
-    pub symbol: String,
-}
+use crate::types::BlockchainInfo;  // Update to use the shared type
 
 // Utility function to fetch block height for a specific blockchain
 async fn fetch_block_height(
     client: &reqwest::Client,
     symbol: &str,
-) -> Result<Option<u64>, Box<dyn std::error::Error>> {
+) -> Result<Option<u64>, Box<dyn std::error::Error + Send + Sync>> {
     // Map the Redis key name to the correct URL path
     let url_path = match symbol {
         "bitcoin" => "btc",
@@ -43,7 +37,7 @@ async fn fetch_block_height(
 }
 
 // Main function to fetch block heights for BTC, ETH, and BCH
-pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error>> {
+pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error + Send + Sync>> {
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .build()?;
@@ -52,18 +46,19 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
     
     // Define the supported blockchains with their URLs and display names
     let supported_chains = vec![
-        ("bitcoin", "Bitcoin"),
-        ("ethereum", "Ethereum"),
-        ("bitcoin-cash", "Bitcoin Cash"),
+        ("bitcoin", "Bitcoin", "BTC"),
+        ("ethereum", "Ethereum", "ETH"),
+        ("bitcoin-cash", "Bitcoin Cash", "BCH"),
     ];
 
-    for (symbol, name) in supported_chains {
+    for (symbol, name, ticker) in supported_chains {
         match fetch_block_height(&client, symbol).await {
             Ok(Some(height)) => {
-                blockchain_data.insert(symbol.to_string(), BlockchainInfo {
+                blockchain_data.insert(ticker.to_lowercase(), BlockchainInfo {
                     height: Some(height),
                     name: name.to_string(),
-                    symbol: symbol.to_string(),
+                    symbol: ticker.to_string(),
+                    extra: HashMap::new(),
                 });
             },
             Ok(None) => {
@@ -76,23 +71,4 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
     }
 
     Ok(blockchain_data)
-}
-
-// Move market data fetching to a utility module
-pub mod utils {
-    #[derive(Debug)]
-    pub struct CryptoMarketInfo {
-        pub name: String,
-        pub symbol: String,
-        pub price: String,
-        pub change_24h: String,
-        pub market_cap: String,
-        pub volume_24h: String,
-        pub circulating_supply: String,
-    }
-
-    pub async fn get_market_data() -> Result<Vec<CryptoMarketInfo>, Box<dyn std::error::Error>> {
-        // ... (rest of the market data code)
-        todo!("Moved to utils module")
-    }
 } 
