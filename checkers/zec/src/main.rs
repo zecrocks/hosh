@@ -22,7 +22,6 @@ struct CheckResult {
     height: u64,
     status: String,
     error: Option<String>,
-    #[serde(rename = "LastUpdated")]
     last_updated: DateTime<Utc>,
     ping: f64,
     #[serde(skip_serializing_if = "Option::is_none")]

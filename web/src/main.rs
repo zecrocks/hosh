@@ -68,7 +68,7 @@ struct ServerInfo {
     #[serde(default)]
     height: u64,
 
-    #[serde(rename = "LastUpdated", default)]
+    #[serde(default)]
     last_updated: Option<String>,
 
     #[serde(default)]
@@ -380,7 +380,7 @@ async fn network_status(
 
         match serde_json::from_str::<ServerInfo>(&value) {
             Ok(mut server_info) => {
-                // Skip servers without LastChecked
+                // Skip servers without last_updated
                 if server_info.last_updated.is_none() {
                     continue;
                 }

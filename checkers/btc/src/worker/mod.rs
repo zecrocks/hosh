@@ -31,7 +31,6 @@ struct ServerData {
     height: u64,
     #[serde(rename = "server_version")]
     electrum_version: String,
-    #[serde(rename = "LastUpdated")]
     last_updated: chrono::DateTime<chrono::Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ping: Option<f64>,
