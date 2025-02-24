@@ -224,9 +224,9 @@ services:
       - "3000:3000"
       - "3001:3001"
     volumes:
-      - ./docs:/book
+      - .:/hosh
     command: ["serve", "--hostname", "0.0.0.0", "--port", "3000"]
-    working_dir: /book
+    working_dir: /hosh/docs
 
 volumes:
   btc-data:
