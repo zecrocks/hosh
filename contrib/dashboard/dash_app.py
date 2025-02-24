@@ -243,7 +243,7 @@ def update_tables(clear_servers_clicks, clear_explorers_clicks, auto_refresh_int
     now = datetime.now(timezone.utc)
 
     # Convert 'last_updated' to time delta
-    for record in data:
+    for record in server_data:
         if 'last_updated' in record:
             last_updated_str = record['last_updated'].strip()
             try:
