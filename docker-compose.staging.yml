@@ -1,0 +1,28 @@
+# Create this file for staging-specific overrides
+services:
+  web:
+    environment:
+      - NODE_ENV=staging
+    restart: always
+
+  redis:
+    volumes:
+      - /persistent/staging/redis-data:/data  # Use persistent storage path
+
+  prometheus:
+    image: prom/prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+    ports:
+      - "9090:9090"
+    profiles:
+      - monitoring
+
+  grafana:
+    image: grafana/grafana
+    ports:
+      - "3000:3000"
+    profiles:
+      - monitoring
+
+  # Add any other staging-specific configurations 
