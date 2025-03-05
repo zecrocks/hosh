@@ -128,17 +128,41 @@ services:
         condition: service_healthy
 
   checker-http:
-    build: checkers/http
+    build:
+      context: ./checkers/http
+      dockerfile: Dockerfile
     image: hosh/checker-http
     environment:
-      NATS_HOST: nats
-      NATS_PORT: 4222
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      - REDIS_HOST=redis
+      - NATS_HOST=nats
+      - TOR_PROXY_HOST=tor
     depends_on:
       nats:
         condition: service_healthy
       redis:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+
+  checker-http-dev:
+    build:
+      context: ./checkers/http
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-http-dev
+    environment:
+      - REDIS_HOST=redis
+      - NATS_HOST=nats
+      - TOR_PROXY_HOST=tor
+    volumes:
+      - ./checkers/http:/usr/src/app
+    profiles:
+      - dev
+    depends_on:
+      nats:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      tor:
         condition: service_healthy
 
   redis:
@@ -219,9 +243,9 @@ services:
       - "3000:3000"
       - "3001:3001"
     volumes:
-      - ./docs:/book
+      - .:/hosh
     command: ["serve", "--hostname", "0.0.0.0", "--port", "3000"]
-    working_dir: /book
+    working_dir: /hosh/docs
 
 volumes:
   btc-data:
