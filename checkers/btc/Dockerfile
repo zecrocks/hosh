@@ -1,4 +1,4 @@
-FROM rust:1.82-slim-bullseye AS builder
+FROM rustlang/rust:nightly-slim AS builder
 
 WORKDIR /usr/src/app
 
