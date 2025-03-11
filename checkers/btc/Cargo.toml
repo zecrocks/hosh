@@ -38,9 +38,8 @@ openssl = { version = "0.10", features = ["vendored"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10" }
 
-
 # Tor Support
-arti-client = "0.26"
+arti-client = { version = "0.26", default-features = false, features = ["tokio", "native-tls"] }
 
 # New dependencies for worker functionality
 async-nats = "0.33"
@@ -50,3 +49,6 @@ futures-util = "0.3"
 
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# UUID for unique identifiers
+uuid = { version = "1.0", features = ["v4", "serde"] }

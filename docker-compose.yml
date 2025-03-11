@@ -29,9 +29,9 @@ services:
       TOR_PROXY_PORT: 9050
       CLICKHOUSE_HOST: chronicler
       CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_DB: hosh
-      CLICKHOUSE_USER: hosh
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-chroniclerpass}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -57,9 +57,9 @@ services:
       TOR_PROXY_PORT: 9050
       CLICKHOUSE_HOST: chronicler
       CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_DB: hosh
-      CLICKHOUSE_USER: hosh
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-chroniclerpass}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -199,9 +199,9 @@ services:
       TOR_PROXY_PORT: 9050
       CLICKHOUSE_HOST: chronicler
       CLICKHOUSE_PORT: 9000
-      CLICKHOUSE_DB: hosh
-      CLICKHOUSE_USER: hosh
-      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD:-chroniclerpass}
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -295,18 +295,19 @@ services:
     working_dir: /hosh/docs
 
   chronicler:
-    build: ./chronicler
+    image: clickhouse/clickhouse-server:25.1
     container_name: chronicler
     environment:
-      - CLICKHOUSE_DB=hosh
-      - CLICKHOUSE_USER=hosh
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD:-chroniclerpass}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
     ports:
-      - "8123:8123"   # HTTP interface
-      - "9000:9000"   # Native ClickHouse protocol
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native interface
     volumes:
       - clickhouse-data:/var/lib/clickhouse
+      - ./chronicler/migrations:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
       interval: 5s
