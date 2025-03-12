@@ -10,11 +10,11 @@ COPY . .
 
 RUN cargo build --release
 
-FROM debian:bookworm-slim
+FROM debian:bullseye-slim
 
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl3 \
+    libssl1.1 \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=builder /usr/src/app/target/release/discovery /usr/local/bin/discovery

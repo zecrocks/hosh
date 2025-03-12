@@ -29,6 +29,16 @@ bitcoin = "0.32"
 chrono = { version = "0.4", features = ["serde"] }
 tokio-openssl = "0.6"
 
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Messaging & Storage
+async-nats = "0.33"
+redis = { version = "0.24", features = ["tokio-comp"] }
+futures = "0.3"
+futures-util = { version = "0.3", features = ["std"] }
+
 # OpenSSL (Only TLS implementation)
 ## On macOS, force vendored OpenSSL
 [target.'cfg(not(target_os = "linux"))'.dependencies]
@@ -38,15 +48,8 @@ openssl = { version = "0.10", features = ["vendored"] }
 [target.'cfg(target_os = "linux")'.dependencies]
 openssl = { version = "0.10" }
 
-
 # Tor Support
 arti-client = "0.26"
 
-# New dependencies for worker functionality
-async-nats = "0.33"
-redis = { version = "0.24", features = ["tokio-comp"] }
-futures = "0.3"
-futures-util = "0.3"
-
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Add this line to force a specific version
+priority-queue = "=1.3.2"
