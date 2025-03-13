@@ -7,7 +7,6 @@ use crate::routes::electrum::query::{electrum_query, QueryParams};
 use axum::extract::Query;
 use tracing::{debug, error, info};
 use uuid::Uuid;
-use chrono::Utc;
 use reqwest;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -168,8 +167,9 @@ impl Worker {
         
         // First, ensure the target exists in the targets table
         let target_query = format!(
-            "INSERT INTO targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted) 
+            "INSERT INTO {}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted) 
              VALUES ('{}', 'btc', '{}', now(), now(), {})",
+            self.clickhouse_db,
             target_id, 
             request.host.replace("'", "\\'"), 
             request.user_submitted
@@ -178,7 +178,6 @@ impl Worker {
         // Execute the query using reqwest
         let client = reqwest::Client::new();
         let response = client.post(&format!("{}", self.clickhouse_url))
-            .query(&[("database", &self.clickhouse_db)])
             .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
             .header("Content-Type", "text/plain")
             .body(target_query)
@@ -222,22 +221,23 @@ impl Worker {
         
         // Insert the result
         let result_query = format!(
-            "INSERT INTO results 
+            "INSERT INTO {}.results 
              (target_id, checked_at, hostname, resolved_ip, ip_version, 
-              checker_module, status, ping_ms, checker_location, checker_id, response_data) 
+              checker_module, status, ping_ms, checker_location, checker_id, response_data, user_submitted) 
              VALUES 
-             ('{}', now(), '{}', '{}', 4, 'btc', '{}', {}, 'default', '{}', '{}')",
+             ('{}', now(), '{}', '{}', 4, 'btc', '{}', {}, 'default', '{}', '{}', {})",
+            self.clickhouse_db,
             target_id,
             server_data.host.replace("'", "\\'"),
             resolved_ip.replace("'", "\\'"),
             status,
             server_data.ping.unwrap_or(0.0),
             Uuid::new_v4(), // Generate a checker_id
-            serde_json::to_string(server_data)?.replace("'", "\\'")
+            serde_json::to_string(server_data)?.replace("'", "\\'"),
+            request.user_submitted
         );
         
         let response = client.post(&format!("{}", self.clickhouse_url))
-            .query(&[("database", &self.clickhouse_db)])
             .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
             .header("Content-Type", "text/plain")
             .body(result_query)
