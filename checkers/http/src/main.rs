@@ -4,33 +4,27 @@ use std::fmt;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
-use std::time::Instant;
+use futures::try_join;
 
 mod blockchair;
-mod blockchain;
+mod blockchaindotcom;
 mod blockstream;
 mod mempool;
 mod zecrocks;
 mod zcashexplorer;
-
-// Keep this import since we'll use it as our canonical BlockchainInfo
-use blockchain::BlockchainInfo;
+mod types;
 
 #[derive(Debug)]
 enum CheckerError {
     Redis(redis::RedisError),
-    Reqwest(reqwest::Error),
-    Var(std::env::VarError),
-    Other(String),
+    Nats(async_nats::Error),
 }
 
 impl fmt::Display for CheckerError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
             CheckerError::Redis(e) => write!(f, "Redis error: {}", e),
-            CheckerError::Reqwest(e) => write!(f, "Request error: {}", e),
-            CheckerError::Var(e) => write!(f, "Environment variable error: {}", e),
-            CheckerError::Other(e) => write!(f, "Error: {}", e),
+            CheckerError::Nats(e) => write!(f, "NATS error: {}", e),
         }
     }
 }
@@ -43,26 +37,25 @@ impl From<redis::RedisError> for CheckerError {
     }
 }
 
-impl From<reqwest::Error> for CheckerError {
-    fn from(err: reqwest::Error) -> CheckerError {
-        CheckerError::Reqwest(err)
-    }
-}
-
-impl From<std::env::VarError> for CheckerError {
-    fn from(err: std::env::VarError) -> CheckerError {
-        CheckerError::Var(err)
+impl From<async_nats::Error> for CheckerError {
+    fn from(err: async_nats::Error) -> CheckerError {
+        CheckerError::Nats(err)
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct CheckRequest {
+    #[allow(dead_code)]
     host: String,
+    #[allow(dead_code)]
     port: u16,
+    #[allow(dead_code)]
     check_id: Option<String>,
+    #[allow(dead_code)]
     user_submitted: Option<bool>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct CheckResult {
     host: String,
@@ -84,7 +77,7 @@ struct Worker {
 }
 
 impl Worker {
-    async fn new() -> Result<Self, Box<dyn Error>> {
+    async fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
         let nats_url = format!(
             "nats://{}:{}",
             std::env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
@@ -96,6 +89,9 @@ impl Worker {
             std::env::var("REDIS_HOST").unwrap_or_else(|_| "redis".into()),
             std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
         );
+
+        println!("Redis key format: http:{{source}}.{{chain}}");
+        println!("Example: http:blockchair.bitcoin, http:blockchain.bitcoin");
 
         let nats = async_nats::connect(&nats_url).await?;
         let redis = redis::Client::open(redis_url.as_str())?;
@@ -112,15 +108,6 @@ impl Worker {
             }
         };
 
-        // Fetch data from all sources concurrently
-        let (blockstream_result, zecrocks_result, blockchair_result, blockchain_result, zcashexplorer_result) = tokio::join!(
-            blockstream::get_blockchain_info(),
-            zecrocks::get_blockchain_info(),
-            blockchair::get_blockchain_info(),
-            blockchain::get_blockchain_info(),
-            zcashexplorer::get_blockchain_info()
-        );
-
         let mut con = match self.redis.get_connection() {
             Ok(con) => con,
             Err(e) => {
@@ -129,31 +116,45 @@ impl Worker {
             }
         };
 
-        // Process results and store in Redis
-        let results = [
-            ("blockstream", blockstream_result),
-            ("zecrocks", zecrocks_result),
-            ("blockchair", blockchair_result),
-            ("blockchain", blockchain_result),
-            ("zcashexplorer", zcashexplorer_result),
-        ];
+        let results = match try_join!(
+            blockstream::get_blockchain_info(),
+            zecrocks::get_blockchain_info(),
+            blockchair::get_blockchain_info(),
+            blockchair::get_onion_blockchain_info(),
+            blockchaindotcom::get_blockchain_info(),
+            zcashexplorer::get_blockchain_info()
+        ) {
+            Ok((blockstream, zecrocks, blockchair, blockchair_onion, blockchain, zcashexplorer)) => {
+                vec![
+                    ("blockstream", blockstream),
+                    ("zecrocks", zecrocks),
+                    ("blockchair", blockchair),
+                    ("blockchair-onion", blockchair_onion),
+                    ("blockchain", blockchain),
+                    ("zcashexplorer", zcashexplorer),
+                ]
+            }
+            Err(e) => {
+                eprintln!("Error during concurrent fetching: {}", e);
+                vec![]
+            }
+        };
 
-        for (source, result) in results {
-            if let Ok(data) = result {
-                for (chain, info) in data {
-                    if let Some(height) = info.height {
-                        println!("{} height: {} ({})", info.name, height, source);
-                        let _: Result<(), _> = con.set(
-                            format!("http:{}.{}", source, chain),
-                            height
-                        );
+        // Process results immediately
+        for (source, data) in results {
+            for (chain_id, info) in data {
+                if let Some(height) = info.height {
+                    let redis_key = format!("http:{}.{}", source, chain_id);
+                    match con.set::<_, _, ()>(&redis_key, height) {
+                        Ok(_) => println!("📝 {} height: {} ({})", info.name, height, source),
+                        Err(e) => eprintln!("Failed to set Redis key {}: {}", redis_key, e),
                     }
                 }
             }
         }
     }
 
-    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
+    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
         let mut sub = self.nats.subscribe(format!("{}check.http", nats_prefix)).await?;
         println!("Subscribed to {}check.http", nats_prefix);
@@ -167,7 +168,14 @@ impl Worker {
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    println!("Testing Tor connection...");
+    if let Ok(_client) = blockchair::blockchairdotonion::create_client() {
+        println!("Successfully created Tor client");
+    } else {
+        println!("Failed to create Tor client");
+    }
+
     let worker = Worker::new().await?;
     worker.run().await
 }

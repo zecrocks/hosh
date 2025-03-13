@@ -1,0 +1,9 @@
+[book]
+authors = ["Asher Pembroke"]
+language = "en"
+multilingual = false
+src = "src"
+title = "hosh"
+
+[build]
+extra-watch-dirs = ["/hosh/web"]
