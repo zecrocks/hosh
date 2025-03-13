@@ -28,7 +28,7 @@ services:
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
       CLICKHOUSE_HOST: chronicler
-      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_PORT: 8123
       CLICKHOUSE_DB: ${CLICKHOUSE_DB}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
@@ -56,7 +56,7 @@ services:
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
       CLICKHOUSE_HOST: chronicler
-      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_PORT: 8123
       CLICKHOUSE_DB: ${CLICKHOUSE_DB}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
@@ -84,8 +84,14 @@ services:
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
       - redis
+      - chronicler
 
   discovery:
     build: ./discovery
@@ -187,6 +193,7 @@ services:
       - dev
     volumes:
       - ./checkers/btc:/usr/src/btc
+      - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
       - cargo-cache:/usr/local/cargo/registry
     environment:
       RUST_LOG: debug
@@ -198,7 +205,7 @@ services:
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
       CLICKHOUSE_HOST: chronicler
-      CLICKHOUSE_PORT: 9000
+      CLICKHOUSE_PORT: 8123
       CLICKHOUSE_DB: ${CLICKHOUSE_DB}
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
@@ -295,7 +302,7 @@ services:
     working_dir: /hosh/docs
 
   chronicler:
-    image: clickhouse/clickhouse-server:25.1
+    build: ./chronicler
     container_name: chronicler
     environment:
       - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1

@@ -11,7 +11,7 @@ done
 clickhouse-client --query "CREATE DATABASE IF NOT EXISTS $CLICKHOUSE_DB"
 
 # Run all SQL files in order
-for f in /docker-entrypoint-initdb.d/*.sql; do
+for f in /docker-entrypoint-initdb.d/migrations/*.sql; do
     case "$f" in
         *.sql)    echo "$0: running $f"; clickhouse-client --database=$CLICKHOUSE_DB --multiquery < "$f"; echo ;;
         *)        echo "$0: ignoring $f" ;;
