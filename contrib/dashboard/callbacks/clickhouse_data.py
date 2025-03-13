@@ -23,93 +23,93 @@ def register_callbacks(app):
         if current_page != 'clickhouse-data':
             return [], []
         
-        # Fetch server stats
+        # Fetch server stats with the selected time range
         stats = fetch_server_stats(time_range)
         
         # Get server list for dropdown
         servers = get_server_list()
         
         return stats, servers
-
+    
     @app.callback(
-        [Output('response-time-graph', 'figure'),
-         Output('success-rate-graph', 'figure')],
+        Output('server-performance-graph', 'figure'),
         [Input('server-selector', 'value'),
          Input('time-range-selector', 'value'),
          Input('auto-refresh-interval', 'n_intervals')],
         [State('current-page', 'data')]
     )
-    def update_performance_graphs(server_value, time_range, auto_refresh_intervals, current_page):
+    def update_performance_graph(selected_server, time_range, auto_refresh_intervals, current_page):
         """
-        Update the performance graphs based on selected server.
+        Update the server performance graph based on selected server and time range.
         """
         # Only update if we're on the Clickhouse data page
-        if current_page != 'clickhouse-data' or not server_value:
-            # Return empty figures
-            empty_fig = go.Figure()
-            empty_fig.update_layout(
-                title="No server selected",
-                xaxis=dict(title="Time"),
-                yaxis=dict(title="Value"),
-                template="plotly_white",
-                height=400,
-                margin=dict(l=50, r=50, t=50, b=50)
-            )
-            return empty_fig, empty_fig
+        if current_page != 'clickhouse-data' or not selected_server:
+            return {
+                'data': [],
+                'layout': {
+                    'title': 'Select a server to view performance data',
+                    'xaxis': {'title': 'Time'},
+                    'yaxis': {'title': 'Response Time (ms)'}
+                }
+            }
         
-        # Parse server value
+        # Parse the server value (format: "host:port:protocol")
         try:
-            host, port, protocol = server_value.split(':')
-            port = int(port)
-        except Exception as e:
-            print(f"Error parsing server value: {e}")
-            empty_fig = go.Figure()
-            empty_fig.update_layout(
-                title="Error parsing server data",
-                template="plotly_white",
-                height=400
-            )
-            return empty_fig, empty_fig
+            host, port, protocol = selected_server.split(':')
+        except ValueError:
+            return {
+                'data': [],
+                'layout': {
+                    'title': 'Invalid server selection',
+                    'xaxis': {'title': 'Time'},
+                    'yaxis': {'title': 'Response Time (ms)'}
+                }
+            }
         
-        # Fetch performance data
-        df = fetch_server_performance(host, port, protocol, time_range)
+        # Fetch performance data for the selected server and time range
+        performance_data = fetch_server_performance(host, protocol, time_range)
         
-        if df.empty:
-            empty_fig = go.Figure()
-            empty_fig.update_layout(
-                title="No data available for selected server",
-                template="plotly_white",
-                height=400
-            )
-            return empty_fig, empty_fig
+        if not performance_data:
+            return {
+                'data': [],
+                'layout': {
+                    'title': f'No data available for {host} ({protocol})',
+                    'xaxis': {'title': 'Time'},
+                    'yaxis': {'title': 'Response Time (ms)'}
+                }
+            }
         
-        # Create response time graph
-        response_fig = px.line(
+        # Create a DataFrame from the performance data
+        df = pd.DataFrame(performance_data)
+        
+        # Create the performance graph
+        fig = px.scatter(
             df, 
-            x='time_interval', 
-            y='avg_response_time',
-            title=f"Average Response Time - {host}:{port} ({protocol})",
-            labels={'time_interval': 'Time', 'avg_response_time': 'Response Time (ms)'}
-        )
-        response_fig.update_layout(
-            template="plotly_white",
-            height=400,
-            margin=dict(l=50, r=50, t=50, b=50)
+            x='checked_at', 
+            y='ping_ms',
+            color='status',
+            color_discrete_map={'online': 'green', 'offline': 'red'},
+            title=f'Performance for {host} ({protocol})',
+            labels={'checked_at': 'Time', 'ping_ms': 'Response Time (ms)', 'status': 'Status'}
         )
         
-        # Create success rate graph
-        success_fig = px.line(
-            df, 
-            x='time_interval', 
-            y='success_rate',
-            title=f"Success Rate - {host}:{port} ({protocol})",
-            labels={'time_interval': 'Time', 'success_rate': 'Success Rate'}
-        )
-        success_fig.update_layout(
-            template="plotly_white",
-            height=400,
-            margin=dict(l=50, r=50, t=50, b=50),
-            yaxis=dict(tickformat='.0%', range=[0, 1])
+        # Add a line for the average response time
+        if 'online' in df['status'].values:
+            avg_ping = df[df['status'] == 'online']['ping_ms'].mean()
+            fig.add_hline(
+                y=avg_ping,
+                line_dash="dash",
+                line_color="blue",
+                annotation_text=f"Avg: {avg_ping:.2f} ms",
+                annotation_position="top right"
+            )
+        
+        # Update layout
+        fig.update_layout(
+            xaxis_title='Time',
+            yaxis_title='Response Time (ms)',
+            legend_title='Status',
+            hovermode='closest'
         )
         
-        return response_fig, success_fig 
+        return fig 

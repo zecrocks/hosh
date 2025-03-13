@@ -5,9 +5,9 @@ from datetime import datetime, timedelta
 
 # Clickhouse Configuration
 CLICKHOUSE_HOST = os.environ.get('CLICKHOUSE_HOST', 'chronicler')
-CLICKHOUSE_PORT = int(os.environ.get('CLICKHOUSE_PORT', 9000))
+CLICKHOUSE_PORT = int(os.environ.get('CLICKHOUSE_PORT', 8123))
 CLICKHOUSE_DB = os.environ.get('CLICKHOUSE_DB', 'hosh')
-CLICKHOUSE_USER = os.environ.get('CLICKHOUSE_USER', 'default')
+CLICKHOUSE_USER = os.environ.get('CLICKHOUSE_USER', 'hosh')
 CLICKHOUSE_PASSWORD = os.environ.get('CLICKHOUSE_PASSWORD', '')
 
 # Connect to Clickhouse
@@ -17,7 +17,8 @@ try:
         port=CLICKHOUSE_PORT,
         database=CLICKHOUSE_DB,
         user=CLICKHOUSE_USER,
-        password=CLICKHOUSE_PASSWORD
+        password=CLICKHOUSE_PASSWORD,
+        settings={'use_numpy': False}
     )
     # Test connection
     result = clickhouse_client.execute("SELECT 1")
@@ -30,124 +31,143 @@ except Exception as e:
     clickhouse_client = None
 
 
+def get_time_filter(time_range):
+    """
+    Convert time range string to a SQL filter condition.
+    
+    Args:
+        time_range: String like '10m', '1h', '24h', '7d', '30d'
+        
+    Returns:
+        SQL WHERE clause for the time filter
+    """
+    now = datetime.now()
+    
+    if time_range == '10m':
+        start_time = now - timedelta(minutes=10)
+    elif time_range == '1h':
+        start_time = now - timedelta(hours=1)
+    elif time_range == '24h':
+        start_time = now - timedelta(hours=24)
+    elif time_range == '7d':
+        start_time = now - timedelta(days=7)
+    elif time_range == '30d':
+        start_time = now - timedelta(days=30)
+    else:
+        # Default to 24 hours
+        start_time = now - timedelta(hours=24)
+    
+    return f"checked_at >= toDateTime('{start_time.strftime('%Y-%m-%d %H:%M:%S')}')"
+
+
 def fetch_server_stats(time_range='24h'):
     """
-    Fetch overall server statistics from Clickhouse.
+    Fetch server statistics from ClickHouse.
     
     Args:
-        time_range: Time range to fetch data for ('24h', '7d', '30d')
-    
+        time_range: Time range to filter results (e.g., '10m', '1h', '24h', '7d', '30d')
+        
     Returns:
-        List of dictionaries with server stats
+        List of dictionaries with server statistics
     """
     if not clickhouse_client:
         return []
     
     try:
-        # Convert time range to hours
-        hours = {
-            '24h': 24,
-            '7d': 24 * 7,
-            '30d': 24 * 30
-        }.get(time_range, 24)
+        time_filter = get_time_filter(time_range)
         
-        # Updated query to match the actual schema
         query = f"""
-        SELECT 
+        SELECT
             hostname as host,
-            '' as port,  -- No direct port column, could extract from hostname if needed
+            '' as port,  -- No direct port column
             checker_module as protocol,
+            round(countIf(status = 'online') / count(*) * 100, 1) as success_rate,
+            round(avg(if(status = 'online', ping_ms, null)), 2) as avg_response_time,
             count(*) as total_checks,
-            countIf(status = 'online') / count(*) as success_rate,
-            avg(ping_ms) as avg_response_time,
             max(checked_at) as last_check
         FROM results
-        WHERE checked_at >= now() - INTERVAL {hours} HOUR
+        WHERE {time_filter}
         GROUP BY hostname, checker_module
-        ORDER BY success_rate DESC, avg_response_time ASC
+        ORDER BY hostname, checker_module
         """
         
-        result = clickhouse_client.execute(query, with_column_types=True)
+        result = clickhouse_client.execute(query)
         
-        # Convert to DataFrame
-        columns = [col[0] for col in result[1]]
-        df = pd.DataFrame(result[0], columns=columns)
-        
-        # Format for display
-        if not df.empty:
-            df['success_rate'] = (df['success_rate'] * 100).round(2).astype(str) + '%'
-            df['avg_response_time'] = df['avg_response_time'].round(2).astype(str) + ' ms'
-            df['last_check'] = pd.to_datetime(df['last_check']).dt.strftime('%Y-%m-%d %H:%M:%S')
+        # Convert to list of dictionaries
+        stats = []
+        for row in result:
+            host, port, protocol, success_rate, avg_response_time, total_checks, last_check = row
             
-            # Convert to records for table display
-            return df.to_dict('records')
-        
-        return []
+            # Format last_check as a string
+            if last_check:
+                last_check_str = last_check.strftime('%Y-%m-%d %H:%M:%S')
+            else:
+                last_check_str = "Never"
+                
+            stats.append({
+                'host': host,
+                'port': port,
+                'protocol': protocol,
+                'success_rate': f"{success_rate}%",
+                'avg_response_time': f"{avg_response_time:.2f} ms" if avg_response_time else "N/A",
+                'total_checks': total_checks,
+                'last_check': last_check_str
+            })
+            
+        return stats
         
     except Exception as e:
-        print(f"Error fetching server stats from Clickhouse: {e}")
+        print(f"Error fetching server stats from ClickHouse: {e}")
         return []
 
 
-def fetch_server_performance(host, port, protocol, time_range='24h'):
+def fetch_server_performance(hostname, protocol, time_range='24h'):
     """
-    Fetch performance data for a specific server from Clickhouse.
+    Fetch performance data for a specific server from ClickHouse.
     
     Args:
-        host: Server hostname
-        port: Server port
-        protocol: Server protocol
-        time_range: Time range to fetch data for ('24h', '7d', '30d')
-    
+        hostname: Server hostname
+        protocol: Server protocol (e.g., 'btc', 'zec', 'http')
+        time_range: Time range to filter results (e.g., '10m', '1h', '24h', '7d', '30d')
+        
     Returns:
-        DataFrame with server performance data
+        List of dictionaries with performance data
     """
     if not clickhouse_client:
-        return pd.DataFrame()
+        return []
     
     try:
-        # Convert time range to hours
-        hours = {
-            '24h': 24,
-            '7d': 24 * 7,
-            '30d': 24 * 30
-        }.get(time_range, 24)
+        time_filter = get_time_filter(time_range)
         
-        # Determine appropriate time interval based on range
-        interval = 'toStartOfHour(timestamp)'
-        if hours > 72:  # More than 3 days, group by day
-            interval = 'toStartOfDay(timestamp)'
-        
-        # Updated query to match the actual schema
         query = f"""
-        SELECT 
-            {interval} as time_interval,
-            avg(ping_ms) as avg_response_time,
-            countIf(status = 'online') / count(*) as success_rate
+        SELECT
+            checked_at,
+            status,
+            ping_ms
         FROM results
-        WHERE 
-            hostname = '{host}' AND 
-            checker_module = '{protocol}' AND
-            checked_at >= now() - INTERVAL {hours} HOUR
-        GROUP BY time_interval
-        ORDER BY time_interval
+        WHERE hostname = '{hostname}'
+          AND checker_module = '{protocol}'
+          AND {time_filter}
+        ORDER BY checked_at
         """
         
-        result = clickhouse_client.execute(query, with_column_types=True)
+        result = clickhouse_client.execute(query)
         
-        # Convert to DataFrame
-        columns = [col[0] for col in result[1]]
-        df = pd.DataFrame(result[0], columns=columns)
-        
-        # Convert timestamp to datetime if it exists
-        if 'time_interval' in df.columns:
-            df['time_interval'] = pd.to_datetime(df['time_interval'])
+        # Convert to list of dictionaries
+        performance_data = []
+        for row in result:
+            checked_at, status, ping_ms = row
+            performance_data.append({
+                'checked_at': checked_at,
+                'status': status,
+                'ping_ms': ping_ms if ping_ms is not None else 0
+            })
             
-        return df
+        return performance_data
         
     except Exception as e:
-        print(f"Error fetching server performance from Clickhouse: {e}")
-        return pd.DataFrame()
+        print(f"Error fetching server performance from ClickHouse: {e}")
+        return []
 
 
 def get_server_list():

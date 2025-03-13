@@ -17,34 +17,33 @@ def register_callbacks(app):
 
     @app.callback(
         [Output('page-content', 'children'),
-         Output('current-page', 'data')],
+         Output('current-page', 'data'),
+         Output('url', 'pathname')],
         [Input('server-status-link', 'n_clicks'),
          Input('blockchain-heights-link', 'n_clicks'),
-         Input('clickhouse-data-link', 'n_clicks')],
+         Input('clickhouse-data-link', 'n_clicks'),
+         Input('url', 'pathname')],
         [State('current-page', 'data')]
     )
-    def display_page(server_clicks, blockchain_clicks, clickhouse_clicks, current_page):
+    def display_page(server_clicks, blockchain_clicks, clickhouse_clicks, pathname, current_page):
         ctx = callback_context
         
-        if not ctx.triggered:
-            return create_server_status_layout(), 'server-status'
+        if not ctx.triggered or ctx.triggered[0]['prop_id'] == 'url.pathname':
+            if pathname == '/blockchain-heights':
+                return create_blockchain_heights_layout(), 'blockchain-heights', '/blockchain-heights'
+            elif pathname == '/clickhouse-data':
+                return create_clickhouse_data_layout(), 'clickhouse-data', '/clickhouse-data'
+            else:
+                return create_server_status_layout(), 'server-status', '/'
         
         button_id = ctx.triggered[0]['prop_id'].split('.')[0]
         
         if button_id == 'server-status-link':
-            return create_server_status_layout(), 'server-status'
+            return create_server_status_layout(), 'server-status', '/'
         elif button_id == 'blockchain-heights-link':
-            return create_blockchain_heights_layout(), 'blockchain-heights'
+            return create_blockchain_heights_layout(), 'blockchain-heights', '/blockchain-heights'
         elif button_id == 'clickhouse-data-link':
-            return create_clickhouse_data_layout(), 'clickhouse-data'
+            return create_clickhouse_data_layout(), 'clickhouse-data', '/clickhouse-data'
         
-        # Default to current page if something else triggered the callback
-        if current_page == 'server-status':
-            return create_server_status_layout(), 'server-status'
-        elif current_page == 'blockchain-heights':
-            return create_blockchain_heights_layout(), 'blockchain-heights'
-        elif current_page == 'clickhouse-data':
-            return create_clickhouse_data_layout(), 'clickhouse-data'
-        
-        # Default fallback
-        return create_server_status_layout(), 'server-status' 
+        # Default fallback (shouldn't reach here)
+        return create_server_status_layout(), 'server-status', '/' 
