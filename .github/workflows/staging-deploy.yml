@@ -1,0 +1,49 @@
+name: Deploy to Staging
+
+on:
+  push:
+    branches: [ staging ]  # Triggers on pushes to staging branch
+  workflow_dispatch:       # Allows manual trigger
+
+env:
+  DOCKER_REGISTRY: ghcr.io  # GitHub Container Registry
+  STAGING_HOST: your-staging-server.com
+  
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push Docker images
+        run: |
+          # Update image names to use GHCR
+          sed -i "s|image: hosh/|image: ${{ env.DOCKER_REGISTRY }}/${{ github.repository_owner }}/|g" docker-compose.yml
+          
+          # Build and push all images
+          docker compose build
+          docker compose push
+
+      - name: Setup SSH
+        uses: webfactory/ssh-agent@v0.9.0
+        with:
+          ssh-private-key: ${{ secrets.STAGING_SSH_KEY }}
+
+      - name: Deploy to staging
+        run: |
+          # Copy files to staging server
+          scp docker-compose.yml ${{ secrets.STAGING_USER }}@${STAGING_HOST}:~/app/
+          
+          # Deploy using docker compose
+          ssh ${{ secrets.STAGING_USER }}@${STAGING_HOST} "cd ~/app && \
+            docker login ghcr.io -u ${{ github.actor }} -p ${{ secrets.GITHUB_TOKEN }} && \
+            docker compose pull && \
+            docker compose down && \
+            docker compose up -d" 
