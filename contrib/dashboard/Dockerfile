@@ -22,7 +22,9 @@ RUN pip install --no-cache-dir \
     requests \
     redis \
     nats-py>=2.6.0 \
-    diskcache
+    diskcache \
+    clickhouse-driver \
+    plotly
 
 # Expose the default port for the Dash app
 EXPOSE 8050
