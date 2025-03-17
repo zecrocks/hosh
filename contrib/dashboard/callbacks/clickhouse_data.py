@@ -2,7 +2,7 @@ from dash.dependencies import Input, Output, State
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-from data.clickhouse_client import fetch_server_stats, fetch_server_performance, get_server_list
+from data.clickhouse_client import fetch_server_stats, fetch_server_performance, get_server_list, fetch_targets
 
 def register_callbacks(app):
     """
@@ -10,35 +10,57 @@ def register_callbacks(app):
     """
     @app.callback(
         [Output('server-stats-table', 'data'),
-         Output('server-selector', 'options')],
-        [Input('auto-refresh-interval', 'n_intervals'),
+         Output('server-selector', 'options'),
+         Output('targets-table', 'data'),
+         Output('server-selector', 'value')],
+        [Input('refresh-button', 'n_clicks'),
          Input('time-range-selector', 'value'),
-         Input('current-page', 'data')]
+         Input('current-page', 'data'),
+         Input('targets-table', 'selected_rows')],
+        [State('targets-table', 'data')]
     )
-    def update_clickhouse_data(auto_refresh_intervals, time_range, current_page):
+    def update_clickhouse_data(n_clicks, time_range, current_page, selected_rows, targets_data):
         """
         Update the Clickhouse data tables and dropdowns.
         """
         # Only update if we're on the Clickhouse data page
         if current_page != 'clickhouse-data':
-            return [], []
+            return [], [], [], None
         
-        # Fetch server stats with the selected time range
-        stats = fetch_server_stats(time_range)
+        # Fetch targets data first
+        targets = fetch_targets(time_range)
         
         # Get server list for dropdown
         servers = get_server_list()
         
-        return stats, servers
+        # Fetch server stats with the selected time range
+        stats = fetch_server_stats(time_range)
+        
+        # Initialize selected_value as None
+        selected_value = None
+        
+        # Filter stats if a target row is selected and update dropdown selection
+        if selected_rows and targets_data:
+            selected_target = targets_data[selected_rows[0]]
+            stats = [
+                stat for stat in stats 
+                if stat['host'] == selected_target['hostname'] 
+                and stat['protocol'] == selected_target['module']
+            ]
+            # Set the dropdown value to match the selected target
+            selected_value = f"{selected_target['hostname']}::{selected_target['module']}"
+        
+        return stats, servers, targets, selected_value
     
     @app.callback(
         Output('server-performance-graph', 'figure'),
         [Input('server-selector', 'value'),
          Input('time-range-selector', 'value'),
-         Input('auto-refresh-interval', 'n_intervals')],
-        [State('current-page', 'data')]
+         Input('refresh-button', 'n_clicks')],
+        [State('current-page', 'data')],
+        prevent_initial_call=False
     )
-    def update_performance_graph(selected_server, time_range, auto_refresh_intervals, current_page):
+    def update_performance_graph(selected_server, time_range, n_clicks, current_page):
         """
         Update the server performance graph based on selected server and time range.
         """

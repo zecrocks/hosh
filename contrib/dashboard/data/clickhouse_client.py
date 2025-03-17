@@ -181,11 +181,9 @@ def get_server_list():
         return []
     
     try:
-        # Updated query to match the actual schema
         query = """
         SELECT DISTINCT
             hostname as host,
-            '' as port,  -- No direct port column
             checker_module as protocol
         FROM results
         ORDER BY hostname, checker_module
@@ -196,14 +194,62 @@ def get_server_list():
         # Convert to list of dictionaries
         servers = []
         for row in result:
-            host, port, protocol = row
+            host, protocol = row
             servers.append({
                 'label': f"{host} ({protocol})",
-                'value': f"{host}:{port}:{protocol}"
+                'value': f"{host}::{protocol}"
             })
             
         return servers
         
     except Exception as e:
         print(f"Error fetching server list from Clickhouse: {e}")
+        return []
+
+
+def fetch_targets(time_range='24h'):
+    """
+    Fetch active targets from ClickHouse.
+    """
+    if not clickhouse_client:
+        print("Debug: ClickHouse client is not initialized")
+        return []
+    
+    try:
+        query = """
+        SELECT
+            hostname,
+            module,
+            formatDateTime(last_queued_at, '%Y-%m-%d %H:%M:%S') as last_queued_at,
+            formatDateTime(last_checked_at, '%Y-%m-%d %H:%M:%S') as last_checked_at,
+            user_submitted
+        FROM targets
+        ORDER BY hostname, module
+        """
+        
+        print(f"Debug: Executing query:\n{query}")
+        
+        result = clickhouse_client.execute(query)
+        print(f"Debug: Query returned {len(result)} rows")
+        
+        # Convert to list of dictionaries
+        targets = []
+        for row in result:
+            hostname, module, last_queued, last_checked, user_submitted = row
+            target = {
+                'hostname': hostname,
+                'module': module,
+                'last_queued_at': last_queued,
+                'last_checked_at': last_checked,
+                'user_submitted': 'Yes' if user_submitted else 'No'
+            }
+            targets.append(target)
+            print(f"Debug: Processing row: {target}")
+            
+        print(f"Debug: Returning {len(targets)} targets")
+        return targets
+        
+    except Exception as e:
+        print(f"Debug: Error fetching targets from ClickHouse: {e}")
+        print(f"Debug: Full exception: {repr(e)}")
         return [] 

@@ -69,14 +69,14 @@ async def publish_chain_check_trigger(chain_type):
         nc = await nats.connect(NATS_URL)
         
         # Get all keys from Redis for this chain
-        import redis
         from .redis_client import redis_client
         
         if not redis_client:
             print(f"Redis client not available")
             return False
             
-        keys = [key.decode() for key in redis_client.keys(f'{chain_type}:*')]
+        # Keys are already strings due to decode_responses=True in Redis client
+        keys = redis_client.keys(f'{chain_type}:*')
         
         if not keys:
             print(f"No {chain_type} servers found in Redis")
