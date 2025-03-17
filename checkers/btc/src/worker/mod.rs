@@ -165,29 +165,60 @@ impl Worker {
         let target_id = Uuid::parse_str(&request.get_check_id())
             .unwrap_or_else(|_| Uuid::new_v4());
         
-        // First, ensure the target exists in the targets table
-        let target_query = format!(
-            "INSERT INTO {}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted) 
-             VALUES ('{}', 'btc', '{}', now(), now(), {})",
-            self.clickhouse_db,
-            target_id, 
-            request.host.replace("'", "\\'"), 
-            request.user_submitted
-        );
-        
-        // Execute the query using reqwest
         let client = reqwest::Client::new();
-        let response = client.post(&format!("{}", self.clickhouse_url))
+        let escaped_host = request.host.replace("'", "\\'");
+
+        // First try to update existing target
+        let update_query = format!(
+            "ALTER TABLE {db}.targets 
+             UPDATE last_queued_at = now(),
+                    last_checked_at = now(),
+                    target_id = '{target_id}'
+             WHERE module = 'btc' AND hostname = '{host}'
+             SETTINGS mutations_sync = 1",
+            db = self.clickhouse_db,
+            target_id = target_id,
+            host = escaped_host,
+        );
+
+        // Execute update query
+        let response = client.post(&self.clickhouse_url)
             .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
             .header("Content-Type", "text/plain")
-            .body(target_query)
+            .body(update_query)
             .send()
             .await?;
             
         if !response.status().is_success() {
-            return Err(format!("ClickHouse error: {}", response.text().await?).into());
+            return Err(format!("ClickHouse update error: {}", response.text().await?).into());
         }
-        
+
+        // Then try to insert if no record exists
+        let insert_query = format!(
+            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
+             SELECT '{target_id}', 'btc', '{host}', now(), now(), {user_submitted}
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM {db}.targets 
+                 WHERE module = 'btc' AND hostname = '{host}'
+             )",
+            db = self.clickhouse_db,
+            target_id = target_id,
+            host = escaped_host,
+            user_submitted = request.user_submitted
+        );
+
+        // Execute insert query
+        let response = client.post(&self.clickhouse_url)
+            .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
+            .header("Content-Type", "text/plain")
+            .body(insert_query)
+            .send()
+            .await?;
+            
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse insert error: {}", response.text().await?).into());
+        }
+
         // Prepare resolved IP (if available)
         let resolved_ip = match &server_data.additional_data {
             Some(data) => {
