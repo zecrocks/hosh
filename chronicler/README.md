@@ -25,6 +25,7 @@ Stores individual check results:
 | checker_location | String | Geographic location of checker (e.g., country code) |
 | checker_id | UUID | Unique ID of the checker instance |
 | response_data | JSON | Full check response data |
+| user_submitted | Boolean | Whether the target was submitted by a user (default: false) |
 
 #### Targets Table
 
