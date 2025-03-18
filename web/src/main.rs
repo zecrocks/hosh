@@ -293,6 +293,7 @@ struct CheckQuery {
 struct ExplorerRow {
     chain: String,
     blockchair: Option<u64>,
+    blockchair_onion: Option<u64>,
     blockchain_com: Option<u64>,
     blockstream: Option<u64>,
     zecrocks: Option<u64>,
@@ -300,10 +301,10 @@ struct ExplorerRow {
 }
 
 impl ExplorerRow {
-    // Helper method to count how many heights are available for this chain
     fn available_height_count(&self) -> usize {
         let mut count = 0;
         if self.blockchair.is_some() { count += 1; }
+        if self.blockchair_onion.is_some() { count += 1; }
         if self.blockchain_com.is_some() { count += 1; }
         if self.blockstream.is_some() { count += 1; }
         if self.zecrocks.is_some() { count += 1; }
@@ -328,6 +329,7 @@ impl BlockchainHeightsTemplate {
         // Collect all heights for this row
         let mut heights: Vec<u64> = vec![];
         if let Some(h) = row.blockchair { heights.push(h); }
+        if let Some(h) = row.blockchair_onion { heights.push(h); }
         if let Some(h) = row.blockchain_com { heights.push(h); }
         if let Some(h) = row.blockstream { heights.push(h); }
         if let Some(h) = row.zecrocks { heights.push(h); }
@@ -841,16 +843,17 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
     // Process all keys
     for key in &keys {
         if let Ok(height) = con.get::<_, u64>(key) {
-            // Parse the key format "http:source.chain"
+            // Parse the key format "http:source.chain" or "http:source-onion.chain"
             let parts: Vec<&str> = key.split('.').collect();
             if parts.len() == 2 {
-                let source = parts[0].replace("http:", "");
+                let source_full = parts[0].replace("http:", "");
                 let chain = parts[1].to_string();
 
                 // Get or create the ExplorerRow for this chain
                 let row = chain_heights.entry(chain.clone()).or_insert_with(|| ExplorerRow {
                     chain,
                     blockchair: None,
+                    blockchair_onion: None,
                     blockchain_com: None,
                     blockstream: None,
                     zecrocks: None,
@@ -858,8 +861,9 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
                 });
 
                 // Update the appropriate height based on the source
-                match source.as_str() {
+                match source_full.as_str() {
                     "blockchair" => row.blockchair = Some(height),
+                    "blockchair-onion" => row.blockchair_onion = Some(height),
                     "blockchain" => row.blockchain_com = Some(height),
                     "blockstream" => row.blockstream = Some(height),
                     "zecrocks" => row.zecrocks = Some(height),

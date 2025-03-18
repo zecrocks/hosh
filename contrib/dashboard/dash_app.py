@@ -99,11 +99,11 @@ def fetch_blockchain_heights():
         # Convert to records for table display
         records = []
         for source, coins in heights.items():
-            source_name = source.replace('http:', '')  # Remove http: prefix
+            source_name = source.replace('http:', '')  # Remove http: prefix but don't capitalize
             for coin, height in coins.items():
                 records.append({
-                    'Source': source_name.capitalize(),
-                    'Coin': coin.upper(),
+                    'Source': source_name,  # Keep original case
+                    'Coin': coin,  # Keep original case
                     'Height': height,
                 })
         
@@ -243,7 +243,7 @@ def update_tables(clear_servers_clicks, clear_explorers_clicks, auto_refresh_int
     now = datetime.now(timezone.utc)
 
     # Convert 'last_updated' to time delta
-    for record in data:
+    for record in server_data:
         if 'last_updated' in record:
             last_updated_str = record['last_updated'].strip()
             try:
