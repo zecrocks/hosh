@@ -57,6 +57,27 @@ def create_layout():
                      style={'display': 'none'}, className='mt-2 text-muted'),
         ], className='mb-4'),
 
+        # Check results table
+        html.Div([
+            html.H3("Check Results", className='mb-2'),
+            dash_table.DataTable(
+                id='check-results-table',
+                columns=[
+                    {'name': 'Checked At', 'id': 'checked_at'},
+                    {'name': 'Status', 'id': 'status'},
+                    {'name': 'Response Time (ms)', 'id': 'ping_ms'},
+                    {'name': 'IP Address', 'id': 'resolved_ip'},
+                    {'name': 'Response Data', 'id': 'response_data'},
+                ],
+                data=[],
+                style_table={'overflowX': 'auto'},
+                style_cell={'textAlign': 'left', 'padding': '5px'},
+                style_header={'fontWeight': 'bold', 'backgroundColor': '#f4f4f4'},
+                sort_action='native',
+                page_size=10,
+            ),
+        ], className='mb-4'),
+
         # Server stats table
         html.Div([
             html.H3("Server Statistics", className='mb-2'),
@@ -81,7 +102,6 @@ def create_layout():
             html.Div(id='stats-loading-message', children="Loading server statistics...", 
                      style={'display': 'none'}, className='mt-2 text-muted'),
         ], className='mb-4'),
-        
         
         # Server selector for detailed view
         html.Div([

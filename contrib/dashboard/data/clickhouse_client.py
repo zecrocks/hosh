@@ -212,7 +212,6 @@ def fetch_targets(time_range='24h'):
     Fetch active targets from ClickHouse.
     """
     if not clickhouse_client:
-        print("Debug: ClickHouse client is not initialized")
         return []
     
     try:
@@ -227,10 +226,7 @@ def fetch_targets(time_range='24h'):
         ORDER BY hostname, module
         """
         
-        print(f"Debug: Executing query:\n{query}")
-        
         result = clickhouse_client.execute(query)
-        print(f"Debug: Query returned {len(result)} rows")
         
         # Convert to list of dictionaries
         targets = []
@@ -244,12 +240,63 @@ def fetch_targets(time_range='24h'):
                 'user_submitted': 'Yes' if user_submitted else 'No'
             }
             targets.append(target)
-            print(f"Debug: Processing row: {target}")
             
-        print(f"Debug: Returning {len(targets)} targets")
         return targets
         
     except Exception as e:
-        print(f"Debug: Error fetching targets from ClickHouse: {e}")
-        print(f"Debug: Full exception: {repr(e)}")
+        print(f"Error fetching targets from ClickHouse: {e}")
+        return []
+
+
+def fetch_check_results(hostname, protocol, time_range='24h'):
+    """
+    Fetch detailed check results for a specific target from ClickHouse.
+    
+    Args:
+        hostname: Server hostname
+        protocol: Server protocol (e.g., 'btc', 'zec', 'http')
+        time_range: Time range to filter results
+        
+    Returns:
+        List of dictionaries with check results
+    """
+    if not clickhouse_client:
+        return []
+    
+    try:
+        time_filter = get_time_filter(time_range)
+        
+        query = f"""
+        SELECT
+            checked_at,
+            status,
+            ping_ms,
+            resolved_ip,
+            response_data
+        FROM results
+        WHERE hostname = '{hostname}'
+          AND checker_module = '{protocol}'
+          AND {time_filter}
+        ORDER BY checked_at DESC
+        LIMIT 100
+        """
+        
+        result = clickhouse_client.execute(query)
+        
+        # Convert to list of dictionaries
+        check_results = []
+        for row in result:
+            checked_at, status, ping_ms, resolved_ip, response_data = row
+            check_results.append({
+                'checked_at': checked_at.strftime('%Y-%m-%d %H:%M:%S'),
+                'status': status,
+                'ping_ms': f"{ping_ms:.2f}" if ping_ms is not None else "N/A",
+                'resolved_ip': resolved_ip or "N/A",
+                'response_data': response_data or "N/A"
+            })
+            
+        return check_results
+        
+    except Exception as e:
+        print(f"Error fetching check results from ClickHouse: {e}")
         return [] 

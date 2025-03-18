@@ -32,19 +32,35 @@ def fetch_data_from_redis():
         return []
         
     try:
-        # Get all keys for servers (btc:* and zec:*)
-        keys = redis_client.keys('btc:*') + redis_client.keys('zec:*')
+        # Get all keys for servers (btc:* and zec:* and http:*)
+        keys = (redis_client.keys('btc:*') + 
+                redis_client.keys('zec:*') + 
+                redis_client.keys('http:*'))
+        
+        print(f"DEBUG: Found {len(keys)} total keys in Redis")
         
         # Get data for each key
         server_data = []
         for key in keys:
-            data = redis_client.get(key)
-            if data:
-                try:
+            try:
+                data = redis_client.get(key)
+                print(f"DEBUG: Key {key} data type: {type(data)}, value: {data}")
+                
+                if isinstance(data, (int, float)):
+                    # If the value is a number, create a simple server record
+                    server = {
+                        'value': data
+                    }
+                elif data:
+                    # Try to parse as JSON
                     server = json.loads(data)
-                    
-                    # Add the key (which contains the network) to the server data
-                    network, host = key.split(':', 1)
+                else:
+                    print(f"DEBUG: Empty data for key {key}")
+                    continue
+                
+                # Add the key (which contains the network) to the server data
+                network, host = key.split(':', 1)
+                if isinstance(server, dict):  # Only modify if server is a dictionary
                     server['network'] = network
                     server['host'] = host
                     
@@ -58,16 +74,26 @@ def fetch_data_from_redis():
                             server['last_updated'] = last_updated
                         except (ValueError, TypeError):
                             # Keep as is if parsing fails
+                            print(f"DEBUG: Failed to parse last_updated for key {key}")
                             pass
                     
                     server_data.append(server)
-                except json.JSONDecodeError:
-                    print(f"Error decoding JSON for key {key}")
+                else:
+                    print(f"DEBUG: Skipping non-dict server data for key {key}")
+                    
+            except json.JSONDecodeError as je:
+                print(f"DEBUG: Error decoding JSON for key {key}: {je}")
+            except Exception as e:
+                print(f"DEBUG: Unexpected error processing key {key}: {e}")
         
+        print(f"DEBUG: Successfully processed {len(server_data)} records")
         return server_data
         
     except Exception as e:
         print(f"Error fetching data from Redis: {e}")
+        print(f"DEBUG: Exception type: {type(e)}")
+        import traceback
+        traceback.print_exc()
         return []
 
 

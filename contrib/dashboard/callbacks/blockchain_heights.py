@@ -1,6 +1,8 @@
 from dash.dependencies import Input, Output
 from dash import callback_context
 from data.redis_client import fetch_blockchain_heights, clear_explorer_data
+from data.nats_client import publish_http_check_trigger
+import asyncio
 from collections import Counter
 
 def register_callbacks(app):
@@ -69,3 +71,21 @@ def register_callbacks(app):
                 columns.append({'name': col, 'id': col})
         
         return heights_data, columns 
+
+    @app.callback(
+        Output("http-trigger-result", "children"),
+        Input("trigger-http-button", "n_clicks"),
+        prevent_initial_call=True
+    )
+    def trigger_http_checks(n_clicks):
+        if n_clicks:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            success = loop.run_until_complete(publish_http_check_trigger())
+            loop.close()
+            
+            if success:
+                return html.Div("✅ HTTP checks triggered successfully!", className="text-success")
+            else:
+                return html.Div("❌ Failed to trigger HTTP checks. See console for details.", className="text-danger")
+        return "" 

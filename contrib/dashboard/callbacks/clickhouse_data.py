@@ -2,7 +2,7 @@ from dash.dependencies import Input, Output, State
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
-from data.clickhouse_client import fetch_server_stats, fetch_server_performance, get_server_list, fetch_targets
+from data.clickhouse_client import fetch_server_stats, fetch_server_performance, get_server_list, fetch_targets, fetch_check_results
 
 def register_callbacks(app):
     """
@@ -53,20 +53,21 @@ def register_callbacks(app):
         return stats, servers, targets, selected_value
     
     @app.callback(
-        Output('server-performance-graph', 'figure'),
+        [Output('server-performance-graph', 'figure'),
+         Output('check-results-table', 'data')],
         [Input('server-selector', 'value'),
          Input('time-range-selector', 'value'),
          Input('refresh-button', 'n_clicks')],
         [State('current-page', 'data')],
         prevent_initial_call=False
     )
-    def update_performance_graph(selected_server, time_range, n_clicks, current_page):
+    def update_performance_data(selected_server, time_range, n_clicks, current_page):
         """
-        Update the server performance graph based on selected server and time range.
+        Update the server performance graph and results table based on selected server and time range.
         """
         # Only update if we're on the Clickhouse data page
         if current_page != 'clickhouse-data' or not selected_server:
-            return {
+            empty_figure = {
                 'data': [],
                 'layout': {
                     'title': 'Select a server to view performance data',
@@ -74,10 +75,11 @@ def register_callbacks(app):
                     'yaxis': {'title': 'Response Time (ms)'}
                 }
             }
+            return empty_figure, []
         
-        # Parse the server value (format: "host:port:protocol")
+        # Parse the server value (format: "host::protocol")
         try:
-            host, port, protocol = selected_server.split(':')
+            host, protocol = selected_server.split('::')
         except ValueError:
             return {
                 'data': [],
@@ -86,10 +88,13 @@ def register_callbacks(app):
                     'xaxis': {'title': 'Time'},
                     'yaxis': {'title': 'Response Time (ms)'}
                 }
-            }
+            }, []
         
-        # Fetch performance data for the selected server and time range
+        # Fetch performance data for the graph
         performance_data = fetch_server_performance(host, protocol, time_range)
+        
+        # Fetch check results for the table
+        check_results = fetch_check_results(host, protocol, time_range)
         
         if not performance_data:
             return {
@@ -99,12 +104,11 @@ def register_callbacks(app):
                     'xaxis': {'title': 'Time'},
                     'yaxis': {'title': 'Response Time (ms)'}
                 }
-            }
+            }, check_results
         
-        # Create a DataFrame from the performance data
+        # Create the performance graph (existing code)
         df = pd.DataFrame(performance_data)
         
-        # Create the performance graph
         fig = px.scatter(
             df, 
             x='checked_at', 
@@ -115,7 +119,6 @@ def register_callbacks(app):
             labels={'checked_at': 'Time', 'ping_ms': 'Response Time (ms)', 'status': 'Status'}
         )
         
-        # Add a line for the average response time
         if 'online' in df['status'].values:
             avg_ping = df[df['status'] == 'online']['ping_ms'].mean()
             fig.add_hline(
@@ -126,7 +129,6 @@ def register_callbacks(app):
                 annotation_position="top right"
             )
         
-        # Update layout
         fig.update_layout(
             xaxis_title='Time',
             yaxis_title='Response Time (ms)',
@@ -134,4 +136,4 @@ def register_callbacks(app):
             hovermode='closest'
         )
         
-        return fig 
+        return fig, check_results 
