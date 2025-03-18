@@ -3,8 +3,8 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
-use tracing::{info, error, Level};
-use tracing_subscriber::{self, EnvFilter};
+use tracing::{info, error};
+use tracing_subscriber;
 
 mod routes;
 mod utils;
@@ -20,11 +20,7 @@ use routes::{
 async fn main() {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::builder()
-                .with_default_directive(Level::INFO.into())
-                .from_env_lossy(),
-        )
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
     // Check if we should run in worker mode
