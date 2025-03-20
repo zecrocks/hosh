@@ -3,6 +3,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
 from data.clickhouse_client import fetch_server_stats, fetch_server_performance, get_server_list, fetch_targets, fetch_check_results
+import logging
 
 def register_callbacks(app):
     """
@@ -16,10 +17,11 @@ def register_callbacks(app):
         [Input('refresh-button', 'n_clicks'),
          Input('time-range-selector', 'value'),
          Input('current-page', 'data'),
-         Input('targets-table', 'selected_rows')],
+         Input('targets-table', 'selected_rows'),
+         Input('module-filter', 'value')],
         [State('targets-table', 'data')]
     )
-    def update_clickhouse_data(n_clicks, time_range, current_page, selected_rows, targets_data):
+    def update_clickhouse_data(n_clicks, time_range, current_page, selected_rows, module_filter, targets_data):
         """
         Update the Clickhouse data tables and dropdowns.
         """
@@ -29,6 +31,10 @@ def register_callbacks(app):
         
         # Fetch targets data first
         targets = fetch_targets(time_range)
+        
+        # Filter targets based on module selection
+        if module_filter != 'all':
+            targets = [t for t in targets if t['module'] == module_filter]
         
         # Get server list for dropdown
         servers = get_server_list()
@@ -65,75 +71,87 @@ def register_callbacks(app):
         """
         Update the server performance graph and results table based on selected server and time range.
         """
+        print(f"Callback triggered with: server={selected_server}, time_range={time_range}, page={current_page}")
+        
         # Only update if we're on the Clickhouse data page
         if current_page != 'clickhouse-data' or not selected_server:
-            empty_figure = {
+            print("Skipping update - not on clickhouse page or no server selected")
+            return {
                 'data': [],
                 'layout': {
                     'title': 'Select a server to view performance data',
                     'xaxis': {'title': 'Time'},
                     'yaxis': {'title': 'Response Time (ms)'}
                 }
-            }
-            return empty_figure, []
-        
-        # Parse the server value (format: "host::protocol")
-        try:
-            host, protocol = selected_server.split('::')
-        except ValueError:
-            return {
-                'data': [],
-                'layout': {
-                    'title': 'Invalid server selection',
-                    'xaxis': {'title': 'Time'},
-                    'yaxis': {'title': 'Response Time (ms)'}
-                }
             }, []
         
-        # Fetch performance data for the graph
-        performance_data = fetch_server_performance(host, protocol, time_range)
-        
-        # Fetch check results for the table
-        check_results = fetch_check_results(host, protocol, time_range)
-        
-        if not performance_data:
+        try:
+            host, protocol = selected_server.split('::')
+            print(f"Fetching data for host={host}, protocol={protocol}")
+            
+            # Fetch check results for the table
+            check_results = fetch_check_results(host, protocol, time_range)
+            print(f"Fetched {len(check_results)} check results")
+            if check_results:
+                print("Check results keys:", list(check_results[0].keys()))
+                print("First row:", check_results[0])
+            
+            # Fetch performance data for the graph
+            performance_data = fetch_server_performance(host, protocol, time_range)
+            print(f"Fetched {len(performance_data)} performance records")
+            
+            if not performance_data:
+                print("No performance data available")
+                return {
+                    'data': [],
+                    'layout': {
+                        'title': f'No data available for {host} ({protocol})',
+                        'xaxis': {'title': 'Time'},
+                        'yaxis': {'title': 'Response Time (ms)'}
+                    }
+                }, check_results
+            
+            # Create the performance graph (existing code)
+            df = pd.DataFrame(performance_data)
+            
+            fig = px.scatter(
+                df, 
+                x='checked_at', 
+                y='ping_ms',
+                color='status',
+                color_discrete_map={'online': 'green', 'offline': 'red'},
+                title=f'Performance for {host} ({protocol})',
+                labels={'checked_at': 'Time', 'ping_ms': 'Response Time (ms)', 'status': 'Status'}
+            )
+            
+            if 'online' in df['status'].values:
+                avg_ping = df[df['status'] == 'online']['ping_ms'].mean()
+                fig.add_hline(
+                    y=avg_ping,
+                    line_dash="dash",
+                    line_color="blue",
+                    annotation_text=f"Avg: {avg_ping:.2f} ms",
+                    annotation_position="top right"
+                )
+            
+            fig.update_layout(
+                xaxis_title='Time',
+                yaxis_title='Response Time (ms)',
+                legend_title='Status',
+                hovermode='closest'
+            )
+            
+            return fig, check_results
+            
+        except Exception as e:
+            print(f"Error in callback: {e}")
+            import traceback
+            print(traceback.format_exc())
             return {
                 'data': [],
                 'layout': {
-                    'title': f'No data available for {host} ({protocol})',
+                    'title': 'Error fetching data',
                     'xaxis': {'title': 'Time'},
                     'yaxis': {'title': 'Response Time (ms)'}
                 }
-            }, check_results
-        
-        # Create the performance graph (existing code)
-        df = pd.DataFrame(performance_data)
-        
-        fig = px.scatter(
-            df, 
-            x='checked_at', 
-            y='ping_ms',
-            color='status',
-            color_discrete_map={'online': 'green', 'offline': 'red'},
-            title=f'Performance for {host} ({protocol})',
-            labels={'checked_at': 'Time', 'ping_ms': 'Response Time (ms)', 'status': 'Status'}
-        )
-        
-        if 'online' in df['status'].values:
-            avg_ping = df[df['status'] == 'online']['ping_ms'].mean()
-            fig.add_hline(
-                y=avg_ping,
-                line_dash="dash",
-                line_color="blue",
-                annotation_text=f"Avg: {avg_ping:.2f} ms",
-                annotation_position="top right"
-            )
-        
-        fig.update_layout(
-            xaxis_title='Time',
-            yaxis_title='Response Time (ms)',
-            legend_title='Status',
-            hovermode='closest'
-        )
-        
-        return fig, check_results 
+            }, [] 

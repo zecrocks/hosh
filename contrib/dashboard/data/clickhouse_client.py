@@ -41,23 +41,21 @@ def get_time_filter(time_range):
     Returns:
         SQL WHERE clause for the time filter
     """
-    now = datetime.now()
-    
     if time_range == '10m':
-        start_time = now - timedelta(minutes=10)
+        interval = 'INTERVAL 10 MINUTE'
     elif time_range == '1h':
-        start_time = now - timedelta(hours=1)
+        interval = 'INTERVAL 1 HOUR'
     elif time_range == '24h':
-        start_time = now - timedelta(hours=24)
+        interval = 'INTERVAL 24 HOUR'
     elif time_range == '7d':
-        start_time = now - timedelta(days=7)
+        interval = 'INTERVAL 7 DAY'
     elif time_range == '30d':
-        start_time = now - timedelta(days=30)
+        interval = 'INTERVAL 30 DAY'
     else:
         # Default to 24 hours
-        start_time = now - timedelta(hours=24)
+        interval = 'INTERVAL 24 HOUR'
     
-    return f"checked_at >= toDateTime('{start_time.strftime('%Y-%m-%d %H:%M:%S')}')"
+    return f"checked_at >= now() - {interval}"
 
 
 def fetch_server_stats(time_range='24h'):
@@ -217,6 +215,7 @@ def fetch_targets(time_range='24h'):
     try:
         query = """
         SELECT
+            target_id,
             hostname,
             module,
             formatDateTime(last_queued_at, '%Y-%m-%d %H:%M:%S') as last_queued_at,
@@ -231,8 +230,9 @@ def fetch_targets(time_range='24h'):
         # Convert to list of dictionaries
         targets = []
         for row in result:
-            hostname, module, last_queued, last_checked, user_submitted = row
+            target_id, hostname, module, last_queued, last_checked, user_submitted = row
             target = {
+                'target_id': str(target_id),  # Convert UUID to string
                 'hostname': hostname,
                 'module': module,
                 'last_queued_at': last_queued,
@@ -261,18 +261,27 @@ def fetch_check_results(hostname, protocol, time_range='24h'):
         List of dictionaries with check results
     """
     if not clickhouse_client:
+        print("No ClickHouse client available")
         return []
     
     try:
         time_filter = get_time_filter(time_range)
+        print(f"Using time filter: {time_filter}")
         
         query = f"""
         SELECT
+            target_id,
             checked_at,
+            hostname,
+            resolved_ip,
+            ip_version,
+            checker_module,
             status,
             ping_ms,
-            resolved_ip,
-            response_data
+            checker_location,
+            checker_id,
+            response_data,
+            user_submitted
         FROM results
         WHERE hostname = '{hostname}'
           AND checker_module = '{protocol}'
@@ -280,23 +289,61 @@ def fetch_check_results(hostname, protocol, time_range='24h'):
         ORDER BY checked_at DESC
         LIMIT 100
         """
+        print(f"Executing query: {query}")
         
         result = clickhouse_client.execute(query)
+        print(f"Query returned {len(result)} rows")
+        
+        if result:
+            print(f"Sample row: {result[0]}")
         
         # Convert to list of dictionaries
         check_results = []
         for row in result:
-            checked_at, status, ping_ms, resolved_ip, response_data = row
-            check_results.append({
-                'checked_at': checked_at.strftime('%Y-%m-%d %H:%M:%S'),
-                'status': status,
-                'ping_ms': f"{ping_ms:.2f}" if ping_ms is not None else "N/A",
-                'resolved_ip': resolved_ip or "N/A",
-                'response_data': response_data or "N/A"
-            })
+            try:
+                (target_id, checked_at, hostname, resolved_ip, ip_version, 
+                 checker_module, status, ping_ms, checker_location, checker_id, 
+                 response_data, user_submitted) = row
+                
+                formatted_result = {
+                    'Target ID': str(target_id),
+                    'Checked At': checked_at.strftime('%Y-%m-%d %H:%M:%S'),
+                    'Hostname': hostname,
+                    'IP Address': resolved_ip or "N/A",
+                    'IP Version': ip_version,
+                    'Checker Module': checker_module,
+                    'Status': status,
+                    'Response Time (ms)': f"{ping_ms:.2f}" if ping_ms is not None else "N/A",
+                    'Checker Location': checker_location or "N/A",
+                    'Checker ID': str(checker_id),
+                    'Response Data': response_data or "N/A",
+                    'User Submitted': "Yes" if user_submitted else "No"
+                }
+                check_results.append(formatted_result)
+            except Exception as row_error:
+                print(f"Error processing row: {row}")
+                print(f"Error details: {row_error}")
+                continue
             
+        print(f"Processed {len(check_results)} results")
+        if check_results:
+            print(f"Sample processed result: {check_results[0]}")
+        
         return check_results
         
     except Exception as e:
         print(f"Error fetching check results from ClickHouse: {e}")
-        return [] 
+        print(f"Query was: {query}")
+        return []
+
+
+def get_minutes_from_range(time_range):
+    """Convert time range string to minutes for ClickHouse query"""
+    units = {
+        'm': 1,
+        'h': 60,
+        'd': 1440
+    }
+    value = int(time_range[:-1])
+    unit = time_range[-1].lower()
+    return value * units[unit] 

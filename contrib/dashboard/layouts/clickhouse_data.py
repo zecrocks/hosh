@@ -35,9 +35,23 @@ def create_layout():
         # Targets table
         html.Div([
             html.H3("Active Targets", className='mb-2'),
+            # Add radio buttons for module filtering
+            dbc.RadioItems(
+                id='module-filter',
+                options=[
+                    {'label': 'Bitcoin', 'value': 'btc'},
+                    {'label': 'Zcash', 'value': 'zec'},
+                    {'label': 'HTTP', 'value': 'http'},
+                    {'label': 'All', 'value': 'all'}
+                ],
+                value='all',  # Default to showing all modules
+                inline=True,
+                className="mb-3"
+            ),
             dash_table.DataTable(
                 id='targets-table',
                 columns=[
+                    {'name': 'Target ID', 'id': 'target_id'},
                     {'name': 'Hostname', 'id': 'hostname'},
                     {'name': 'Module', 'id': 'module'},
                     {'name': 'Last Queued', 'id': 'last_queued_at'},
@@ -63,18 +77,56 @@ def create_layout():
             dash_table.DataTable(
                 id='check-results-table',
                 columns=[
-                    {'name': 'Checked At', 'id': 'checked_at'},
-                    {'name': 'Status', 'id': 'status'},
-                    {'name': 'Response Time (ms)', 'id': 'ping_ms'},
-                    {'name': 'IP Address', 'id': 'resolved_ip'},
-                    {'name': 'Response Data', 'id': 'response_data'},
+                    {'name': 'Target ID', 'id': 'Target ID'},
+                    {'name': 'Checked At', 'id': 'Checked At'},
+                    {'name': 'Hostname', 'id': 'Hostname'},
+                    {'name': 'IP Address', 'id': 'IP Address'},
+                    {'name': 'IP Version', 'id': 'IP Version'},
+                    {'name': 'Checker Module', 'id': 'Checker Module'},
+                    {'name': 'Status', 'id': 'Status'},
+                    {'name': 'Response Time (ms)', 'id': 'Response Time (ms)'},
+                    {'name': 'Checker Location', 'id': 'Checker Location'},
+                    {'name': 'Checker ID', 'id': 'Checker ID'},
+                    {'name': 'Response Data', 'id': 'Response Data'},
+                    {'name': 'User Submitted', 'id': 'User Submitted'}
                 ],
-                data=[],
-                style_table={'overflowX': 'auto'},
-                style_cell={'textAlign': 'left', 'padding': '5px'},
-                style_header={'fontWeight': 'bold', 'backgroundColor': '#f4f4f4'},
-                sort_action='native',
+                style_table={
+                    'overflowX': 'auto',
+                    'minWidth': '100%'
+                },
+                style_cell={
+                    'textAlign': 'left',
+                    'minWidth': '100px',
+                    'maxWidth': '500px',
+                    'overflow': 'hidden',
+                    'textOverflow': 'ellipsis',
+                    'padding': '5px'
+                },
+                style_header={
+                    'backgroundColor': 'rgb(230, 230, 230)',
+                    'fontWeight': 'bold'
+                },
+                style_data_conditional=[
+                    {
+                        'if': {'column_id': 'Status', 'filter_query': '{Status} eq "online"'},
+                        'backgroundColor': '#dff0d8',
+                        'color': '#3c763d'
+                    },
+                    {
+                        'if': {'column_id': 'Status', 'filter_query': '{Status} eq "offline"'},
+                        'backgroundColor': '#f2dede',
+                        'color': '#a94442'
+                    }
+                ],
+                tooltip_data=[],
+                tooltip_duration=None,
                 page_size=10,
+                sort_action='native',
+                sort_mode='multi',
+                filter_action='native',
+                row_selectable=False,
+                selected_rows=[],
+                page_current=0
             ),
         ], className='mb-4'),
 
