@@ -6,6 +6,9 @@ use futures_util::stream::StreamExt;
 use crate::routes::electrum::query::{electrum_query, QueryParams};
 use axum::extract::Query;
 use tracing::{debug, error, info};
+use uuid::Uuid;
+use reqwest;
+use uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CheckRequest {
@@ -50,29 +53,59 @@ struct ServerData {
 pub struct Worker {
     nats: NatsClient,
     redis: RedisClient,
+    clickhouse_url: String,
+    clickhouse_user: String,
+    clickhouse_password: String,
+    clickhouse_db: String,
     nats_subject: String,
     max_concurrent_checks: usize,
+    http_client: reqwest::Client,
 }
 
 impl Worker {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let nats_url = env::var("NATS_URL").unwrap_or_else(|_| "nats://nats:4222".to_string());
         let nats_subject = env::var("NATS_SUBJECT").unwrap_or_else(|_| "hosh.check.btc".to_string());
+        
+        info!("🚀 Initializing BTC Worker with NATS URL: {}", nats_url);
+        
         let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
         let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
         let max_concurrent_checks = env::var("MAX_CONCURRENT_CHECKS")
             .unwrap_or_else(|_| "3".to_string())
             .parse()
             .unwrap_or(10);
+            
+        // ClickHouse configuration
+        let clickhouse_host = env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".to_string());
+        let clickhouse_port = env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".to_string()); // HTTP port
+        let clickhouse_db = env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".to_string());
+        let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".to_string());
+        let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "chron".to_string());
+
+        // Create ClickHouse URL
+        let clickhouse_url = format!("http://{}:{}", clickhouse_host, clickhouse_port);
 
         let nats = async_nats::connect(&nats_url).await?;
         let redis = redis::Client::open(format!("redis://{}:{}", redis_host, redis_port))?;
+        
+        // Create a pooled HTTP client with similar settings to the ZEC checker
+        let http_client = reqwest::Client::builder()
+            .pool_idle_timeout(std::time::Duration::from_secs(300))  // 5 minute idle timeout
+            .pool_max_idle_per_host(32)  // Allow up to 32 idle connections per host
+            .tcp_keepalive(std::time::Duration::from_secs(60))  // TCP keepalive every 60 seconds
+            .build()?;
 
         Ok(Worker {
             nats,
             redis,
+            clickhouse_url,
+            clickhouse_user,
+            clickhouse_password,
+            clickhouse_db,
             nats_subject,
             max_concurrent_checks,
+            http_client,
         })
     }
 
@@ -140,6 +173,134 @@ impl Worker {
         }
     }
 
+    async fn store_check_data(&self, request: &CheckRequest, server_data: &ServerData) -> Result<(), Box<dyn std::error::Error>> {
+        let escaped_host = request.host.replace("'", "\\'");
+        
+        // Generate a deterministic UUID v5 using DNS namespace and hostname
+        let target_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_DNS,
+            format!("btc:{}", request.host).as_bytes()
+        ).to_string();
+
+        // Update existing target or create new one if doesn't exist
+        let upsert_query = format!(
+            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
+             SELECT '{target_id}', 'btc', '{host}', now(), now(), {user_submitted}
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM {db}.targets 
+                 WHERE module = 'btc' AND hostname = '{host}'
+             )",
+            db = self.clickhouse_db,
+            target_id = target_id,
+            host = escaped_host,
+            user_submitted = request.user_submitted
+        );
+
+        let response = self.http_client.post(&self.clickhouse_url)
+            .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
+            .header("Content-Type", "text/plain")
+            .body(upsert_query)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse insert error: {}", response.text().await?).into());
+        }
+
+        // Then update the target's timestamps and ensure target_id is consistent
+        let update_query = format!(
+            "ALTER TABLE {db}.targets 
+             UPDATE last_queued_at = now(),
+                    last_checked_at = now(),
+                    target_id = '{target_id}'
+             WHERE module = 'btc' AND hostname = '{host}'
+             SETTINGS mutations_sync = 1",
+            db = self.clickhouse_db,
+            target_id = target_id,
+            host = escaped_host,
+        );
+
+        // Execute update query
+        let response = self.http_client.post(&self.clickhouse_url)
+            .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
+            .header("Content-Type", "text/plain")
+            .body(update_query)
+            .send()
+            .await?;
+            
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse update error: {}", response.text().await?).into());
+        }
+
+        // Prepare resolved IP (if available)
+        let resolved_ip = match &server_data.additional_data {
+            Some(data) => {
+                if let Some(ips) = data.get("resolved_ips") {
+                    if let Some(ip_array) = ips.as_array() {
+                        if !ip_array.is_empty() {
+                            if let Some(first_ip) = ip_array[0].as_str() {
+                                first_ip.to_string()
+                            } else {
+                                "".to_string()
+                            }
+                        } else {
+                            "".to_string()
+                        }
+                    } else {
+                        "".to_string()
+                    }
+                } else {
+                    "".to_string()
+                }
+            },
+            None => "".to_string(),
+        };
+        
+        // Determine status
+        let status = if server_data.error {
+            "offline"
+        } else {
+            "online"
+        };
+        
+        // Insert the result
+        let result_query = format!(
+            "INSERT INTO {}.results 
+             (target_id, checked_at, hostname, resolved_ip, ip_version, 
+              checker_module, status, ping_ms, checker_location, checker_id, response_data, user_submitted) 
+             VALUES 
+             ('{}', now(), '{}', '{}', 4, 'btc', '{}', {}, 'default', '{}', '{}', {})",
+            self.clickhouse_db,
+            target_id,
+            server_data.host.replace("'", "\\'"),
+            resolved_ip.replace("'", "\\'"),
+            status,
+            server_data.ping.unwrap_or(0.0),
+            Uuid::new_v4(), // Generate a checker_id
+            serde_json::to_string(server_data)?.replace("'", "\\'"),
+            request.user_submitted
+        );
+        
+        let response = self.http_client.post(&format!("{}", self.clickhouse_url))
+            .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
+            .header("Content-Type", "text/plain")
+            .body(result_query)
+            .send()
+            .await?;
+            
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse error: {}", response.text().await?).into());
+        }
+        
+        info!(
+            host = %request.host,
+            check_id = %request.get_check_id(),
+            "Successfully saved check data to ClickHouse"
+        );
+        
+        Ok(())
+    }
+
     async fn process_check_request(&self, msg: async_nats::Message) {
         debug!("Raw message payload: {:?}", String::from_utf8_lossy(&msg.payload));
 
@@ -177,6 +338,12 @@ impl Worker {
         );
 
         if let Some(server_data) = self.query_server_data(&request).await {
+            // First publish to ClickHouse
+            if let Err(e) = self.store_check_data(&request, &server_data).await {
+                error!(%e, "Failed to publish data to ClickHouse");
+            }
+            
+            // Then publish to Redis as before
             let redis_key = format!("btc:{}", request.host);
             let redis_value = serde_json::to_string(&server_data).unwrap();
 
