@@ -85,6 +85,7 @@ struct Worker {
     nats: async_nats::Client,
     redis: redis::Client,
     clickhouse: ClickhouseConfig,
+    http_client: reqwest::Client,
 }
 
 impl Worker {
@@ -114,22 +115,29 @@ impl Worker {
         let redis = redis::Client::open(redis_url.as_str())?;
         info!("Connected to Redis at {}", redis_url);
 
+        let http_client = reqwest::Client::builder()
+            .pool_idle_timeout(std::time::Duration::from_secs(300))
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .build()?;
+
         Ok(Worker {
             nats,
             redis,
             clickhouse: ClickhouseConfig::from_env(),
+            http_client,
         })
     }
 
     async fn publish_to_clickhouse(&self, check_request: &CheckRequest, result: &CheckResult) -> Result<(), Box<dyn Error>> {
-        let target_id = check_request.check_id
-            .as_ref()
-            .and_then(|id| Uuid::parse_str(id).ok())
-            .unwrap_or_else(Uuid::new_v4);
+        let target_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_DNS,
+            format!("zec:{}", check_request.host).as_bytes()
+        ).to_string();
 
-        let client = reqwest::Client::new();
         let escaped_host = check_request.host.replace("'", "\\'");
-
+        
+        // First update existing target
         let update_query = format!(
             "ALTER TABLE {db}.targets 
              UPDATE last_queued_at = now(),
@@ -142,7 +150,7 @@ impl Worker {
             host = escaped_host,
         );
 
-        let response = client.post(&self.clickhouse.url)
+        let response = self.http_client.post(&self.clickhouse.url)
             .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
             .header("Content-Type", "text/plain")
             .body(update_query)
@@ -153,6 +161,7 @@ impl Worker {
             return Err(format!("ClickHouse update error: {}", response.text().await?).into());
         }
 
+        // Then insert new target if it doesn't exist
         let insert_query = format!(
             "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
              SELECT '{target_id}', 'zec', '{host}', now(), now(), {user_submitted}
@@ -166,7 +175,7 @@ impl Worker {
             user_submitted = check_request.user_submitted.unwrap_or(false)
         );
 
-        let response = client.post(&self.clickhouse.url)
+        let response = self.http_client.post(&self.clickhouse.url)
             .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
             .header("Content-Type", "text/plain")
             .body(insert_query)
@@ -177,6 +186,7 @@ impl Worker {
             return Err(format!("ClickHouse insert error: {}", response.text().await?).into());
         }
 
+        // Finally insert the result
         let result_query = format!(
             "INSERT INTO {}.results 
              (target_id, checked_at, hostname, resolved_ip, ip_version, 
@@ -193,7 +203,7 @@ impl Worker {
             check_request.user_submitted.unwrap_or(false)
         );
 
-        let response = client.post(&self.clickhouse.url)
+        let response = self.http_client.post(&self.clickhouse.url)
             .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
             .header("Content-Type", "text/plain")
             .body(result_query)

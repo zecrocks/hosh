@@ -8,6 +8,7 @@ use axum::extract::Query;
 use tracing::{debug, error, info};
 use uuid::Uuid;
 use reqwest;
+use uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CheckRequest {
@@ -58,12 +59,16 @@ pub struct Worker {
     clickhouse_db: String,
     nats_subject: String,
     max_concurrent_checks: usize,
+    http_client: reqwest::Client,
 }
 
 impl Worker {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         let nats_url = env::var("NATS_URL").unwrap_or_else(|_| "nats://nats:4222".to_string());
         let nats_subject = env::var("NATS_SUBJECT").unwrap_or_else(|_| "hosh.check.btc".to_string());
+        
+        info!("🚀 Initializing BTC Worker with NATS URL: {}", nats_url);
+        
         let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
         let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
         let max_concurrent_checks = env::var("MAX_CONCURRENT_CHECKS")
@@ -84,6 +89,13 @@ impl Worker {
         let nats = async_nats::connect(&nats_url).await?;
         let redis = redis::Client::open(format!("redis://{}:{}", redis_host, redis_port))?;
         
+        // Create a pooled HTTP client with similar settings to the ZEC checker
+        let http_client = reqwest::Client::builder()
+            .pool_idle_timeout(std::time::Duration::from_secs(300))  // 5 minute idle timeout
+            .pool_max_idle_per_host(32)  // Allow up to 32 idle connections per host
+            .tcp_keepalive(std::time::Duration::from_secs(60))  // TCP keepalive every 60 seconds
+            .build()?;
+
         Ok(Worker {
             nats,
             redis,
@@ -93,6 +105,7 @@ impl Worker {
             clickhouse_db,
             nats_subject,
             max_concurrent_checks,
+            http_client,
         })
     }
 
@@ -160,15 +173,41 @@ impl Worker {
         }
     }
 
-    async fn publish_to_clickhouse(&self, request: &CheckRequest, server_data: &ServerData) -> Result<(), Box<dyn std::error::Error>> {
-        // Generate a UUID for the target if not already present
-        let target_id = Uuid::parse_str(&request.get_check_id())
-            .unwrap_or_else(|_| Uuid::new_v4());
-        
-        let client = reqwest::Client::new();
+    async fn store_check_data(&self, request: &CheckRequest, server_data: &ServerData) -> Result<(), Box<dyn std::error::Error>> {
         let escaped_host = request.host.replace("'", "\\'");
+        
+        // Generate a deterministic UUID v5 using DNS namespace and hostname
+        let target_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_DNS,
+            format!("btc:{}", request.host).as_bytes()
+        ).to_string();
 
-        // First try to update existing target
+        // Update existing target or create new one if doesn't exist
+        let upsert_query = format!(
+            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
+             SELECT '{target_id}', 'btc', '{host}', now(), now(), {user_submitted}
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM {db}.targets 
+                 WHERE module = 'btc' AND hostname = '{host}'
+             )",
+            db = self.clickhouse_db,
+            target_id = target_id,
+            host = escaped_host,
+            user_submitted = request.user_submitted
+        );
+
+        let response = self.http_client.post(&self.clickhouse_url)
+            .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
+            .header("Content-Type", "text/plain")
+            .body(upsert_query)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse insert error: {}", response.text().await?).into());
+        }
+
+        // Then update the target's timestamps and ensure target_id is consistent
         let update_query = format!(
             "ALTER TABLE {db}.targets 
              UPDATE last_queued_at = now(),
@@ -182,7 +221,7 @@ impl Worker {
         );
 
         // Execute update query
-        let response = client.post(&self.clickhouse_url)
+        let response = self.http_client.post(&self.clickhouse_url)
             .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
             .header("Content-Type", "text/plain")
             .body(update_query)
@@ -191,32 +230,6 @@ impl Worker {
             
         if !response.status().is_success() {
             return Err(format!("ClickHouse update error: {}", response.text().await?).into());
-        }
-
-        // Then try to insert if no record exists
-        let insert_query = format!(
-            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
-             SELECT '{target_id}', 'btc', '{host}', now(), now(), {user_submitted}
-             WHERE NOT EXISTS (
-                 SELECT 1 FROM {db}.targets 
-                 WHERE module = 'btc' AND hostname = '{host}'
-             )",
-            db = self.clickhouse_db,
-            target_id = target_id,
-            host = escaped_host,
-            user_submitted = request.user_submitted
-        );
-
-        // Execute insert query
-        let response = client.post(&self.clickhouse_url)
-            .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
-            .header("Content-Type", "text/plain")
-            .body(insert_query)
-            .send()
-            .await?;
-            
-        if !response.status().is_success() {
-            return Err(format!("ClickHouse insert error: {}", response.text().await?).into());
         }
 
         // Prepare resolved IP (if available)
@@ -268,7 +281,7 @@ impl Worker {
             request.user_submitted
         );
         
-        let response = client.post(&format!("{}", self.clickhouse_url))
+        let response = self.http_client.post(&format!("{}", self.clickhouse_url))
             .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
             .header("Content-Type", "text/plain")
             .body(result_query)
@@ -326,7 +339,7 @@ impl Worker {
 
         if let Some(server_data) = self.query_server_data(&request).await {
             // First publish to ClickHouse
-            if let Err(e) = self.publish_to_clickhouse(&request, &server_data).await {
+            if let Err(e) = self.store_check_data(&request, &server_data).await {
                 error!(%e, "Failed to publish data to ClickHouse");
             }
             

@@ -40,7 +40,7 @@ futures = "0.3"
 futures-util = { version = "0.3", features = ["std"] }
 
 # UUID for unique identifiers
-uuid = { version = "1.0", features = ["v4", "serde"] }
+uuid = { version = "1.0", features = ["v4", "v5", "serde"] }
 
 # OpenSSL (Only TLS implementation)
 ## On macOS, force vendored OpenSSL
