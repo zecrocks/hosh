@@ -166,6 +166,13 @@ def create_layout():
                     placeholder="Select a server to view details",
                     className='mb-3'
                 ),
+                # Add trigger check button
+                html.Button(
+                    'Trigger Check',
+                    id='trigger-check-button',
+                    className='btn btn-secondary ms-2',
+                    disabled=True  # Initially disabled until server is selected
+                ),
             ]),
             
             # Performance graph

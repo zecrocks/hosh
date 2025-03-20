@@ -57,12 +57,13 @@ def trigger_http_checks():
         return False
 
 
-async def publish_chain_check_trigger(chain_type):
+async def publish_chain_check_trigger(chain_type, specific_host=None):
     """
-    Publish a message to trigger checks for a specific blockchain.
+    Publish a message to trigger checks for a specific blockchain or server.
     
     Args:
         chain_type (str): The chain type, e.g., 'btc' or 'zec'
+        specific_host (str, optional): If provided, only trigger check for this host
     """
     try:
         # Connect to NATS
@@ -74,10 +75,15 @@ async def publish_chain_check_trigger(chain_type):
         if not redis_client:
             print(f"Redis client not available")
             return False
-            
-        # Keys are already strings due to decode_responses=True in Redis client
-        keys = redis_client.keys(f'{chain_type}:*')
         
+        if specific_host:
+            # Only check the specific host
+            key = f'{chain_type}:{specific_host}'
+            keys = [key] if redis_client.exists(key) else []
+        else:
+            # Get all keys for this chain type
+            keys = redis_client.keys(f'{chain_type}:*')
+            
         if not keys:
             print(f"No {chain_type} servers found in Redis")
             return False

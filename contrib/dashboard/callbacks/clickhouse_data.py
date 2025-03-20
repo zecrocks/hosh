@@ -1,9 +1,13 @@
 from dash.dependencies import Input, Output, State
+from dash.long_callback import DiskcacheLongCallbackManager
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
 from data.clickhouse_client import fetch_server_stats, fetch_server_performance, get_server_list, fetch_targets, fetch_check_results
+from data.nats_client import publish_http_check_trigger, publish_chain_check_trigger
 import logging
+import asyncio
+from datetime import datetime, timezone
 
 def register_callbacks(app):
     """
@@ -134,6 +138,30 @@ def register_callbacks(app):
                     annotation_position="top right"
                 )
             
+            # Add vertical line for current time
+            current_time = datetime.now(timezone.utc)
+            fig.add_shape(
+                type="line",
+                x0=current_time,
+                x1=current_time,
+                y0=0,
+                y1=1,
+                yref="paper",
+                line=dict(color="gray", width=2, dash="solid"),
+            )
+            
+            # Add annotation for the current time line
+            fig.add_annotation(
+                x=current_time,
+                y=1,
+                yref="paper",
+                text="Current Time",
+                showarrow=False,
+                textangle=-90,
+                yanchor="bottom",
+                font=dict(color="gray")
+            )
+            
             fig.update_layout(
                 xaxis_title='Time',
                 yaxis_title='Response Time (ms)',
@@ -155,3 +183,49 @@ def register_callbacks(app):
                     'yaxis': {'title': 'Response Time (ms)'}
                 }
             }, [] 
+
+    # Add new callback to enable/disable trigger button
+    @app.callback(
+        Output('trigger-check-button', 'disabled'),
+        Input('server-selector', 'value')
+    )
+    def update_trigger_button_state(selected_server):
+        """Enable trigger button only when a server is selected"""
+        return not bool(selected_server)
+
+    # Update the trigger check callback to use long_callback
+    @app.long_callback(
+        Output('trigger-check-button', 'children'),
+        Input('trigger-check-button', 'n_clicks'),
+        State('server-selector', 'value'),
+        prevent_initial_call=True,
+        running=[
+            (Output('trigger-check-button', 'disabled'), True, False),
+        ],
+    )
+    def trigger_server_check(n_clicks, selected_server):
+        """Handle trigger check button click"""
+        if not n_clicks or not selected_server:
+            return 'Trigger Check'
+            
+        try:
+            host, protocol = selected_server.split('::')
+            
+            # Create event loop to run async functions
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            
+            # Use appropriate trigger function based on protocol
+            if protocol == 'http':
+                success = loop.run_until_complete(publish_http_check_trigger(host))
+            elif protocol in ['btc', 'zec']:
+                success = loop.run_until_complete(publish_chain_check_trigger(protocol, host))
+            else:
+                raise ValueError(f"Unsupported protocol: {protocol}")
+            
+            loop.close()
+            
+            return 'Check Triggered!' if success else 'Failed to trigger check'
+        except Exception as e:
+            print(f"Error triggering check: {e}")
+            return 'Error!' 
