@@ -1,7 +1,8 @@
-FROM rust:1.85-slim-bullseye
+FROM rust:1.85-slim-bullseye AS builder
 
 WORKDIR /usr/src/zec
 
+# Install required dependencies for OpenSSL, Rust, and cargo
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
@@ -10,4 +11,15 @@ RUN apt-get update && apt-get install -y \
     make \
     && rm -rf /var/lib/apt/lists/*
 
-CMD ["cargo", "run"] 
+# Install cargo-watch for hot reloading
+RUN cargo install cargo-watch
+
+# Set environment variable for run mode
+ENV RUST_INCREMENTAL=1
+
+# Use cargo-watch with specific options:
+# -q: Quiet mode (less output)
+# -c: Clear screen between runs
+# -w: Watch only specific directories
+# -x: Execute command
+CMD ["cargo", "watch", "-q", "-c", "-w", "src", "-x", "run"] 

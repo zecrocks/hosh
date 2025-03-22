@@ -5,6 +5,11 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use futures::try_join;
+use std::env;
+use uuid;
+use reqwest;
+use tracing::{error, info};
+use uuid::Uuid;
 
 mod blockchair;
 mod blockchaindotcom;
@@ -46,7 +51,7 @@ impl From<async_nats::Error> for CheckerError {
 #[derive(Debug, Deserialize)]
 struct CheckRequest {
     #[allow(dead_code)]
-    host: String,
+    url: String,
     #[allow(dead_code)]
     port: u16,
     #[allow(dead_code)]
@@ -71,9 +76,33 @@ struct CheckResult {
 }
 
 #[derive(Clone)]
+struct ClickhouseConfig {
+    url: String,
+    user: String,
+    password: String,
+    database: String,
+}
+
+impl ClickhouseConfig {
+    fn from_env() -> Self {
+        Self {
+            url: format!("http://{}:{}", 
+                env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".into()),
+                env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".into())
+            ),
+            user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".into()),
+            password: env::var("CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "chron".into()),
+            database: env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".into()),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct Worker {
     nats: async_nats::Client,
     redis: redis::Client,
+    clickhouse: ClickhouseConfig,
+    http_client: reqwest::Client,
 }
 
 impl Worker {
@@ -96,7 +125,13 @@ impl Worker {
         let nats = async_nats::connect(&nats_url).await?;
         let redis = redis::Client::open(redis_url.as_str())?;
 
-        Ok(Worker { nats, redis })
+        let http_client = reqwest::Client::builder()
+            .pool_idle_timeout(std::time::Duration::from_secs(300))
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .build()?;
+
+        Ok(Worker { nats, redis, clickhouse: ClickhouseConfig::from_env(), http_client })
     }
 
     async fn process_check(&self, msg: async_nats::Message) {
@@ -152,6 +187,22 @@ impl Worker {
                 }
             }
         }
+
+        let result = CheckResult {
+            host: _check_request.url.clone(),
+            port: _check_request.port,
+            height: 0,
+            status: "online".to_string(),
+            error: None,
+            last_updated: Utc::now(),
+            ping: 0.0,
+            check_id: _check_request.check_id.clone(),
+            user_submitted: _check_request.user_submitted,
+        };
+
+        if let Err(e) = self.publish_to_clickhouse(&_check_request, &result).await {
+            error!("Failed to publish to ClickHouse: {}", e);
+        }
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -162,6 +213,100 @@ impl Worker {
         while let Some(msg) = sub.next().await {
             self.process_check(msg).await;
         }
+
+        Ok(())
+    }
+
+    async fn publish_to_clickhouse(&self, check_request: &CheckRequest, result: &CheckResult) -> Result<(), Box<dyn Error>> {
+        let target_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_DNS,
+            format!("http:{}", check_request.url).as_bytes()
+        ).to_string();
+
+        let escaped_url = check_request.url.replace("'", "\\'");
+        
+        // Update existing target
+        let update_query = format!(
+            "ALTER TABLE {db}.targets 
+             UPDATE last_queued_at = now(),
+                    last_checked_at = now(),
+                    target_id = '{target_id}'
+             WHERE module = 'http' AND hostname = '{url}'
+             SETTINGS mutations_sync = 1",
+            db = self.clickhouse.database,
+            target_id = target_id,
+            url = escaped_url,
+        );
+
+        let response = self.http_client.post(&self.clickhouse.url)
+            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
+            .header("Content-Type", "text/plain")
+            .body(update_query)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse update error: {}", response.text().await?).into());
+        }
+
+        // Insert new target if it doesn't exist
+        let insert_query = format!(
+            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
+             SELECT '{target_id}', 'http', '{url}', now(), now(), {user_submitted}
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM {db}.targets 
+                 WHERE module = 'http' AND hostname = '{url}'
+             )",
+            db = self.clickhouse.database,
+            target_id = target_id,
+            url = escaped_url,
+            user_submitted = check_request.user_submitted.unwrap_or(false)
+        );
+
+        let response = self.http_client.post(&self.clickhouse.url)
+            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
+            .header("Content-Type", "text/plain")
+            .body(insert_query)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse insert error: {}", response.text().await?).into());
+        }
+
+        // Insert the check result
+        let result_query = format!(
+            "INSERT INTO {}.results 
+             (target_id, checked_at, hostname, resolved_ip, ip_version, 
+              checker_module, status, ping_ms, checker_location, checker_id, response_data, user_submitted) 
+             VALUES 
+             ('{}', now(), '{}', '', 4, 'http', '{}', {}, 'default', '{}', '{}', {})",
+            self.clickhouse.database,
+            target_id,
+            escaped_url,
+            if result.error.is_some() { "offline" } else { "online" },
+            result.ping,
+            uuid::Uuid::new_v4(),
+            serde_json::to_string(&result)?.replace("'", "\\'"),
+            check_request.user_submitted.unwrap_or(false)
+        );
+
+        let response = self.http_client.post(&self.clickhouse.url)
+            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
+            .header("Content-Type", "text/plain")
+            .body(result_query)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse error: {}", response.text().await?).into());
+        }
+
+        info!(
+            url = %check_request.url,
+            check_id = %check_request.check_id.as_deref().unwrap_or("none"),
+            "Successfully saved check data to ClickHouse"
+        );
 
         Ok(())
     }

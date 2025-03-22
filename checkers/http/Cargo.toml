@@ -14,3 +14,5 @@ async-nats = "0.33"
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 futures = "0.3"
+uuid = { version = "1.0", features = ["v5"] }
+tracing = "0.1"

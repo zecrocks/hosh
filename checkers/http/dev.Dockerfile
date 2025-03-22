@@ -1,16 +1,21 @@
-FROM rust:1.82-slim-bullseye
+FROM rust:1.85-slim-bullseye
 
 WORKDIR /usr/src/app
 
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    git \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/* \
-    && cargo install cargo-watch
+# Install cargo-watch
+RUN cargo install cargo-watch
 
+# Copy manifests
 COPY Cargo.toml Cargo.lock ./
-COPY src ./src
 
+# Create a dummy main.rs to build dependencies
+RUN mkdir src && \
+    echo "fn main() {}" > src/main.rs && \
+    cargo build && \
+    rm -rf src
+
+# Copy the real source code
+COPY . .
+
+# Run with cargo-watch for hot reloading
 CMD ["cargo", "watch", "-x", "run"] 
