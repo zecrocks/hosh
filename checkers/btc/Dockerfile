@@ -1,9 +1,5 @@
-<<<<<<< HEAD
 FROM rust:1.85-slim-bullseye AS builder
-=======
-# Start with the Rust base image
-FROM rust:1.75.0-slim-bullseye as builder
->>>>>>> ea3e47d (Working changes, not yet ready to merge nor functional.)
+
 
 WORKDIR /usr/src/btc
 
