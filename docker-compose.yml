@@ -173,8 +173,16 @@ services:
       - REDIS_HOST=redis
       - NATS_HOST=nats
       - TOR_PROXY_HOST=tor
+      - RUST_LOG=debug
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     volumes:
       - ./checkers/http:/usr/src/app
+      - ./checkers/http/target:/usr/src/app/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
     profiles:
       - dev
     depends_on:
@@ -183,6 +191,8 @@ services:
       redis:
         condition: service_healthy
       tor:
+        condition: service_healthy
+      chronicler:
         condition: service_healthy
 
   checker-btc-dev:
