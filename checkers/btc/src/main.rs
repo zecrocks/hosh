@@ -18,10 +18,18 @@ use routes::{
 
 #[tokio::main]
 async fn main() {
+    println!("DIRECT PRINT: Starting main...");
+    panic!("TESTING IF THIS SHOWS UP");
+
     // Initialize tracing
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    println!("DIRECT PRINT: Tracing initialized");
+    error!("==========================================");
+    error!("MAIN: Starting up...");
+    error!("==========================================");
 
     // Check if we should run in worker mode
     let is_worker = std::env::var("RUN_MODE")
@@ -29,15 +37,18 @@ async fn main() {
         .unwrap_or(false);
 
     if is_worker {
-        info!("Starting in worker mode...");
+        println!("DIRECT PRINT: Entering worker mode");
+        error!("MAIN: Starting in worker mode...");
         match worker::Worker::new().await {
             Ok(worker) => {
+                error!("MAIN: Worker created successfully");
                 if let Err(e) = worker.run().await {
-                    error!("Worker error: {}", e);
+                    error!("MAIN: Worker error: {}", e);
                 }
             }
             Err(e) => {
-                error!("Failed to create worker: {}", e);
+                error!("MAIN: Failed to create worker: {:?}", e);
+                std::process::exit(1);
             }
         }
     } else {

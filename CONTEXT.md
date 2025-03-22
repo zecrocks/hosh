@@ -1,6 +1,6 @@
 # hosh
 
-Goal: Hosh checks the uptime of light wallet servers across popular blockchains, Bitcoin and Zcash.
+Project Goal: Hosh checks the uptime of light wallet servers across popular blockchains, Bitcoin and Zcash.
 
 # Context
 
