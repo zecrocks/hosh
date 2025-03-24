@@ -6,7 +6,7 @@ use futures_util::stream::StreamExt;
 use crate::routes::electrum::query::{electrum_query, QueryParams};
 use axum::extract::Query;
 use tracing::{debug, error, info, warn};
-use url;
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CheckRequest {
@@ -58,34 +58,71 @@ pub struct Worker {
 impl Worker {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
         println!("DIRECT PRINT: Worker::new() called");
-        error!("==========================================");
-        error!("HELLO WORLD - BTC WORKER STARTING UP!");
-        error!("==========================================");
+        info!("==========================================");
+        info!("HELLO WORLD - BTC WORKER STARTING UP!");
+        info!("==========================================");
 
-        // Get the NATS URL directly
+        // Get NATS configuration
         let nats_url = env::var("NATS_URL").map_err(|e| {
             error!("Failed to get NATS_URL: {}", e);
             e
         })?;
-        error!("Raw NATS URL from env: {}", nats_url);
+        let nats_user = env::var("NATS_USERNAME").unwrap_or_default();
+        let nats_password = env::var("NATS_PASSWORD").unwrap_or_default();
+        
+        info!("Raw NATS URL from env: {}", nats_url);
 
-        // Let the NATS client handle URL parsing and authentication
-        error!("Attempting NATS connection...");
-        let nats = async_nats::connect(&nats_url).await.map_err(|e| {
-            error!("NATS connection error: {:?}", e);
-            e
-        })?;
-        error!("Successfully connected to NATS");
+        // Create NATS client with credentials
+        info!("Attempting NATS connection...");
+        let nats = if !nats_user.is_empty() && !nats_password.is_empty() {
+            info!("Connecting to NATS with authentication...");
+            let client = async_nats::ConnectOptions::new()
+                .user_and_password(nats_user, nats_password)
+                .connect(&nats_url)
+                .await?;
+            info!("✅ Successfully authenticated with NATS");
+            client
+        } else {
+            info!("Connecting to NATS without authentication...");
+            let client = async_nats::connect(&nats_url).await?;
+            info!("✅ Successfully connected to NATS");
+            client
+        };
 
+        // Verify connection by publishing and receiving a test message
         let nats_subject = env::var("NATS_SUBJECT").unwrap_or_else(|_| "hosh.check.btc".to_string());
+        let test_subject = format!("{}.test.{}", nats_subject, Uuid::new_v4());
+        let test_payload = "connection_test";
+        
+        let mut sub = nats.subscribe(test_subject.clone()).await?;
+        nats.publish(test_subject, test_payload.into()).await?;
+        
+        // Test the connection with timeout
+        let timeout_duration = std::time::Duration::from_secs(5);
+        match tokio::time::timeout(timeout_duration, sub.next()).await {
+            Ok(Some(msg)) => {
+                if msg.payload == test_payload.as_bytes() {
+                    info!("✅ NATS connection verified with test message");
+                } else {
+                    warn!("⚠️ NATS test message received but payload mismatch");
+                }
+            },
+            Ok(None) => warn!("⚠️ NATS subscription closed unexpectedly"),
+            Err(_) => warn!("⚠️ NATS test message timeout - connection may be unstable"),
+        }
+
+        // Cleanup test subscription
+        drop(sub);
+
+        // Get Redis configuration and connect
         let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
         let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
+        let redis = redis::Client::open(format!("redis://{}:{}", redis_host, redis_port))?;
+
         let max_concurrent_checks = env::var("MAX_CONCURRENT_CHECKS")
             .unwrap_or_else(|_| "3".to_string())
             .parse()
             .unwrap_or(10);
-
-        let redis = redis::Client::open(format!("redis://{}:{}", redis_host, redis_port))?;
 
         Ok(Worker {
             nats,
@@ -243,7 +280,7 @@ impl Worker {
                     let worker = self.clone();
                     
                     // Spawn task to process messages from channel
-                    let process_handle = tokio::spawn(async move {
+                    let _process_handle = tokio::spawn(async move {
                         let mut handles = futures_util::stream::FuturesUnordered::new();
                         
                         while let Some(msg) = rx.recv().await {

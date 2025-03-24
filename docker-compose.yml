@@ -30,7 +30,7 @@ services:
       RUN_MODE: worker
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      NATS_URL: 'nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222'
+      NATS_URL: 'nats://nats:4222'
       NATS_USERNAME: ${NATS_USERNAME}
       NATS_PASSWORD: ${NATS_PASSWORD}
       NATS_SUBJECT: "hosh.check.btc"
@@ -43,6 +43,43 @@ services:
         condition: service_healthy
       tor:
         condition: service_healthy
+
+  checker-btc-dev:
+    build:
+      context: ./checkers/btc
+      dockerfile: dev.Dockerfile
+    profiles:
+      - dev
+    volumes:
+      - ./checkers/btc:/usr/src/btc
+      - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      RUST_LOG: debug
+      RUST_BACKTRACE: "full"
+      RUN_MODE: worker
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NATS_URL: 'nats://nats:4222'
+      NATS_USERNAME: ${NATS_USERNAME}
+      NATS_PASSWORD: ${NATS_PASSWORD}
+      NATS_SUBJECT: "hosh.check.btc"
+      TOR_PROXY_HOST: tor
+      TOR_PROXY_PORT: 9050
+      # CLICKHOUSE_HOST: chronicler
+      # CLICKHOUSE_PORT: 8123
+      # CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      # CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      # CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+      # chronicler:
+      #   condition: service_healthy
 
   checker-btc-user:
     build: ./checkers/btc

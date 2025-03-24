@@ -17,19 +17,20 @@ use routes::{
 };
 
 #[tokio::main]
-async fn main() {
-    println!("DIRECT PRINT: Starting main...");
-    panic!("TESTING IF THIS SHOWS UP");
-
-    // Initialize tracing
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing first, before any logging calls
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    println!("DIRECT PRINT: Tracing initialized");
-    error!("==========================================");
-    error!("MAIN: Starting up...");
-    error!("==========================================");
+    println!("DIRECT PRINT: Starting main...");
+    
+    // Now we can use tracing macros
+    info!("==========================================");
+    info!("HELLO WORLD - BTC WORKER STARTING UP!");
+    info!("==========================================");
+
+    let worker = worker::Worker::new().await?;
 
     // Check if we should run in worker mode
     let is_worker = std::env::var("RUN_MODE")
@@ -39,17 +40,8 @@ async fn main() {
     if is_worker {
         println!("DIRECT PRINT: Entering worker mode");
         error!("MAIN: Starting in worker mode...");
-        match worker::Worker::new().await {
-            Ok(worker) => {
-                error!("MAIN: Worker created successfully");
-                if let Err(e) = worker.run().await {
-                    error!("MAIN: Worker error: {}", e);
-                }
-            }
-            Err(e) => {
-                error!("MAIN: Failed to create worker: {:?}", e);
-                std::process::exit(1);
-            }
+        if let Err(e) = worker.run().await {
+            error!("MAIN: Worker error: {}", e);
         }
     } else {
         info!("Starting in API server mode...");
@@ -73,4 +65,6 @@ async fn main() {
             error!("Server error: {}", e);
         }
     }
+
+    Ok(())
 }
