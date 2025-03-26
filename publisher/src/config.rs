@@ -16,6 +16,8 @@ pub struct Config {
     pub nats_prefix: String,
     pub redis_host: String,
     pub redis_port: u16,
+    pub nats_username: String,
+    pub nats_password: String,
 }
 
 impl Config {
@@ -55,6 +57,8 @@ impl Config {
                 .ok()
                 .and_then(|s| s.parse().ok())
                 .unwrap_or(DEFAULT_REDIS_PORT),
+            nats_username: env::var("NATS_USERNAME").unwrap_or_default(),
+            nats_password: env::var("NATS_PASSWORD").unwrap_or_default(),
         };
 
         tracing::info!("Loaded configuration: default_interval={:?}, chain_intervals={:?}", 

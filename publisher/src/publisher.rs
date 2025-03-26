@@ -3,9 +3,8 @@ use crate::models::ServerData;
 use crate::redis_store::RedisStore;
 use anyhow::{Context, Result};
 use async_nats::Client as NatsClient;
-use chrono::Utc;
 use redis::aio::MultiplexedConnection;
-use tracing::{debug, error, info};
+use tracing::{error, info};
 
 pub struct Publisher {
     nats: NatsClient,

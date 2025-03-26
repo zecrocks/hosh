@@ -90,7 +90,7 @@ services:
       MAX_CONCURRENT_CHECKS: 1
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      NATS_URL: 'nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222'
+      NATS_URL: 'nats://nats:4222'
       NATS_USERNAME: ${NATS_USERNAME}
       NATS_PASSWORD: ${NATS_PASSWORD}
       NATS_SUBJECT: "hosh.check.btc.user"
@@ -144,7 +144,7 @@ services:
     environment:
       RUST_LOG: info
       CHECK_INTERVAL: ${CHECK_INTERVAL:-300}
-      NATS_URL: 'nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222'
+      NATS_URL: 'nats://nats:4222'
       NATS_USERNAME: ${NATS_USERNAME}
       NATS_PASSWORD: ${NATS_PASSWORD}
       NATS_PREFIX: ${NATS_PREFIX:-hosh.}
@@ -169,7 +169,7 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      NATS_URL: 'nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222'
+      NATS_URL: 'nats://nats:4222'
       NATS_USERNAME: ${NATS_USERNAME}
       NATS_PASSWORD: ${NATS_PASSWORD}
     depends_on:
@@ -184,7 +184,7 @@ services:
     environment:
       REDIS_HOST: redis
       REDIS_PORT: 6379
-      NATS_URL: 'nats://${NATS_USERNAME}:${NATS_PASSWORD}@nats:4222'
+      NATS_URL: 'nats://nats:4222'
       NATS_USERNAME: ${NATS_USERNAME}
       NATS_PASSWORD: ${NATS_PASSWORD}
     depends_on:
