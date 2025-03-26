@@ -99,3 +99,5 @@ pytestdebug.log
 # Mac stuff
 *.DS_Store
 
+# Ignore my time logs
+timesheet_hours.ods
