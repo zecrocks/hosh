@@ -28,7 +28,7 @@
                         <dt class="text-gray-600">Height</dt>
                         <dd>{{ server.height }}</dd>
                     </div>
-                    {% if let Some(true) = server.error %}
+                    {% if server.error %}
                         {% if let Some(msg) = server.extra.get("error_message") %}
                         <div class="col-span-2">
                             <dt class="text-gray-600">Error</dt>

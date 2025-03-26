@@ -9,7 +9,6 @@ use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
 use rand::Rng;
-use std::collections::HashSet;
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::FmtSubscriber;
 
@@ -77,8 +76,8 @@ struct ServerInfo {
     #[serde(default)]
     server_version: Option<String>,
 
-    #[serde(default)]
-    error: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_error")]
+    error: bool,
 
     #[serde(default)]
     error_time: Option<String>,
@@ -105,6 +104,27 @@ where
     port_str.parse::<u16>()
         .map(Some)
         .or_else(|_| Ok(None))
+}
+
+fn deserialize_error<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    use serde::de::Error;
+    
+    // First deserialize to a Value to handle any JSON type
+    let value = serde_json::Value::deserialize(deserializer)?;
+    
+    match value {
+        // If it's already a boolean, use that
+        serde_json::Value::Bool(b) => Ok(b),
+        // If it's null, treat as no error
+        serde_json::Value::Null => Ok(false),
+        // If it's a string, treat non-empty string as error
+        serde_json::Value::String(s) => Ok(!s.is_empty()),
+        // For any other type, consider it an error if it exists
+        _ => Ok(true),
+    }
 }
 
 impl ServerInfo {
@@ -166,9 +186,9 @@ impl ServerInfo {
         }
     }
 
-    // TODO: Show status based on something other than height
     fn is_online(&self) -> bool {
-        !self.error.unwrap_or(false) && self.height > 0
+        // A server is online if it has no error and has a positive height
+        !self.error && self.height > 0
     }
 
     fn is_height_behind(&self, percentile_height: &u64) -> bool {

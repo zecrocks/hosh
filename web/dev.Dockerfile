@@ -1,21 +1,10 @@
-FROM rust:1.82-slim-bullseye
+FROM hosh/dev
 
 WORKDIR /usr/src/web
 
-# Install required dependencies
-RUN apt-get update && apt-get install -y \
-    pkg-config \
-    libssl-dev \
-    git \
-    && rm -rf /var/lib/apt/lists/*
-
-# Dependency caching
-COPY Cargo.toml Cargo.lock ./
-
-RUN mkdir -p src && \
-    echo "fn main() {println!(\"dummy\");}" > src/main.rs && \
-    cargo build && \
-    rm -rf src target/debug/hosh-web*
-
-# Command to run in development
-CMD ["cargo", "run"] 
+# Use cargo-watch with specific options:
+# -q: Quiet mode (less output)
+# -c: Clear screen between runs
+# -w: Watch only specific directories
+# -x: Execute command
+CMD ["cargo", "watch", "-q", "-c", "-w", "src", "-x", "run"] 
