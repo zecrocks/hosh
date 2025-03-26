@@ -41,7 +41,7 @@ def register_callbacks(app, long_callback_manager):
             clear_server_data()
             return [], []
 
-        # Regular update
+        # Regular update - just fetch and display data, don't trigger checks
         server_data = fetch_data_from_redis()
         print(f"DEBUG: Fetched {len(server_data)} records from Redis")
 
@@ -162,4 +162,20 @@ def register_callbacks(app, long_callback_manager):
                 return html.Div("✅ ZEC checks triggered", className="text-success")
             else:
                 return html.Div("❌ Failed to trigger ZEC checks", className="text-danger")
+        return ""
+
+    @app.callback(
+        Output("server-status-http-trigger-result", "children"),
+        Input("trigger-http-button", "n_clicks"),
+        prevent_initial_call=True
+    )
+    def trigger_http_checks(n_clicks):
+        if n_clicks:
+            from data.nats_client import trigger_http_checks
+            success = trigger_http_checks()
+            
+            if success:
+                return html.Div("✅ HTTP checks triggered", className="text-success")
+            else:
+                return html.Div("❌ Failed to trigger HTTP checks", className="text-danger")
         return "" 

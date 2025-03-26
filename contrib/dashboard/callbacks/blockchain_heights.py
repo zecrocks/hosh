@@ -1,7 +1,7 @@
-from dash.dependencies import Input, Output
-from dash import callback_context, html
+from dash.dependencies import Input, Output, State
+from dash import callback_context, html, no_update
 from data.redis_client import fetch_blockchain_heights, clear_explorer_data
-from data.nats_client import publish_http_check_trigger
+from data.nats_client import publish_http_check_trigger, trigger_http_checks
 import asyncio
 from collections import Counter
 import redis
@@ -120,23 +120,23 @@ def register_callbacks(app):
         )
 
     @app.callback(
-        Output("http-trigger-result", "children"),  # Updated output ID
-        Input("trigger-http-checks", "n_clicks"),   # Updated input ID
+        Output("http-trigger-result", "children"),
+        Input("trigger-http-button", "n_clicks"),
+        State("http-dry-run-toggle", "value"),
         prevent_initial_call=True
     )
-    async def trigger_http_checks(n_clicks):
+    def handle_http_checks_trigger(n_clicks, dry_run):
         if n_clicks is None:
-            return dash.no_update
-        
+            return no_update
+            
         try:
-            nats = NATS()
-            await nats.connect("nats://nats:4222")
+            from data.nats_client import trigger_http_checks
+            success = trigger_http_checks(dry_run=dry_run)
             
-            # Trigger HTTP checks
-            await nats.publish("hosh.check.http", b'{"url":""}')  # Empty URL triggers all checks
-            await nats.close()
-            
-            return html.Div("✅ HTTP checks triggered successfully!", className="text-success")
+            if success:
+                return html.Div(f"✅ HTTP checks triggered successfully! {'(Dry Run)' if dry_run else ''}", className="text-success")
+            else:
+                return html.Div("❌ Failed to trigger checks", className="text-danger")
         except Exception as e:
             return html.Div(f"❌ Failed to trigger checks: {str(e)}", className="text-danger")
 

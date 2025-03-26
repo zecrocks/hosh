@@ -14,12 +14,21 @@ def create_layout():
             html.Button('Clear Explorer Data', id='clear-explorers-button', n_clicks=0,
                        className='btn btn-warning me-2'),
             
-            # Add HTTP check trigger button
-            dbc.Button(
-                f"Trigger HTTP Checks ({server_counts['http']})", 
-                id="trigger-http-button", 
-                color="primary"
-            ),
+            # Add HTTP check trigger button and dry run toggle
+            html.Div([
+                dbc.Button(
+                    f"Trigger HTTP Checks ({server_counts['http']})", 
+                    id="trigger-http-button", 
+                    color="primary",
+                    className="me-2"
+                ),
+                dbc.Switch(
+                    id="http-dry-run-toggle",
+                    label="Dry Run",
+                    value=False,
+                    className="d-inline-block"
+                )
+            ], className="d-inline-block"),
         ]),
         
         # Add result area for HTTP checks

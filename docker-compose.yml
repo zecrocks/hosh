@@ -120,6 +120,11 @@ services:
       - NATS_PREFIX=${NATS_PREFIX:-hosh.}
       - REDIS_HOST=${REDIS_HOST:-redis}
       - REDIS_PORT=${REDIS_PORT:-6379}
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
       redis:
         condition: service_healthy
@@ -169,6 +174,12 @@ services:
       context: ./checkers/http
       dockerfile: dev.Dockerfile
     image: hosh/checker-http-dev
+    profiles:
+      - dev
+    volumes:
+      - ./checkers/http:/usr/src/app
+      - ./checkers/http/target:/usr/src/app/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
     environment:
       - REDIS_HOST=redis
       - NATS_HOST=nats
@@ -179,12 +190,6 @@ services:
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
-    volumes:
-      - ./checkers/http:/usr/src/app
-      - ./checkers/http/target:/usr/src/app/target  # Persist build artifacts
-      - cargo-cache:/usr/local/cargo/registry
-    profiles:
-      - dev
     depends_on:
       nats:
         condition: service_healthy
@@ -199,6 +204,7 @@ services:
     build:
       context: ./checkers/btc
       dockerfile: dev.Dockerfile
+    image: hosh/checker-btc-dev
     profiles:
       - dev
     volumes:
@@ -233,6 +239,7 @@ services:
     build:
       context: ./checkers/zec
       dockerfile: dev.Dockerfile
+    image: hosh/checker-zec-dev
     profiles:
       - dev
     volumes:
@@ -368,6 +375,7 @@ services:
     build:
       context: ./web
       dockerfile: dev.Dockerfile
+    image: hosh/web-dev
     profiles:
       - dev
     ports:
@@ -386,6 +394,43 @@ services:
         condition: service_healthy
       nats:
         condition: service_healthy
+
+  publisher-dev:
+    build:
+      context: ./publisher
+      dockerfile: dev.Dockerfile
+    profiles:
+      - dev
+    volumes:
+      - ./publisher:/usr/src/app
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=debug
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - NATS_PREFIX=${NATS_PREFIX:-hosh.}
+      - REDIS_HOST=${REDIS_HOST:-redis}
+      - REDIS_PORT=${REDIS_PORT:-6379}
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    depends_on:
+      redis:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
+
+  hosh-dev:
+    build:
+      context: .
+      dockerfile: dev.Dockerfile
+    image: hosh/dev
+    profiles:
+      - dev
 
 volumes:
   cargo-cache:

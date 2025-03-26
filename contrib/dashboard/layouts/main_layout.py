@@ -34,7 +34,7 @@ def create_layout():
                     type='number',
                     min=1,
                     max=300,
-                    value=10,
+                    value=60,
                     className="form-control form-control-sm d-inline-block",
                     style={"width": "80px"}
                 ),
@@ -43,7 +43,7 @@ def create_layout():
             # Interval component for auto-refresh
             dcc.Interval(
                 id='auto-refresh-interval',
-                interval=10 * 1000,  # in milliseconds
+                interval=60 * 1000,
                 n_intervals=0
             ),
             

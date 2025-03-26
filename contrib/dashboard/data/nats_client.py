@@ -10,9 +10,12 @@ NATS_URL = f"nats://{NATS_HOST}:{NATS_PORT}"
 NATS_PREFIX = os.environ.get('NATS_PREFIX', 'hosh.')  # Match Rust config default
 
 
-async def publish_http_check_trigger():
+async def publish_http_check_trigger(dry_run=False):
     """
     Publish a message to trigger HTTP checks.
+    
+    Args:
+        dry_run (bool): If True, only simulate the checks without making actual requests
     """
     try:
         # Connect to NATS
@@ -20,9 +23,11 @@ async def publish_http_check_trigger():
         
         # Prepare the message - exactly matching Rust format
         message = {
-            "type": "http",
-            "host": "trigger",
-            "port": 80
+            "url": "",  # Empty URL triggers all checks
+            "port": 80,
+            "check_id": None,
+            "user_submitted": False,
+            "dry_run": dry_run
         }
         
         # Use same subject format as Rust code
@@ -30,7 +35,7 @@ async def publish_http_check_trigger():
         
         # Publish the message
         await nc.publish(subject, json.dumps(message).encode())
-        print(f"Published HTTP check trigger to NATS subject: {subject}")
+        print(f"Published HTTP check trigger to NATS subject: {subject} (dry_run={dry_run})")
         
         # Close NATS connection
         await nc.close()
@@ -41,15 +46,18 @@ async def publish_http_check_trigger():
         return False
 
 
-def trigger_http_checks():
+def trigger_http_checks(dry_run=False):
     """
     Trigger HTTP checks via NATS.
+    
+    Args:
+        dry_run (bool): If True, only simulate the checks without making actual requests
     """
     try:
         # Run the async function
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(publish_http_check_trigger())
+        result = loop.run_until_complete(publish_http_check_trigger(dry_run))
         loop.close()
         return result
     except Exception as e:

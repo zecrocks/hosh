@@ -182,7 +182,7 @@ def register_callbacks(app):
                     'xaxis': {'title': 'Time'},
                     'yaxis': {'title': 'Response Time (ms)'}
                 }
-            }, [] 
+            }, []
 
     # Add new callback to enable/disable trigger button
     @app.callback(
