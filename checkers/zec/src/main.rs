@@ -86,13 +86,6 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let nats_user = env::var("NATS_USERNAME").unwrap_or_default();
     let nats_password = env::var("NATS_PASSWORD").unwrap_or_default();
 
-    // Add debug logging for configuration
-    info!("NATS Configuration:");
-    info!("URL: {}", nats_url);
-    info!("Prefix: {}", nats_prefix);
-    info!("Username present: {}", !nats_user.is_empty());
-    info!("Password present: {}", !nats_password.is_empty());
-
     info!("Attempting NATS connection...");
     let nats = if !nats_user.is_empty() && !nats_password.is_empty() {
         info!("Connecting to NATS with authentication...");

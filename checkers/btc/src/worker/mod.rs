@@ -57,11 +57,6 @@ pub struct Worker {
 
 impl Worker {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        println!("DIRECT PRINT: Worker::new() called");
-        info!("==========================================");
-        info!("HELLO WORLD - BTC WORKER STARTING UP!");
-        info!("==========================================");
-
         // Get NATS configuration
         let nats_url = env::var("NATS_URL").map_err(|e| {
             error!("Failed to get NATS_URL: {}", e);

@@ -23,13 +23,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
 
-    println!("DIRECT PRINT: Starting main...");
-    
-    // Now we can use tracing macros
-    info!("==========================================");
-    info!("HELLO WORLD - BTC WORKER STARTING UP!");
-    info!("==========================================");
-
     let worker = worker::Worker::new().await?;
 
     // Check if we should run in worker mode

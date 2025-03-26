@@ -100,13 +100,6 @@ impl Worker {
         let nats_password = std::env::var("NATS_PASSWORD").unwrap_or_default();
         let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
 
-        info!("NATS Configuration:");
-        info!("URL: {}", nats_url);
-        info!("Prefix: {}", nats_prefix);
-        info!("Username present: {}", !nats_user.is_empty());
-        info!("Password present: {}", !nats_password.is_empty());
-
-        info!("Attempting NATS connection...");
         let nats = if !nats_user.is_empty() && !nats_password.is_empty() {
             info!("Connecting to NATS with authentication...");
             let client = async_nats::ConnectOptions::new()
@@ -161,8 +154,6 @@ impl Worker {
 
         // Cleanup test subscription
         drop(sub);
-
-        info!("💓 HTTP checker heartbeat - still alive");
 
         let redis_url = format!(
             "redis://{}:{}",
