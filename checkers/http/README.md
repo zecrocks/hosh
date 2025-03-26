@@ -33,8 +33,11 @@ Examples:
 ## How It Works
 
 1. The service subscribes to NATS messages on the topic `{prefix}check.http`
-2. When triggered, it concurrently fetches data from all sources
-3. Results are stored in Redis using the format: `http:{source}.{chain}`
+2. When triggered, it receives a check request containing:
+   - The domain to check (e.g., blockchair, blockchain, blockstream)
+   - Optional dry_run flag to simulate the check without publishing results
+3. The checker fetches data only from the specified domain
+4. Results are stored in ClickHouse using the format: `http:{source}.{chain}`
 
 ### Data Sources
 

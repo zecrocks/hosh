@@ -58,6 +58,8 @@ struct CheckRequest {
     check_id: Option<String>,
     #[serde(default)]
     user_submitted: Option<bool>,
+    #[serde(default)]
+    dry_run: bool,
 }
 
 fn default_port() -> u16 { 80 }
@@ -138,13 +140,25 @@ impl Worker {
     }
 
     async fn process_check(&self, msg: async_nats::Message) {
-        let _check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
+        let check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
             Ok(req) => req,
             Err(e) => {
                 error!("Failed to parse check request: {e}");
                 return;
             }
         };
+
+        // Check if dry run mode is enabled
+        if check_request.dry_run {
+            info!(
+                "DRY RUN: Received check request - url={} port={} check_id={} user_submitted={}",
+                check_request.url,
+                check_request.port,
+                check_request.check_id.as_deref().unwrap_or("none"),
+                check_request.user_submitted.unwrap_or(false)
+            );
+            return;
+        }
 
         let mut con = match self.redis.get_connection() {
             Ok(con) => con,
@@ -156,77 +170,69 @@ impl Worker {
 
         info!("Starting concurrent blockchain info fetching...");
         
-        let blockstream = blockstream::get_blockchain_info().await;
-        let zecrocks = zecrocks::get_blockchain_info().await;
-        let blockchair = blockchair::get_blockchain_info().await;
-        let blockchair_onion = blockchair::get_onion_blockchain_info().await;
-        let blockchain = blockchaindotcom::get_blockchain_info().await;
-        let zcashexplorer = zcashexplorer::get_blockchain_info().await;
-
-        let results = vec![
-            ("blockstream", blockstream.map_err(|e| {
-                error!("Blockstream fetch failed: {}", e);
-                e
-            })),
-            ("zecrocks", zecrocks.map_err(|e| {
-                error!("Zecrocks fetch failed: {}", e);
-                e
-            })),
-            ("blockchair", blockchair.map_err(|e| {
-                error!("Blockchair fetch failed: {}", e);
-                e
-            })),
-            ("blockchair-onion", blockchair_onion.map_err(|e| {
-                error!("Blockchair onion fetch failed: {}", e);
-                e
-            })),
-            ("blockchain", blockchain.map_err(|e| {
-                error!("Blockchain.com fetch failed: {}", e);
-                e
-            })),
-            ("zcashexplorer", zcashexplorer.map_err(|e| {
-                error!("ZcashExplorer fetch failed: {}", e);
-                e
-            }))
+        // Group explorers by domain
+        let explorers = vec![
+            // Blockchair (clearnet and onion)
+            ("blockchair", blockchair::get_blockchain_info().await),
+            ("blockchair-onion", blockchair::get_onion_blockchain_info().await),
+            // Other explorers (clearnet only)
+            ("blockstream", blockstream::get_blockchain_info().await),
+            ("zecrocks", zecrocks::get_blockchain_info().await),
+            ("blockchain", blockchaindotcom::get_blockchain_info().await),
+            ("zcashexplorer", zcashexplorer::get_blockchain_info().await),
         ];
 
-        for (source, result) in results {
+        let mut total_insertions = 0;
+        let mut total_errors = 0;
+
+        // Process all results
+        for (source, result) in explorers {
             match result {
                 Ok(data) => {
-                    info!("✅ Successfully fetched data from {}", source);
                     for (chain_id, info) in data {
                         if let Some(height) = info.height {
                             let redis_key = format!("http:{}.{}", source, chain_id);
                             match con.set::<_, _, ()>(&redis_key, height) {
-                                Ok(_) => info!("📝 {} height: {} ({})", info.name, height, source),
-                                Err(e) => error!("Failed to set Redis key {}: {}", redis_key, e),
-                            }
-
-                            let result = CheckResult {
-                                host: format!("{}.{}", source, chain_id),
-                                port: _check_request.port,
-                                height,
-                                status: "online".to_string(),
-                                error: None,
-                                last_updated: Utc::now(),
-                                ping: 0.0,
-                                check_id: _check_request.check_id.clone(),
-                                user_submitted: _check_request.user_submitted,
-                            };
-
-                            info!("📊 Publishing to ClickHouse for {}.{}", source, chain_id);
-                            
-                            if let Err(e) = self.publish_to_clickhouse(source, &chain_id, &result).await {
-                                error!("Failed to publish to ClickHouse for {}.{}: {}", source, chain_id, e);
+                                Ok(_) => {
+                                    let result = CheckResult {
+                                        host: format!("{}.{}", source, chain_id),
+                                        port: check_request.port,
+                                        height,
+                                        status: "online".to_string(),
+                                        error: None,
+                                        last_updated: Utc::now(),
+                                        ping: 0.0,
+                                        check_id: check_request.check_id.clone(),
+                                        user_submitted: check_request.user_submitted,
+                                    };
+                                    
+                                    if let Err(e) = self.publish_to_clickhouse(source, &chain_id, &result).await {
+                                        error!("Failed to publish to ClickHouse for {}.{}: {}", source, chain_id, e);
+                                        total_errors += 1;
+                                    } else {
+                                        total_insertions += 1;
+                                    }
+                                }
+                                Err(e) => {
+                                    error!("Failed to set Redis key {}: {}", redis_key, e);
+                                    total_errors += 1;
+                                }
                             }
                         }
                     }
                 }
                 Err(e) => {
-                    error!("❌ Failed to fetch from {}: {}", source, e);
+                    error!("Failed to fetch from {}: {}", source, e);
+                    total_errors += 1;
                 }
             }
         }
+
+        info!(
+            total_insertions = total_insertions,
+            total_errors = total_errors,
+            "Completed HTTP check cycle"
+        );
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
