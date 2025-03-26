@@ -5,7 +5,8 @@ use std::env;
 use futures_util::stream::StreamExt;
 use crate::routes::electrum::query::{electrum_query, QueryParams};
 use axum::extract::Query;
-use tracing::{debug, error, info};
+use tracing::{debug, error, info, warn};
+use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CheckRequest {
@@ -56,17 +57,67 @@ pub struct Worker {
 
 impl Worker {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let nats_url = env::var("NATS_URL").unwrap_or_else(|_| "nats://nats:4222".to_string());
+        // Get NATS configuration
+        let nats_url = env::var("NATS_URL").map_err(|e| {
+            error!("Failed to get NATS_URL: {}", e);
+            e
+        })?;
+        let nats_user = env::var("NATS_USERNAME").unwrap_or_default();
+        let nats_password = env::var("NATS_PASSWORD").unwrap_or_default();
+        
+        info!("Raw NATS URL from env: {}", nats_url);
+
+        // Create NATS client with credentials
+        info!("Attempting NATS connection...");
+        let nats = if !nats_user.is_empty() && !nats_password.is_empty() {
+            info!("Connecting to NATS with authentication...");
+            let client = async_nats::ConnectOptions::new()
+                .user_and_password(nats_user, nats_password)
+                .connect(&nats_url)
+                .await?;
+            info!("✅ Successfully authenticated with NATS");
+            client
+        } else {
+            info!("Connecting to NATS without authentication...");
+            let client = async_nats::connect(&nats_url).await?;
+            info!("✅ Successfully connected to NATS");
+            client
+        };
+
+        // Verify connection by publishing and receiving a test message
         let nats_subject = env::var("NATS_SUBJECT").unwrap_or_else(|_| "hosh.check.btc".to_string());
+        let test_subject = format!("{}.test.{}", nats_subject, Uuid::new_v4());
+        let test_payload = "connection_test";
+        
+        let mut sub = nats.subscribe(test_subject.clone()).await?;
+        nats.publish(test_subject, test_payload.into()).await?;
+        
+        // Test the connection with timeout
+        let timeout_duration = std::time::Duration::from_secs(5);
+        match tokio::time::timeout(timeout_duration, sub.next()).await {
+            Ok(Some(msg)) => {
+                if msg.payload == test_payload.as_bytes() {
+                    info!("✅ NATS connection verified with test message");
+                } else {
+                    warn!("⚠️ NATS test message received but payload mismatch");
+                }
+            },
+            Ok(None) => warn!("⚠️ NATS subscription closed unexpectedly"),
+            Err(_) => warn!("⚠️ NATS test message timeout - connection may be unstable"),
+        }
+
+        // Cleanup test subscription
+        drop(sub);
+
+        // Get Redis configuration and connect
         let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
         let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
+        let redis = redis::Client::open(format!("redis://{}:{}", redis_host, redis_port))?;
+
         let max_concurrent_checks = env::var("MAX_CONCURRENT_CHECKS")
             .unwrap_or_else(|_| "3".to_string())
             .parse()
             .unwrap_or(10);
-
-        let nats = async_nats::connect(&nats_url).await?;
-        let redis = redis::Client::open(format!("redis://{}:{}", redis_host, redis_port))?;
 
         Ok(Worker {
             nats,
@@ -212,46 +263,54 @@ impl Worker {
             "Starting BTC checker worker"
         );
 
-        let mut subscriber = self.nats.subscribe(self.nats_subject.clone()).await?;
-        
-        // Create a channel with bounded capacity for concurrent processing
-        let (tx, mut rx) = tokio::sync::mpsc::channel(self.max_concurrent_checks);
-        
-        // Clone necessary data for the spawned task
-        let worker = self.clone();
-        
-        // Spawn task to process messages from channel
-        let process_handle = tokio::spawn(async move {
-            let mut handles = futures_util::stream::FuturesUnordered::new();
-            
-            while let Some(msg) = rx.recv().await {
-                if handles.len() >= worker.max_concurrent_checks {
-                    handles.next().await;
-                }
-                
-                let worker = worker.clone();
-                handles.push(tokio::spawn(async move {
-                    worker.process_check_request(msg).await;
-                }));
-            }
-            
-            while let Some(result) = handles.next().await {
-                if let Err(e) = result {
-                    error!("Task error: {}", e);
-                }
-            }
-        });
+        loop {
+            match self.nats.subscribe(self.nats_subject.clone()).await {
+                Ok(mut subscriber) => {
+                    info!("Successfully subscribed to {}", self.nats_subject);
+                    
+                    // Create a channel with bounded capacity for concurrent processing
+                    let (tx, mut rx) = tokio::sync::mpsc::channel(self.max_concurrent_checks);
+                    
+                    // Clone necessary data for the spawned task
+                    let worker = self.clone();
+                    
+                    // Spawn task to process messages from channel
+                    let _process_handle = tokio::spawn(async move {
+                        let mut handles = futures_util::stream::FuturesUnordered::new();
+                        
+                        while let Some(msg) = rx.recv().await {
+                            if handles.len() >= worker.max_concurrent_checks {
+                                handles.next().await;
+                            }
+                            
+                            let worker = worker.clone();
+                            handles.push(tokio::spawn(async move {
+                                worker.process_check_request(msg).await;
+                            }));
+                        }
+                        
+                        while let Some(result) = handles.next().await {
+                            if let Err(e) = result {
+                                error!("Task error: {}", e);
+                            }
+                        }
+                    });
 
-        while let Some(msg) = subscriber.next().await {
-            if let Err(e) = tx.send(msg).await {
-                error!("Failed to queue message: {}", e);
+                    while let Some(msg) = subscriber.next().await {
+                        if let Err(e) = tx.send(msg).await {
+                            error!("Failed to queue message: {}", e);
+                        }
+                    }
+                    
+                    error!("NATS subscription stream ended unexpectedly");
+                }
+                Err(e) => {
+                    error!("Failed to subscribe to NATS: {}", e);
+                    tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+                    continue;
+                }
             }
         }
-
-        drop(tx);
-        process_handle.await?;
-
-        Ok(())
     }
 }
 

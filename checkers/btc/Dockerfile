@@ -1,51 +1,43 @@
 FROM rust:1.85-slim-bullseye AS builder
 
-WORKDIR /usr/src/app
 
-# Install required dependencies for OpenSSL, Rust, and cargo
+WORKDIR /usr/src/btc
+
+# Install required dependencies for OpenSSL
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     git \
-    make \
     && rm -rf /var/lib/apt/lists/*
 
-# Dependency caching
+# First, copy only files needed for dependency caching
 COPY Cargo.toml Cargo.lock ./
 
+# Create a dummy main.rs for dependency build
 RUN mkdir -p src && \
-    echo "fn main() {println!(\"dummy\");}" > src/main.rs && \
+    echo "fn main() {}" > src/main.rs && \
     cargo build --release && \
-    rm -rf src target/release/btc-backend*
+    rm -rf src target/release/deps/btc_backend*
 
-# Copy real source code
-COPY src ./src
+# Now copy the real source code
+COPY . .
 
-# Break the Cargo cache, build
-RUN touch ./src/main.rs && cargo build --release
+# Build the application
+RUN cargo build --release
 
-# Runtime stage
+# Create the runtime image
 FROM debian:bullseye-slim
 
-WORKDIR /app
-
-# Install runtime dependencies (including OpenSSL)
-RUN apt-get update && apt-get install -y \
-    wget \
+# Install necessary runtime dependencies
+RUN apt-get update && \
+    apt-get install -y \
     ca-certificates \
     libssl1.1 \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary from builder
-COPY --from=builder /usr/src/app/target/release/btc-backend /app/btc-backend
+COPY --from=builder /usr/src/btc/target/release/btc-backend /usr/local/bin/btc-backend
 
-# Set the binary as executable
-RUN chmod +x /app/btc-backend
-
-# Add environment variable for run mode
-ENV RUN_MODE=server
-
-EXPOSE 5000
-
-CMD ["/app/btc-backend"]
+# Set the startup command
+CMD ["btc-backend"]
 
