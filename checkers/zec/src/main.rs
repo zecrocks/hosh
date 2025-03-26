@@ -6,6 +6,7 @@ use std::time::Instant;
 use zingolib;
 use futures_util::StreamExt;
 use tracing::{info, error};
+use uuid;
 
 #[derive(Debug, Deserialize)]
 struct CheckRequest {
@@ -60,7 +61,16 @@ struct CheckResult {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt::init();
+    // Configure more verbose logging
+    tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::DEBUG)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_file(true)
+        .with_line_number(true)
+        .init();
+
+    info!("ZEC checker starting up...");
 
     rustls::crypto::ring::default_provider()
         .install_default()
@@ -73,6 +83,84 @@ async fn main() -> Result<(), Box<dyn Error>> {
         env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
     );
 
+    let nats_user = env::var("NATS_USERNAME").unwrap_or_default();
+    let nats_password = env::var("NATS_PASSWORD").unwrap_or_default();
+
+    // Add debug logging for configuration
+    info!("NATS Configuration:");
+    info!("URL: {}", nats_url);
+    info!("Prefix: {}", nats_prefix);
+    info!("Username present: {}", !nats_user.is_empty());
+    info!("Password present: {}", !nats_password.is_empty());
+
+    info!("Attempting NATS connection...");
+    let nats = if !nats_user.is_empty() && !nats_password.is_empty() {
+        info!("Connecting to NATS with authentication...");
+        match async_nats::ConnectOptions::new()
+            .user_and_password(nats_user.clone(), nats_password.clone())
+            .connect(&nats_url)
+            .await {
+                Ok(client) => {
+                    info!("✅ Successfully authenticated with NATS using username: {}", nats_user);
+                    client
+                },
+                Err(e) => {
+                    error!("❌ Failed to connect to NATS with authentication: {}", e);
+                    return Err(e.into());
+                }
+            }
+    } else {
+        info!("Connecting to NATS without authentication...");
+        match async_nats::connect(&nats_url).await {
+            Ok(client) => {
+                info!("✅ Successfully connected to NATS without authentication");
+                client
+            },
+            Err(e) => {
+                error!("❌ Failed to connect to NATS: {}", e);
+                return Err(e.into());
+            }
+        }
+    };
+
+    // Add connection verification test with more logging
+    let test_subject = format!("{}.test.{}", nats_prefix, uuid::Uuid::new_v4());
+    info!("Testing connection with subject: {}", test_subject);
+    let test_payload = "connection_test";
+    
+    let mut test_sub = match nats.subscribe(test_subject.clone()).await {
+        Ok(sub) => {
+            info!("Successfully created test subscription");
+            sub
+        },
+        Err(e) => {
+            error!("Failed to create test subscription: {}", e);
+            return Err(e.into());
+        }
+    };
+
+    match nats.publish(test_subject.clone(), test_payload.into()).await {
+        Ok(_) => info!("Test message published"),
+        Err(e) => error!("Failed to publish test message: {}", e),
+    }
+
+    // Test the connection with timeout
+    let timeout_duration = std::time::Duration::from_secs(5);
+    match tokio::time::timeout(timeout_duration, test_sub.next()).await {
+        Ok(Some(msg)) => {
+            if msg.payload == test_payload.as_bytes() {
+                info!("✅ NATS connection verified with test message");
+            } else {
+                error!("⚠️ NATS test message received but payload mismatch");
+            }
+        },
+        Ok(None) => error!("⚠️ NATS subscription closed unexpectedly"),
+        Err(_) => error!("⚠️ NATS test message timeout - connection may be unstable"),
+    }
+
+    // Cleanup test subscription
+    drop(test_sub);
+
     let redis_url = format!(
         "redis://{}:{}",
         env::var("REDIS_HOST").unwrap_or_else(|_| "redis".into()),
@@ -82,13 +170,22 @@ async fn main() -> Result<(), Box<dyn Error>> {
     let mut redis_conn = redis::Client::open(redis_url.as_str())?.get_connection()?;
     info!("Connected to Redis at {}", redis_url);
     
-    let nc = async_nats::connect(&nats_url).await?;
-    info!("Connected to NATS at {}", nats_url);
-    
-    let mut sub = nc.subscribe(format!("{}check.zec", nats_prefix)).await?;
-    info!("Subscribed to {}check.zec", nats_prefix);
+    let subscription_subject = format!("{}check.zec", nats_prefix);
+    info!("🎯 Attempting to subscribe to NATS subject: {}", subscription_subject);
+    let mut sub = match nats.subscribe(subscription_subject.clone()).await {
+        Ok(subscription) => {
+            info!("✅ Successfully subscribed to {}", subscription_subject);
+            subscription
+        },
+        Err(e) => {
+            error!("❌ Failed to subscribe to {}: {}", subscription_subject, e);
+            return Err(e.into());
+        }
+    };
 
+    info!("👂 Listening for ZEC check requests...");
     while let Some(msg) = sub.next().await {
+        info!("📥 Received message on subject: {}", msg.subject);
         let check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
             Ok(req) => req,
             Err(e) => {

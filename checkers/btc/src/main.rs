@@ -38,8 +38,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .unwrap_or(false);
 
     if is_worker {
-        println!("DIRECT PRINT: Entering worker mode");
-        error!("MAIN: Starting in worker mode...");
         if let Err(e) = worker.run().await {
             error!("MAIN: Worker error: {}", e);
         }

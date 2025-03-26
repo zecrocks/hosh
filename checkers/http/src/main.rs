@@ -5,6 +5,7 @@ use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
 use std::time::Instant;
+use tracing::{debug, error, info, warn};
 
 mod blockchair;
 mod blockchain;
@@ -85,11 +86,83 @@ struct Worker {
 
 impl Worker {
     async fn new() -> Result<Self, Box<dyn Error>> {
+        info!("==========================================");
+        info!("HTTP checker starting up...");
+        info!("==========================================");
+
+        // Get NATS configuration
         let nats_url = format!(
             "nats://{}:{}",
             std::env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
             std::env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
         );
+        let nats_user = std::env::var("NATS_USERNAME").unwrap_or_default();
+        let nats_password = std::env::var("NATS_PASSWORD").unwrap_or_default();
+        let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
+
+        info!("NATS Configuration:");
+        info!("URL: {}", nats_url);
+        info!("Prefix: {}", nats_prefix);
+        info!("Username present: {}", !nats_user.is_empty());
+        info!("Password present: {}", !nats_password.is_empty());
+
+        info!("Attempting NATS connection...");
+        let nats = if !nats_user.is_empty() && !nats_password.is_empty() {
+            info!("Connecting to NATS with authentication...");
+            let client = async_nats::ConnectOptions::new()
+                .user_and_password(nats_user.clone(), nats_password)
+                .connect(&nats_url)
+                .await?;
+            info!("✅ Successfully authenticated with NATS using username: {}", nats_user);
+            client
+        } else {
+            info!("Connecting to NATS without authentication...");
+            let client = async_nats::connect(&nats_url).await?;
+            info!("✅ Successfully connected to NATS");
+            client
+        };
+
+        // Verify connection by publishing and receiving a test message
+        let test_subject = format!("{}test.{}", nats_prefix, uuid::Uuid::new_v4());
+        info!("Testing connection with subject: {}", test_subject);
+        let test_payload = "connection_test";
+        
+        info!("Creating test subscription...");
+        let mut sub = match nats.subscribe(test_subject.clone()).await {
+            Ok(sub) => {
+                info!("Successfully created test subscription");
+                sub
+            },
+            Err(e) => {
+                error!("Failed to create test subscription: {}", e);
+                return Err(Box::new(CheckerError::Other(e.to_string())));
+            }
+        };
+
+        if let Err(e) = nats.publish(test_subject, test_payload.into()).await {
+            error!("Failed to publish test message: {}", e);
+            return Err(Box::new(CheckerError::Other(e.to_string())));
+        }
+        info!("Test message published");
+
+        // Test the connection with timeout
+        let timeout_duration = std::time::Duration::from_secs(5);
+        match tokio::time::timeout(timeout_duration, sub.next()).await {
+            Ok(Some(msg)) => {
+                if msg.payload == test_payload.as_bytes() {
+                    info!("✅ NATS connection verified with test message");
+                } else {
+                    warn!("⚠️ NATS test message received but payload mismatch");
+                }
+            },
+            Ok(None) => warn!("⚠️ NATS subscription closed unexpectedly"),
+            Err(_) => warn!("⚠️ NATS test message timeout - connection may be unstable"),
+        }
+
+        // Cleanup test subscription
+        drop(sub);
+
+        info!("💓 HTTP checker heartbeat - still alive");
 
         let redis_url = format!(
             "redis://{}:{}",
@@ -97,8 +170,8 @@ impl Worker {
             std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
         );
 
-        let nats = async_nats::connect(&nats_url).await?;
         let redis = redis::Client::open(redis_url.as_str())?;
+        info!("Connected to Redis at {}", redis_url);
 
         Ok(Worker { nats, redis })
     }
@@ -155,10 +228,15 @@ impl Worker {
 
     pub async fn run(&self) -> Result<(), Box<dyn Error>> {
         let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
-        let mut sub = self.nats.subscribe(format!("{}check.http", nats_prefix)).await?;
-        println!("Subscribed to {}check.http", nats_prefix);
+        let subject = format!("{}check.http", nats_prefix);
+        
+        info!("🎯 Attempting to subscribe to NATS subject: {}", subject);
+        let mut sub = self.nats.subscribe(subject.clone()).await?;
+        info!("✅ Successfully subscribed to {}", subject);
+        info!("👂 Listening for HTTP check requests...");
 
         while let Some(msg) = sub.next().await {
+            info!("📥 Received message on subject: {}", subject);
             self.process_check(msg).await;
         }
 
@@ -168,6 +246,9 @@ impl Worker {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    // Initialize tracing
+    tracing_subscriber::fmt::init();
+    
     let worker = Worker::new().await?;
     worker.run().await
 }

@@ -13,3 +13,6 @@ serde_json = "1.0"
 async-nats = "0.33"
 futures-util = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"
+uuid = { version = "1.0", features = ["v4"] }
