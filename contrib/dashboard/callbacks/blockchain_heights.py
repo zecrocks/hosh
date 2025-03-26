@@ -1,9 +1,11 @@
 from dash.dependencies import Input, Output
-from dash import callback_context
+from dash import callback_context, html
 from data.redis_client import fetch_blockchain_heights, clear_explorer_data
 from data.nats_client import publish_http_check_trigger
 import asyncio
 from collections import Counter
+import redis
+import json
 
 def register_callbacks(app):
     """
@@ -73,19 +75,97 @@ def register_callbacks(app):
         return heights_data, columns 
 
     @app.callback(
-        Output("http-trigger-result", "children"),
-        Input("trigger-http-button", "n_clicks"),
+        Output('blockchain-heights', 'children'),
+        Input('interval-component', 'n_intervals')
+    )
+    def update_blockchain_heights(n):
+        redis_client = redis.Redis(host='redis', port=6379, db=0)
+        
+        # Get heights from different checkers
+        btc_heights = get_btc_heights(redis_client)
+        zec_heights = get_zec_heights(redis_client)
+        http_heights = get_http_heights(redis_client)  # Add HTTP heights
+        
+        # Combine all heights
+        all_heights = {
+            **btc_heights,
+            **zec_heights,
+            **http_heights
+        }
+        
+        # Create table rows
+        rows = []
+        for source, data in sorted(all_heights.items()):
+            status_class = 'text-success' if data['status'] == 'online' else 'text-danger'
+            last_updated = data.get('last_updated', 'N/A')  # Handle missing timestamp
+            
+            rows.append(html.Tr([
+                html.Td(source),
+                html.Td(data['height'], className=status_class),
+                html.Td(last_updated),
+                html.Td(data['status'], className=status_class)
+            ]))
+        
+        return html.Table(
+            [html.Thead(
+                html.Tr([
+                    html.Th("Source"),
+                    html.Th("Height"),
+                    html.Th("Last Updated"),
+                    html.Th("Status")
+                ])
+            ),
+            html.Tbody(rows)],
+            className="table table-striped"
+        )
+
+    @app.callback(
+        Output("http-trigger-result", "children"),  # Updated output ID
+        Input("trigger-http-checks", "n_clicks"),   # Updated input ID
         prevent_initial_call=True
     )
-    def trigger_http_checks(n_clicks):
-        if n_clicks:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            success = loop.run_until_complete(publish_http_check_trigger())
-            loop.close()
+    async def trigger_http_checks(n_clicks):
+        if n_clicks is None:
+            return dash.no_update
+        
+        try:
+            nats = NATS()
+            await nats.connect("nats://nats:4222")
             
-            if success:
-                return html.Div("✅ HTTP checks triggered successfully!", className="text-success")
-            else:
-                return html.Div("❌ Failed to trigger HTTP checks. See console for details.", className="text-danger")
-        return "" 
+            # Trigger HTTP checks
+            await nats.publish("hosh.check.http", b'{"url":""}')  # Empty URL triggers all checks
+            await nats.close()
+            
+            return html.Div("✅ HTTP checks triggered successfully!", className="text-success")
+        except Exception as e:
+            return html.Div(f"❌ Failed to trigger checks: {str(e)}", className="text-danger")
+
+def get_http_heights(redis_client):
+    """Get all HTTP explorer heights from Redis"""
+    heights = {}
+    # Scan for all http:* keys
+    cursor = 0
+    pattern = "http:*"
+    
+    while True:
+        cursor, keys = redis_client.scan(cursor, match=pattern)
+        for key in keys:
+            try:
+                # Key format is http:source.chain
+                source_chain = key.decode('utf-8').replace('http:', '')
+                height = redis_client.get(key)
+                if height:
+                    # Parse height (stored as string)
+                    height = int(height.decode('utf-8'))
+                    heights[source_chain] = {
+                        'height': height,
+                        'status': 'online',
+                        'last_updated': None  # HTTP checker doesn't store timestamp in Redis
+                    }
+            except (ValueError, AttributeError) as e:
+                print(f"Error parsing HTTP height for {key}: {e}")
+        
+        if cursor == 0:
+            break
+            
+    return heights 
