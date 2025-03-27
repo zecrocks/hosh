@@ -10,11 +10,12 @@ NATS_URL = f"nats://{NATS_HOST}:{NATS_PORT}"
 NATS_PREFIX = os.environ.get('NATS_PREFIX', 'hosh.')  # Match Rust config default
 
 
-async def publish_http_check_trigger(dry_run=False):
+async def publish_http_check_trigger(url=None, dry_run=False):
     """
     Publish a message to trigger HTTP checks.
     
     Args:
+        url (str, optional): The URL of the block explorer to check. If None, triggers all checks.
         dry_run (bool): If True, only simulate the checks without making actual requests
     """
     try:
@@ -23,7 +24,7 @@ async def publish_http_check_trigger(dry_run=False):
         
         # Prepare the message - exactly matching Rust format
         message = {
-            "url": "",  # Empty URL triggers all checks
+            "url": url or "",  # Use provided URL or empty string to trigger all checks
             "port": 80,
             "check_id": None,
             "user_submitted": False,
@@ -35,7 +36,7 @@ async def publish_http_check_trigger(dry_run=False):
         
         # Publish the message
         await nc.publish(subject, json.dumps(message).encode())
-        print(f"Published HTTP check trigger to NATS subject: {subject} (dry_run={dry_run})")
+        print(f"Published HTTP check trigger to NATS subject: {subject} (url={url}, dry_run={dry_run})")
         
         # Close NATS connection
         await nc.close()
@@ -46,18 +47,19 @@ async def publish_http_check_trigger(dry_run=False):
         return False
 
 
-def trigger_http_checks(dry_run=False):
+def trigger_http_checks(url=None, dry_run=False):
     """
     Trigger HTTP checks via NATS.
     
     Args:
+        url (str, optional): The URL of the block explorer to check. If None, triggers all checks.
         dry_run (bool): If True, only simulate the checks without making actual requests
     """
     try:
         # Run the async function
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        result = loop.run_until_complete(publish_http_check_trigger(dry_run))
+        result = loop.run_until_complete(publish_http_check_trigger(url=url, dry_run=dry_run))
         loop.close()
         return result
     except Exception as e:

@@ -53,7 +53,11 @@ def fetch_data_from_redis():
                     }
                 elif data:
                     # Try to parse as JSON
-                    server = json.loads(data)
+                    try:
+                        server = json.loads(data)
+                    except json.JSONDecodeError:
+                        # If not JSON, treat as a simple value
+                        server = {'value': data}
                 else:
                     print(f"DEBUG: Empty data for key {key}")
                     continue
@@ -81,8 +85,6 @@ def fetch_data_from_redis():
                 else:
                     print(f"DEBUG: Skipping non-dict server data for key {key}")
                     
-            except json.JSONDecodeError as je:
-                print(f"DEBUG: Error decoding JSON for key {key}: {je}")
             except Exception as e:
                 print(f"DEBUG: Unexpected error processing key {key}: {e}")
         

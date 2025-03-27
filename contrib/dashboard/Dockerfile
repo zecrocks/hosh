@@ -12,7 +12,7 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /app
 
 # Copy the application code into the container
-COPY dash_app.py /app/dash_app.py
+COPY . /app/
 
 # Install Python dependencies
 RUN pip install --no-cache-dir \
@@ -27,6 +27,9 @@ RUN pip install --no-cache-dir \
     "diskcache>=5.2.1" \
     "multiprocess>=0.70.12" \
     "psutil>=5.8.0"
+
+# Create cache directory
+RUN mkdir -p /app/cache
 
 # Expose the default port for the Dash app
 EXPOSE 8050

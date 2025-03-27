@@ -1,5 +1,5 @@
 import dash
-from dash import html
+from dash import html, Input, Output, State
 import dash_bootstrap_components as dbc
 from dash.long_callback import DiskcacheLongCallbackManager
 import diskcache
@@ -12,6 +12,7 @@ from callbacks.navigation import register_callbacks as register_navigation_callb
 from callbacks.server_status import register_callbacks as register_server_status_callbacks
 from callbacks.blockchain_heights import register_callbacks as register_blockchain_heights_callbacks
 from callbacks.clickhouse_data import register_callbacks as register_clickhouse_data_callbacks
+from pages.check_triggers import register_page as register_check_triggers_page
 
 # Initialize the Diskcache for long callbacks
 cache = diskcache.Cache("./cache")
@@ -25,6 +26,9 @@ app = dash.Dash(
     suppress_callback_exceptions=True
 )
 app.title = "Electrum Servers Dashboard"
+
+# Register pages
+register_check_triggers_page(app)
 
 # Set the app layout
 app.layout = create_layout()
