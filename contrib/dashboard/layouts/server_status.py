@@ -1,6 +1,30 @@
 from dash import html, dash_table
 import dash_bootstrap_components as dbc
-from data.redis_client import get_server_count_by_type
+from data.clickhouse_client import clickhouse_client
+
+def get_server_count_by_type():
+    """Get count of servers by type from Clickhouse."""
+    if not clickhouse_client:
+        return {"btc": 0, "zec": 0}
+        
+    try:
+        query = """
+            SELECT module, count(DISTINCT hostname) as count
+            FROM targets
+            WHERE module IN ('btc', 'zec')
+            GROUP BY module
+        """
+        results = clickhouse_client.execute(query)
+        
+        counts = {"btc": 0, "zec": 0}
+        for row in results:
+            module, count = row
+            counts[module] = count
+            
+        return counts
+    except Exception as e:
+        print(f"Error getting server counts from Clickhouse: {e}")
+        return {"btc": 0, "zec": 0}
 
 def create_layout():
     """
@@ -23,9 +47,6 @@ def create_layout():
                 inline=True,
                 className="mb-3"
             ),
-            
-            html.Button('Clear Server Data', id='clear-servers-button', n_clicks=0,
-                       className='btn btn-warning me-2'),
             
             # Keep only BTC and ZEC check buttons
             dbc.Button(
@@ -51,11 +72,31 @@ def create_layout():
             html.H2("Light Nodes", className='mb-3'),
             dash_table.DataTable(
                 id='servers-table',
-                columns=[],
+                columns=[
+                    {'name': 'Server', 'id': 'hostname', 'type': 'text'},
+                    {'name': 'Chain', 'id': 'chain', 'type': 'text'},
+                    {'name': 'Status', 'id': 'status', 'type': 'text'},
+                    {'name': 'Block Height', 'id': 'block_height', 'type': 'numeric', 'format': {'specifier': ','}},
+                    {'name': 'Response Time (ms)', 'id': 'response_time_ms', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                    {'name': 'Last Checked', 'id': 'checked_at', 'type': 'text'},
+                    {'name': 'Error', 'id': 'error', 'type': 'text'}
+                ],
                 data=[],
                 style_table={'overflowX': 'auto'},
                 style_cell={'textAlign': 'left', 'padding': '5px'},
                 style_header={'fontWeight': 'bold', 'backgroundColor': '#f4f4f4'},
+                style_data_conditional=[
+                    {
+                        'if': {'column_id': 'Status', 'filter_query': '{Status} eq "online"'},
+                        'backgroundColor': '#dff0d8',
+                        'color': '#3c763d'
+                    },
+                    {
+                        'if': {'column_id': 'Status', 'filter_query': '{Status} eq "offline"'},
+                        'backgroundColor': '#f2dede',
+                        'color': '#a94442'
+                    }
+                ],
                 sort_action='native',
                 filter_action='native',
                 page_action='native',

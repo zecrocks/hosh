@@ -346,4 +346,38 @@ def get_minutes_from_range(time_range):
     }
     value = int(time_range[:-1])
     unit = time_range[-1].lower()
-    return value * units[unit] 
+    return value * units[unit]
+
+
+def get_targets_and_results_counts():
+    """Get counts of targets and results from Clickhouse."""
+    if not clickhouse_client:
+        return {"targets": 0, "results": 0}
+        
+    try:
+        # Get targets count
+        targets_query = """
+            SELECT count(DISTINCT hostname) as count
+            FROM targets
+            WHERE module IN ('btc', 'zec')
+        """
+        targets_result = clickhouse_client.execute(targets_query)
+        targets_count = targets_result[0][0] if targets_result else 0
+        
+        # Get results count from last hour
+        results_query = """
+            SELECT count(*) as count
+            FROM results
+            WHERE checker_module IN ('checker-btc', 'checker-zec')
+            AND checked_at >= now() - INTERVAL 1 HOUR
+        """
+        results_result = clickhouse_client.execute(results_query)
+        results_count = results_result[0][0] if results_result else 0
+        
+        return {
+            "targets": targets_count,
+            "results": results_count
+        }
+    except Exception as e:
+        print(f"Error getting targets and results counts from Clickhouse: {e}")
+        return {"targets": 0, "results": 0} 

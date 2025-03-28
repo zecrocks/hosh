@@ -2,6 +2,7 @@ import os
 import json
 import asyncio
 import nats
+from .clickhouse_client import clickhouse_client
 
 # NATS Configuration
 NATS_HOST = os.environ.get('NATS_HOST', 'nats')
@@ -76,67 +77,73 @@ async def publish_chain_check_trigger(chain_type, specific_host=None):
         specific_host (str, optional): If provided, only trigger check for this host
     """
     try:
+        print(f"Starting chain check trigger for {chain_type}" + (f" (specific host: {specific_host})" if specific_host else ""))
+        
         # Connect to NATS
+        print("Connecting to NATS...")
         nc = await nats.connect(NATS_URL)
+        print("Successfully connected to NATS")
         
-        # Get all keys from Redis for this chain
-        from .redis_client import redis_client
-        
-        if not redis_client:
-            print(f"Redis client not available")
+        if not clickhouse_client:
+            print(f"Clickhouse client not available")
             return False
+        
+        # Query to get unique hostnames for the chain type
+        query = """
+            SELECT DISTINCT hostname
+            FROM targets
+            WHERE module = ?
+            AND last_checked_at < now() - INTERVAL 5 MINUTE
+        """
         
         if specific_host:
-            # Only check the specific host
-            key = f'{chain_type}:{specific_host}'
-            keys = [key] if redis_client.exists(key) else []
+            query += " AND hostname = ?"
+            params = [chain_type, specific_host]
         else:
-            # Get all keys for this chain type
-            keys = redis_client.keys(f'{chain_type}:*')
+            params = [chain_type]
             
-        if not keys:
-            print(f"No {chain_type} servers found in Redis")
+        print(f"Executing Clickhouse query: {query}")
+        print(f"Query parameters: {params}")
+        
+        results = clickhouse_client.execute(query, params)
+        print(f"Query returned {len(results) if results else 0} results")
+        
+        if not results:
+            print(f"No {chain_type} servers found in Clickhouse")
             return False
             
-        # Publish a check request for each key
+        # Publish a check request for each host
         count = 0
-        for key in keys:
-            # Extract host from key (format is "chain:host")
-            host = key.split(':', 1)[1] if ':' in key else key
+        for row in results:
+            hostname = row[0]
+            print(f"Processing host: {hostname}")
             
-            # Get server data from Redis
-            server_data = redis_client.get(key)
-            if not server_data:
-                continue
-                
-            try:
-                data = json.loads(server_data)
-                port = data.get('port', 50002 if chain_type == 'btc' else 9067)
-                
-                # Create message similar to publisher service
-                message = {
-                    "host": host,
-                    "port": port,
-                    "check_id": data.get('check_id'),
-                    "user_submitted": data.get('user_submitted', False)
-                }
-                
-                # Use same subject format as in publisher
-                subject = f"{NATS_PREFIX}check.{chain_type}"
-                
-                # Publish the message
-                await nc.publish(subject, json.dumps(message).encode())
-                count += 1
-                
-            except json.JSONDecodeError:
-                print(f"Invalid JSON for key {key}")
-                continue
+            # Create message similar to publisher service
+            message = {
+                "host": hostname,
+                "port": 50002 if chain_type == 'btc' else 9067,
+                "check_id": None,
+                "user_submitted": False
+            }
+            
+            # Use same subject format as in publisher
+            subject = f"{NATS_PREFIX}check.{chain_type}"
+            
+            print(f"Publishing message to NATS subject {subject}: {message}")
+            
+            # Publish the message
+            await nc.publish(subject, json.dumps(message).encode())
+            count += 1
+            print(f"Successfully published message for {hostname}")
         
         # Close NATS connection
+        print("Closing NATS connection...")
         await nc.close()
         print(f"Published {count} {chain_type.upper()} check triggers to NATS")
         return count > 0
         
     except Exception as e:
         print(f"Error triggering {chain_type} checks: {e}")
+        import traceback
+        print(f"Full traceback: {traceback.format_exc()}")
         return False 

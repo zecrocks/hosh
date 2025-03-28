@@ -1,4 +1,4 @@
-from dash import html, dcc
+from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
 
 # Define block explorer URLs
@@ -51,4 +51,28 @@ def create_layout():
         html.Div([
             html.Div(id="http-trigger-result", className="mt-2")
         ]),
+
+        # Add block explorer results table
+        html.Div([
+            html.H2("Block Explorer Results", className='mb-3'),
+            dash_table.DataTable(
+                id='explorer-heights-table',
+                columns=[
+                    {'name': 'Explorer', 'id': 'explorer', 'type': 'text'},
+                    {'name': 'Chain', 'id': 'chain', 'type': 'text'},
+                    {'name': 'Block Height', 'id': 'block_height', 'type': 'numeric', 'format': {'specifier': ','}},
+                    {'name': 'Response Time (ms)', 'id': 'response_time_ms', 'type': 'numeric', 'format': {'specifier': '.1f'}},
+                    {'name': 'Checked At', 'id': 'checked_at', 'type': 'text'},
+                    {'name': 'Error', 'id': 'error', 'type': 'text'}
+                ],
+                data=[],
+                style_table={'overflowX': 'auto'},
+                style_cell={'textAlign': 'left', 'padding': '5px'},
+                style_header={'fontWeight': 'bold', 'backgroundColor': '#f4f4f4'},
+                sort_action='native',
+                sort_mode='multi',
+                page_size=20,
+                filter_action='native',
+            ),
+        ], className="mt-4"),
     ]) 
