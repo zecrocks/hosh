@@ -107,6 +107,29 @@ services:
       # checker-btc: # TODO: Re-enable after implementing peer discovery
       #   condition: service_healthy
 
+  discovery-dev:
+    build:
+      context: ./discovery
+      dockerfile: dev.Dockerfile
+    image: hosh/discovery-dev
+    profiles:
+      - dev
+    volumes:
+      - ./discovery:/usr/src/app
+      - ./discovery/target:/usr/src/app/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=debug
+      - DISCOVERY_INTERVAL=3600
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    depends_on:
+      chronicler:
+        condition: service_healthy
+
   publisher:
     build: 
       context: ./publisher
