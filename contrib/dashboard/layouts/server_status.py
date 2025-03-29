@@ -9,8 +9,10 @@ def get_server_count_by_type():
         
     try:
         query = """
-            SELECT module, count(DISTINCT hostname) as count
-            FROM targets
+            SELECT 
+                module,
+                count(DISTINCT hostname) as count
+            FROM hosh.targets
             WHERE module IN ('btc', 'zec')
             GROUP BY module
         """
@@ -19,7 +21,8 @@ def get_server_count_by_type():
         counts = {"btc": 0, "zec": 0}
         for row in results:
             module, count = row
-            counts[module] = count
+            if module in counts:
+                counts[module] = count
             
         return counts
     except Exception as e:

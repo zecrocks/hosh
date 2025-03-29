@@ -21,8 +21,9 @@ def register_callbacks(app, long_callback_manager):
          Output("zec-trigger-result", "children")],
         [Input("trigger-btc-button", "n_clicks"),
          Input("trigger-zec-button", "n_clicks"),
-         Input("auto-refresh-interval", "n_intervals")],
-        [State("network-filter", "value")]
+         Input("auto-refresh-interval", "n_intervals"),
+         Input("network-filter", "value")],
+        []
     )
     def update_server_status(btc_clicks, zec_clicks, n_intervals, network_filter):
         """
@@ -72,21 +73,18 @@ def register_callbacks(app, long_callback_manager):
                 SELECT 
                     hostname,
                     checker_module as chain,
-                    CASE 
-                        WHEN status = 'success' THEN 'online'
-                        ELSE 'offline'
-                    END as status,
-                    JSONExtractString(response_data, 'block_height') as block_height,
+                    status,
+                    JSONExtractString(response_data, 'height') as block_height,
                     ping_ms as response_time_ms,
                     checked_at,
                     JSONExtractString(response_data, 'error') as error
                 FROM results
-                WHERE checker_module IN ('checker-btc', 'checker-zec')
+                WHERE checker_module IN ('btc', 'zec')
                 AND checked_at >= now() - INTERVAL 1 HOUR
             """
             
             if network_filter != 'all':
-                query += f" AND checker_module = 'checker-{network_filter}'"
+                query += f" AND checker_module = '{network_filter}'"
                 
             query += " ORDER BY checked_at DESC"
             

@@ -3,6 +3,7 @@ import json
 import asyncio
 import nats
 from .clickhouse_client import clickhouse_client
+from datetime import datetime, timezone
 
 # NATS Configuration
 NATS_HOST = os.environ.get('NATS_HOST', 'nats')
@@ -89,23 +90,19 @@ async def publish_chain_check_trigger(chain_type, specific_host=None):
             return False
         
         # Query to get unique hostnames for the chain type
-        query = """
+        query = f"""
             SELECT DISTINCT hostname
             FROM targets
-            WHERE module = ?
+            WHERE module = '{chain_type}'
             AND last_checked_at < now() - INTERVAL 5 MINUTE
         """
         
         if specific_host:
-            query += " AND hostname = ?"
-            params = [chain_type, specific_host]
-        else:
-            params = [chain_type]
+            query += f" AND hostname = '{specific_host}'"
             
         print(f"Executing Clickhouse query: {query}")
-        print(f"Query parameters: {params}")
         
-        results = clickhouse_client.execute(query, params)
+        results = clickhouse_client.execute(query)
         print(f"Query returned {len(results) if results else 0} results")
         
         if not results:
@@ -114,36 +111,30 @@ async def publish_chain_check_trigger(chain_type, specific_host=None):
             
         # Publish a check request for each host
         count = 0
-        for row in results:
-            hostname = row[0]
-            print(f"Processing host: {hostname}")
-            
-            # Create message similar to publisher service
-            message = {
-                "host": hostname,
-                "port": 50002 if chain_type == 'btc' else 9067,
-                "check_id": None,
-                "user_submitted": False
-            }
-            
-            # Use same subject format as in publisher
-            subject = f"{NATS_PREFIX}check.{chain_type}"
-            
-            print(f"Publishing message to NATS subject {subject}: {message}")
-            
-            # Publish the message
-            await nc.publish(subject, json.dumps(message).encode())
-            count += 1
-            print(f"Successfully published message for {hostname}")
-        
-        # Close NATS connection
-        print("Closing NATS connection...")
+        for (hostname,) in results:
+            try:
+                # Create message matching the CheckRequest struct
+                message = {
+                    "host": hostname,
+                    "port": 50002 if chain_type == 'btc' else 9067,
+                    "version": "unknown",
+                    "check_id": None,
+                    "user_submitted": False
+                }
+                
+                subject = f"hosh.check.{chain_type}"
+                await nc.publish(subject, json.dumps(message).encode())
+                count += 1
+                print(f"Published check request for {hostname}")
+                
+            except Exception as e:
+                print(f"Error publishing check request for {hostname}: {e}")
+                continue
+                
+        print(f"Successfully published {count} check requests")
         await nc.close()
-        print(f"Published {count} {chain_type.upper()} check triggers to NATS")
-        return count > 0
+        return True
         
     except Exception as e:
         print(f"Error triggering {chain_type} checks: {e}")
-        import traceback
-        print(f"Full traceback: {traceback.format_exc()}")
         return False 
