@@ -1,14 +1,17 @@
 use scraper::{Html, Selector};
 use std::collections::HashMap;
 use crate::types::BlockchainInfo;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 pub async fn get_regular_blockchain_data(client: &reqwest::Client) -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error + Send + Sync>> {
     let mut blockchain_data = HashMap::new();
     
     let url = "https://blockchair.com";
-    let response = client.get(url).send().await?.text().await?;
-    let document = Html::parse_document(&response);
+    let start_time = Instant::now();
+    let response = client.get(url).send().await?;
+    let response_time = start_time.elapsed().as_secs_f32() * 1000.0; // Convert to milliseconds
+    let text = response.text().await?;
+    let document = Html::parse_document(&text);
     
     // Selectors
     let card_selector = Selector::parse("a.blockchain-card").unwrap();
@@ -50,6 +53,7 @@ pub async fn get_regular_blockchain_data(client: &reqwest::Client) -> Result<Has
                 blockchain_data.insert(endpoint.clone(), BlockchainInfo {
                     height,
                     name: endpoint.to_string(),
+                    response_time_ms: response_time,
                     extra,
                 });
             }
@@ -68,7 +72,7 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
     
     let regular_client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .timeout(Duration::from_secs(10))
+        .timeout(Duration::from_secs(30))
         .build()?;
 
     println!("Created clearnet client, making request...");

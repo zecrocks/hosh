@@ -10,6 +10,8 @@ use reqwest;
 use tracing::{error, info};
 use std::process::Command;
 use tracing_subscriber;
+use std::collections::HashMap;
+use crate::types::BlockchainInfo;
 
 mod blockchair;
 mod blockchaindotcom;
@@ -133,7 +135,7 @@ impl Worker {
             .pool_idle_timeout(std::time::Duration::from_secs(300))
             .pool_max_idle_per_host(32)
             .tcp_keepalive(std::time::Duration::from_secs(60))
-            .timeout(std::time::Duration::from_secs(30))
+            .timeout(std::time::Duration::from_secs(60))
             .build()?;
 
         Ok(Worker { nats, redis, clickhouse: ClickhouseConfig::from_env(), http_client })
@@ -168,71 +170,62 @@ impl Worker {
             }
         };
 
-        info!("Starting concurrent blockchain info fetching...");
+        info!("Starting blockchain info fetching for URL: {}", check_request.url);
         
-        // Group explorers by domain
-        let explorers = vec![
-            // Blockchair (clearnet and onion)
-            ("blockchair", blockchair::get_blockchain_info().await),
-            ("blockchair-onion", blockchair::get_onion_blockchain_info().await),
-            // Other explorers (clearnet only)
-            ("blockstream", blockstream::get_blockchain_info().await),
-            ("zecrocks", zecrocks::get_blockchain_info().await),
-            ("blockchain", blockchaindotcom::get_blockchain_info().await),
-            ("zcashexplorer", zcashexplorer::get_blockchain_info().await),
-        ];
+        // Determine which explorer to check based on URL
+        let (explorer_name, explorer_result): (String, Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>) = if check_request.url.contains("blockchair.com") {
+            ("blockchair".to_string(), blockchair::get_blockchain_info().await)
+        } else if check_request.url.contains("blkchair") && check_request.url.contains(".onion") {
+            ("blockchair-onion".to_string(), blockchair::get_onion_blockchain_info().await)
+        } else if check_request.url.contains("blockstream.info") {
+            ("blockstream".to_string(), blockstream::get_blockchain_info().await)
+        } else if check_request.url.contains("zec.rocks") {
+            ("zecrocks".to_string(), zecrocks::get_blockchain_info().await)
+        } else if check_request.url.contains("blockchain.com") {
+            ("blockchain".to_string(), blockchaindotcom::get_blockchain_info().await)
+        } else if check_request.url.contains("zcashexplorer.app") {
+            ("zcashexplorer".to_string(), zcashexplorer::get_blockchain_info().await)
+        } else if check_request.url.contains("mempool.space") {
+            ("mempool".to_string(), mempool::get_blockchain_info().await)
+        } else {
+            error!("Unknown explorer URL: {}", check_request.url);
+            return;
+        };
 
-        let mut total_insertions = 0;
-        let mut total_errors = 0;
-
-        // Process all results
-        for (source, result) in explorers {
-            match result {
-                Ok(data) => {
-                    for (chain_id, info) in data {
-                        if let Some(height) = info.height {
-                            let redis_key = format!("http:{}.{}", source, chain_id);
-                            match con.set::<_, _, ()>(&redis_key, height) {
-                                Ok(_) => {
-                                    let result = CheckResult {
-                                        host: format!("{}.{}", source, chain_id),
-                                        port: check_request.port,
-                                        height,
-                                        status: "online".to_string(),
-                                        error: None,
-                                        last_updated: Utc::now(),
-                                        ping: 0.0,
-                                        check_id: check_request.check_id.clone(),
-                                        user_submitted: check_request.user_submitted,
-                                    };
-                                    
-                                    if let Err(e) = self.publish_to_clickhouse(source, &chain_id, &result).await {
-                                        error!("Failed to publish to ClickHouse for {}.{}: {}", source, chain_id, e);
-                                        total_errors += 1;
-                                    } else {
-                                        total_insertions += 1;
-                                    }
+        match explorer_result {
+            Ok(data) => {
+                for (chain_id, info) in data.iter() {
+                    if let Some(height) = info.height {
+                        let redis_key = format!("http:{}.{}", chain_id, chain_id);
+                        match con.set::<_, _, ()>(&redis_key, height) {
+                            Ok(_) => {
+                                let result = CheckResult {
+                                    host: format!("{}.{}", chain_id, chain_id),
+                                    port: check_request.port,
+                                    height,
+                                    status: "online".to_string(),
+                                    error: None,
+                                    last_updated: Utc::now(),
+                                    ping: info.response_time_ms as f64,
+                                    check_id: check_request.check_id.clone(),
+                                    user_submitted: check_request.user_submitted,
+                                };
+                                
+                                if let Err(e) = self.publish_to_clickhouse(&explorer_name, chain_id, &result).await {
+                                    error!("Failed to publish to ClickHouse for {}.{}: {}", explorer_name, chain_id, e);
                                 }
-                                Err(e) => {
-                                    error!("Failed to set Redis key {}: {}", redis_key, e);
-                                    total_errors += 1;
-                                }
+                            }
+                            Err(e) => {
+                                error!("Failed to set Redis key {}: {}", redis_key, e);
                             }
                         }
                     }
                 }
-                Err(e) => {
-                    error!("Failed to fetch from {}: {}", source, e);
-                    total_errors += 1;
-                }
+            }
+            Err(e) => {
+                error!("Failed to fetch blockchain info: {}", e);
             }
         }
-
-        info!(
-            total_insertions = total_insertions,
-            total_errors = total_errors,
-            "Completed HTTP check cycle"
-        );
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -314,44 +307,35 @@ impl Worker {
         }
         info!("✅ Target insert successful");
 
-        // Insert the check result
-        info!("Inserting check result for {}.{} (height: {})", source, chain_id, result.height);
-        let result_query = format!(
-            "INSERT INTO {}.results 
-             (target_id, checked_at, hostname, resolved_ip, ip_version, 
-              checker_module, status, ping_ms, checker_location, checker_id, response_data, user_submitted) 
+        // Insert the block height data
+        info!("Inserting block height data for {}.{} (height: {})", source, chain_id, result.height);
+        let height_query = format!(
+            "INSERT INTO {}.block_explorer_heights 
+             (checked_at, explorer, chain, block_height, response_time_ms, error, dry_run) 
              VALUES 
-             ('{}', now(), '{}', '', 4, 'http', '{}', {}, 'default', '{}', '{}', {})",
+             (now(), '{}', '{}', {}, {}, '{}', {})",
             self.clickhouse.database,
-            target_id,
-            escaped_host,
-            if result.error.is_some() { "offline" } else { "online" },
+            source,
+            chain_id,
+            result.height,
             result.ping,
-            Uuid::new_v4(),
-            serde_json::to_string(&result)?.replace("'", "\\'"),
+            result.error.as_deref().unwrap_or("").replace("'", "\\'"),
             result.user_submitted.unwrap_or(false)
         );
 
         let response = self.http_client.post(&self.clickhouse.url)
             .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
             .header("Content-Type", "text/plain")
-            .body(result_query.clone())
+            .body(height_query)
             .send()
             .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
-            error!("❌ ClickHouse result insert failed: {}", error_text);
-            return Err(format!("ClickHouse error: {}", error_text).into());
+            error!("❌ ClickHouse block height insert failed: {}", error_text);
+            return Err(format!("ClickHouse block height insert error: {}", error_text).into());
         }
-
-        info!(
-            "✅ Successfully published to ClickHouse: url={} chain={} height={} check_id={}",
-            format!("http:{}.{}", source, chain_id),
-            chain_id,
-            result.height,
-            result.check_id.as_deref().unwrap_or("none")
-        );
+        info!("✅ Block height data insert successful");
 
         Ok(())
     }

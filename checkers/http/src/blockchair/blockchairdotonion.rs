@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use crate::types::BlockchainInfo;
 use reqwest::Proxy;
 use std::env;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::error::Error;
 
 pub async fn get_blockchain_data(client: &reqwest::Client, onion_url: &str) -> Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>> {
@@ -20,7 +20,9 @@ pub async fn get_blockchain_data(client: &reqwest::Client, onion_url: &str) -> R
                 Ok(response) => {
                     println!("🧅 Got response from onion site with status: {}", response.status());
                     if response.status().is_success() {
+                        let start_time = Instant::now();
                         let text = response.text().await?;
+                        let response_time = start_time.elapsed().as_secs_f32() * 1000.0; // Convert to milliseconds
                         println!("🧅 Successfully got HTML from onion site, length: {} bytes", text.len());
 
                         let document = Html::parse_document(&text);
@@ -30,7 +32,7 @@ pub async fn get_blockchain_data(client: &reqwest::Client, onion_url: &str) -> R
                         for card in document.select(&card_selector) {
                             if let Some(href) = card.value().attr("href") {
                                 let endpoint = href
-                                    .replace("http://blkchairbknpn73cfjhevhla7rkp4ed5gg2knctvv7it4lioy22defid.onion/", "")
+                                    .replace(&format!("{}/", onion_url), "")
                                     .replace("https://blockchair.com/", "");
                                 
                                 if !endpoint.is_empty() {
@@ -43,6 +45,7 @@ pub async fn get_blockchain_data(client: &reqwest::Client, onion_url: &str) -> R
                                         blockchain_data.insert(endpoint.clone(), BlockchainInfo {
                                             height: Some(height),
                                             name: endpoint.clone(),
+                                            response_time_ms: response_time,
                                             extra: HashMap::new(),
                                         });
                                     }
@@ -125,6 +128,7 @@ pub fn create_client() -> Result<reqwest::Client, Box<dyn Error + Send + Sync>> 
 // Modify get_onion_url to return None if URL not found
 async fn get_onion_url(client: &reqwest::Client) -> Result<Option<String>, Box<dyn Error + Send + Sync>> {
     let url = "https://blockchair.com";
+    println!("🧅 Fetching onion URL from cleartext site: {}", url);
     let response = client.get(url).send().await?.text().await?;
     let document = Html::parse_document(&response);
     
@@ -134,11 +138,13 @@ async fn get_onion_url(client: &reqwest::Client) -> Result<Option<String>, Box<d
     for link in document.select(&link_selector) {
         if link.text().collect::<String>().contains("Blockchair Onion v3 URL") {
             if let Some(href) = link.value().attr("href") {
+                println!("🧅 Found onion URL in cleartext site footer: {}", href);
                 return Ok(Some(href.to_string()));
             }
         }
     }
     
+    println!("🧅 No onion URL found in cleartext site footer");
     Ok(None)
 }
 
