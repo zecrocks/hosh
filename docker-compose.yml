@@ -33,8 +33,6 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
-        condition: service_healthy
       nats:
         condition: service_healthy
       tor:
@@ -61,8 +59,6 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
-        condition: service_healthy
       nats:
         condition: service_healthy
       tor:
@@ -102,7 +98,7 @@ services:
       - RUST_LOG=info
       - DISCOVERY_INTERVAL=3600
     depends_on:
-      redis:
+      chronicler:
         condition: service_healthy
       # checker-btc: # TODO: Re-enable after implementing peer discovery
       #   condition: service_healthy
@@ -149,8 +145,6 @@ services:
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
-        condition: service_healthy
       nats:
         condition: service_healthy
       checker-btc:
@@ -172,8 +166,6 @@ services:
     depends_on:
       nats:
         condition: service_healthy
-      redis:
-        condition: service_healthy
 
   checker-http:
     build:
@@ -186,8 +178,6 @@ services:
       - TOR_PROXY_HOST=tor
     depends_on:
       nats:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       tor:
         condition: service_healthy
@@ -215,8 +205,6 @@ services:
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
       nats:
-        condition: service_healthy
-      redis:
         condition: service_healthy
       tor:
         condition: service_healthy
@@ -249,8 +237,40 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
+      nats:
         condition: service_healthy
+      tor:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
+
+  checker-btc-user-dev:
+    build:
+      context: ./checkers/btc
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-btc-dev
+    profiles:
+      - dev
+    volumes:
+      - ./checkers/btc:/usr/src/btc
+      - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      RUST_LOG: debug
+      RUN_MODE: worker
+      MAX_CONCURRENT_CHECKS: 1
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NATS_URL: "nats://nats:4222"
+      NATS_SUBJECT: "hosh.check.btc.user"
+      TOR_PROXY_HOST: tor
+      TOR_PROXY_PORT: 9050
+      CLICKHOUSE_HOST: chronicler
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    depends_on:
       nats:
         condition: service_healthy
       tor:
@@ -281,8 +301,6 @@ services:
       CLICKHOUSE_USER: ${CLICKHOUSE_USER}
       CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
-        condition: service_healthy
       nats:
         condition: service_healthy
       chronicler:
@@ -337,7 +355,9 @@ services:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
     depends_on:
-      redis:
+      chronicler:
+        condition: service_healthy
+      nats:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080"]
@@ -413,7 +433,7 @@ services:
       - RUST_LOG=debug
       - NATS_URL=nats://nats:4222
     depends_on:
-      redis:
+      chronicler:
         condition: service_healthy
       nats:
         condition: service_healthy
@@ -440,8 +460,6 @@ services:
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
-        condition: service_healthy
       nats:
         condition: service_healthy
       chronicler:
