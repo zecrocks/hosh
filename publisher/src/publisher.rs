@@ -92,29 +92,53 @@ impl Publisher {
         let mut published = 0;
         
         if module == "http" {
-            // For HTTP, group targets by source and only publish one check per source
-            let mut sources = std::collections::HashMap::new();
+            // Track unique explorer URLs to avoid duplicates
+            let mut published_urls = std::collections::HashSet::new();
+
             for target in targets {
-                if let Some(source) = target.hostname.split('.').next() {
-                    // Store the first target_id we find for each source
-                    sources.entry(source.to_string())
-                        .or_insert_with(|| target.target_id.clone());
-                }
-            }
-            
-            let source_count = sources.len();
-            for (source, target_id) in &sources {
-                if let Err(e) = clickhouse.update_last_queued(target_id).await {
+                if let Err(e) = clickhouse.update_last_queued(&target.target_id).await {
                     error!(%e, "Failed to update last_queued_at");
+                    continue;
+                }
+
+                // Split hostname into explorer and chain parts
+                let parts: Vec<&str> = target.hostname.split('.').collect();
+                let (explorer, _chain) = match parts.as_slice() {
+                    [explorer, chain] => (*explorer, *chain),
+                    _ => {
+                        warn!("Invalid hostname format: {}", target.hostname);
+                        continue;
+                    }
+                };
+
+                // Convert hostname to proper URL format
+                let url = match explorer {
+                    // Main block explorers
+                    "blockchair" => "https://blockchair.com",
+                    "blockchair-onion" => "http://blkchairbknpn73cfjhevhla7rkp4ed5gg2knctvv7it4lioy22defid.onion",
+                    "blockstream" => "https://blockstream.info",
+                    "blockchain" => "https://blockchain.com",
+                    "zecrocks" => "https://explorer.zec.rocks",
+                    "zcashexplorer" => "https://mainnet.zcashexplorer.app",
+                    _ => {
+                        debug!("Skipping unknown explorer: {}", explorer);
+                        continue;
+                    }
+                };
+
+                // Skip if we've already published a check for this URL
+                if !published_urls.insert(url) {
+                    debug!("Skipping duplicate explorer URL: {}", url);
                     continue;
                 }
 
                 let subject = format!("{}check.{}", config.nats_prefix, module);
                 let payload = serde_json::json!({
-                    "url": source,
-                    "port": 80,  // Default HTTP port
-                    "check_id": target_id,
-                    "user_submitted": false
+                    "url": url,
+                    "port": 80,
+                    "check_id": target.target_id,
+                    "user_submitted": false,
+                    "dry_run": false
                 });
                 
                 if let Err(e) = nats.publish(subject, payload.to_string().into()).await {
@@ -123,24 +147,18 @@ impl Publisher {
                 }
 
                 published += 1;
-                if published % 10 == 0 || published == source_count {
-                    info!(
-                        target = %source,
-                        module,
-                        "Published check request ({}/{})", 
-                        published, 
-                        source_count
-                    );
-                }
+                info!(
+                    url = %url,
+                    module,
+                    "Published check request for explorer", 
+                );
             }
             
             info!(
                 module,
-                total = source_count,
-                published = published,
-                "✅ Published {}/{} checks",
-                published,
-                source_count
+                total = published,
+                "✅ Published checks for {} unique explorers",
+                published
             );
         } else {
             // For other modules, process each target individually
