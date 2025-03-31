@@ -52,7 +52,6 @@ struct ServerData {
 #[derive(Clone)]
 pub struct Worker {
     nats: NatsClient,
-    redis: RedisClient,
     clickhouse_url: String,
     clickhouse_user: String,
     clickhouse_password: String,
@@ -69,8 +68,6 @@ impl Worker {
         
         info!("🚀 Initializing BTC Worker with NATS URL: {}", nats_url);
         
-        let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
-        let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
         let max_concurrent_checks = env::var("MAX_CONCURRENT_CHECKS")
             .unwrap_or_else(|_| "3".to_string())
             .parse()
@@ -87,18 +84,16 @@ impl Worker {
         let clickhouse_url = format!("http://{}:{}", clickhouse_host, clickhouse_port);
 
         let nats = async_nats::connect(&nats_url).await?;
-        let redis = redis::Client::open(format!("redis://{}:{}", redis_host, redis_port))?;
         
-        // Create a pooled HTTP client with similar settings to the ZEC checker
+        // Create a pooled HTTP client
         let http_client = reqwest::Client::builder()
-            .pool_idle_timeout(std::time::Duration::from_secs(300))  // 5 minute idle timeout
-            .pool_max_idle_per_host(32)  // Allow up to 32 idle connections per host
-            .tcp_keepalive(std::time::Duration::from_secs(60))  // TCP keepalive every 60 seconds
+            .pool_idle_timeout(std::time::Duration::from_secs(300))
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
             .build()?;
 
         Ok(Worker {
             nats,
-            redis,
             clickhouse_url,
             clickhouse_user,
             clickhouse_password,
@@ -338,36 +333,9 @@ impl Worker {
         );
 
         if let Some(server_data) = self.query_server_data(&request).await {
-            // First publish to ClickHouse
+            // Store data in ClickHouse
             if let Err(e) = self.store_check_data(&request, &server_data).await {
                 error!(%e, "Failed to publish data to ClickHouse");
-            }
-            
-            // Then publish to Redis as before
-            let redis_key = format!("btc:{}", request.host);
-            let redis_value = serde_json::to_string(&server_data).unwrap();
-
-            let mut redis_conn = match self.redis.get_async_connection().await {
-                Ok(conn) => conn,
-                Err(e) => {
-                    error!(%e, "Failed to connect to Redis");
-                    return;
-                }
-            };
-
-            if let Err(e) = redis::cmd("SET")
-                .arg(&redis_key)
-                .arg(&redis_value)
-                .query_async::<_, ()>(&mut redis_conn)
-                .await
-            {
-                error!(%e, "Failed to save data to Redis");
-            } else {
-                info!(
-                    host = %request.host,
-                    check_id = %request.get_check_id(),
-                    "Successfully saved check data to Redis"
-                );
             }
         }
     }
