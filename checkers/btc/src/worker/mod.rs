@@ -1,5 +1,4 @@
 use async_nats::Client as NatsClient;
-use redis::Client as RedisClient;
 use serde::{Deserialize, Serialize};
 use std::env;
 use futures_util::stream::StreamExt;
@@ -310,32 +309,77 @@ impl Worker {
             }
         };
 
-        let request = match serde_json::from_str::<CheckRequest>(&data) {
-            Ok(req) => {
-                if !req.is_valid() {
-                    error!(?req, "Invalid request - missing required fields");
+        // Try to parse the JSON directly, in case there are formatting issues
+        match serde_json::from_str::<serde_json::Value>(&data) {
+            Ok(value) => {
+                debug!("Parsed as generic JSON value: {:?}", value);
+                
+                // Extract fields manually
+                let host = value.get("host")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                    
+                let hostname = value.get("hostname")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .trim()
+                    .to_string();
+                    
+                // Use hostname as fallback if host is empty
+                let final_host = if host.is_empty() { hostname } else { host };
+                
+                if final_host.is_empty() {
+                    error!("Both host and hostname are empty in message: {}", data);
                     return;
                 }
-                debug!(?req, "Successfully parsed request");
-                req
-            }
+                
+                let port = value.get("port")
+                    .and_then(|v| v.as_u64())
+                    .unwrap_or(50002) as u16;
+                    
+                let version = value.get("version")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown")
+                    .to_string();
+                    
+                let check_id = value.get("check_id")
+                    .and_then(|v| v.as_str())
+                    .or_else(|| value.get("target_id").and_then(|v| v.as_str()))
+                    .map(|s| s.to_string());
+                    
+                let user_submitted = value.get("user_submitted")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+                    
+                let request = CheckRequest {
+                    host: final_host,
+                    port,
+                    version,
+                    check_id,
+                    user_submitted,
+                };
+                
+                debug!("Manually constructed CheckRequest: {:?}", request);
+                
+                info!(
+                    host = %request.host,
+                    check_id = %request.get_check_id(),
+                    user_submitted = %request.user_submitted,
+                    "Processing check request"
+                );
+
+                if let Some(server_data) = self.query_server_data(&request).await {
+                    // Store data in ClickHouse
+                    if let Err(e) = self.store_check_data(&request, &server_data).await {
+                        error!(%e, "Failed to publish data to ClickHouse");
+                    }
+                }
+            },
             Err(e) => {
-                error!(%e, data = %data, "Failed to parse check request");
+                error!("Failed to parse JSON: {} - Data: {}", e, data);
                 return;
-            }
-        };
-
-        info!(
-            host = %request.host,
-            check_id = %request.get_check_id(),
-            user_submitted = %request.user_submitted,
-            "Processing check request"
-        );
-
-        if let Some(server_data) = self.query_server_data(&request).await {
-            // Store data in ClickHouse
-            if let Err(e) = self.store_check_data(&request, &server_data).await {
-                error!(%e, "Failed to publish data to ClickHouse");
             }
         }
     }
@@ -392,6 +436,11 @@ impl Worker {
 
 impl CheckRequest {
     fn is_valid(&self) -> bool {
+        // If the host field is empty but we have a check_id/target_id, we'll consider it valid
+        if self.host.is_empty() {
+            return false;
+        }
+        
         if self.user_submitted {
             self.check_id.is_some() && !self.host.is_empty()
         } else {
