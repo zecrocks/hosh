@@ -37,7 +37,7 @@ impl Config {
             ),
             clickhouse_db: env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".into()),
             clickhouse_user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".into()),
-            clickhouse_password: env::var("CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "chron".into()),
+            clickhouse_password: env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set"),
         })
     }
 

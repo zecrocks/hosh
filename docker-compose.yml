@@ -21,8 +21,6 @@ services:
     environment:
       RUST_LOG: info
       RUN_MODE: worker
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
       NATS_SUBJECT: "hosh.check.btc"
       TOR_PROXY_HOST: tor
@@ -47,8 +45,6 @@ services:
       RUST_LOG: info
       RUN_MODE: worker
       MAX_CONCURRENT_CHECKS: 1
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
       NATS_SUBJECT: "hosh.check.btc.user"
       TOR_PROXY_HOST: tor
@@ -73,7 +69,6 @@ services:
     ports:
       - "8050:8050"
     profiles:
-      - disabled
       - dev
     volumes:
       - ./contrib/dashboard:/app
@@ -86,7 +81,6 @@ services:
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
-      - redis
       - chronicler
 
   discovery:
@@ -137,8 +131,6 @@ services:
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
       - NATS_URL=${NATS_URL:-nats://nats:4222}
       - NATS_PREFIX=${NATS_PREFIX:-hosh.}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
       - CLICKHOUSE_HOST=chronicler
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
@@ -161,8 +153,6 @@ services:
     environment:
       NATS_HOST: nats
       NATS_PORT: 4222
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
     depends_on:
       nats:
         condition: service_healthy
@@ -173,7 +163,6 @@ services:
       dockerfile: Dockerfile
     image: hosh/checker-http
     environment:
-      - REDIS_HOST=redis
       - NATS_HOST=nats
       - TOR_PROXY_HOST=tor
     depends_on:
@@ -194,7 +183,6 @@ services:
       - ./checkers/http/target:/usr/src/app/target  # Persist build artifacts
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      - REDIS_HOST=redis
       - NATS_HOST=nats
       - TOR_PROXY_HOST=tor
       - RUST_LOG=debug
@@ -225,8 +213,6 @@ services:
     environment:
       RUST_LOG: debug
       RUN_MODE: worker
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
       NATS_SUBJECT: "hosh.check.btc"
       TOR_PROXY_HOST: tor
@@ -290,9 +276,7 @@ services:
       - ./checkers/zec/target:/usr/src/zec/target  # Persist build artifacts
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      RUST_LOG: debug
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      RUST_LOG: trace
       NATS_HOST: nats
       NATS_PORT: 4222
       CLICKHOUSE_HOST: chronicler
@@ -320,6 +304,8 @@ services:
       - redis-data:/data
     command: redis-server --appendonly yes
     restart: always
+    profiles:
+      - dev
 
   tor:
     image: osminogin/tor-simple
@@ -352,8 +338,13 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - NATS_HOST=nats
+      - NATS_PORT=4222
     depends_on:
       chronicler:
         condition: service_healthy

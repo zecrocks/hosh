@@ -77,7 +77,7 @@ impl Worker {
         let clickhouse_port = env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".to_string()); // HTTP port
         let clickhouse_db = env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".to_string());
         let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".to_string());
-        let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "chron".to_string());
+        let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set");
 
         // Create ClickHouse URL
         let clickhouse_url = format!("http://{}:{}", clickhouse_host, clickhouse_port);

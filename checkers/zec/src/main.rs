@@ -74,7 +74,7 @@ impl ClickhouseConfig {
                 env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".into())
             ),
             user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".into()),
-            password: env::var("CLICKHOUSE_PASSWORD").unwrap_or_else(|_| "chron".into()),
+            password: env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set"),
             database: env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".into()),
         }
     }
