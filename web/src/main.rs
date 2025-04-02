@@ -3,12 +3,11 @@ use std::collections::HashMap;
 use actix_web::{get, post, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
 use actix_files as fs;
 use askama::Template;
-use redis::Commands;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
-use rand::Rng;
+use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::FmtSubscriber;
 use reqwest;
@@ -267,10 +266,6 @@ impl SafeNetwork {
             _ => None
         }
     }
-    
-    fn redis_prefix(&self) -> String {
-        format!("{}:*", self.0)
-    }
 }
 
 #[derive(Template)]
@@ -495,8 +490,6 @@ impl ClickhouseConfig {
 struct Worker {
     #[allow(dead_code)]
     nats: async_nats::Client,
-    #[allow(dead_code)]
-    redis: redis::Client,  // Keep Redis for now for backward compatibility
     clickhouse: ClickhouseConfig,
     http_client: reqwest::Client,
 }
@@ -1096,11 +1089,19 @@ async fn check_server(
         "check_id": check_id
     });
 
-    info!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}",
-        form.url, form.port.unwrap_or(50002), check_id
+    info!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}, user_submitted: {}",
+        form.url, form.port.unwrap_or(50002), check_id, is_user_submitted
     );
 
-    let nats = nats::connect("nats://nats:4222").map_err(|e| {
+    // Log the full JSON payload for debugging
+    info!("📦 Check request payload: {}", serde_json::to_string(&check_request).unwrap_or_default());
+
+    let nats_url = format!("nats://{}:{}",
+        env::var("NATS_HOST").unwrap_or_else(|_| "nats".to_string()),
+        env::var("NATS_PORT").unwrap_or_else(|_| "4222".to_string())
+    );
+
+    let nats = async_nats::connect(&nats_url).await.map_err(|e| {
         error!("NATS connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to connect to NATS")
     })?;
@@ -1114,7 +1115,7 @@ async fn check_server(
     };
     info!("📤 Publishing to NATS subject: {}", subject);
     
-    nats.publish(&subject, &serde_json::to_vec(&check_request).unwrap())
+    nats.publish(subject, serde_json::to_vec(&check_request).unwrap().into()).await
         .map_err(|e| {
             error!("NATS publish error: {}", e);
             actix_web::error::ErrorInternalServerError("Failed to publish check request")
@@ -1149,6 +1150,9 @@ async fn check_result(
     let checking_url = query.host.clone();
     let checking_port = query.port;
 
+    info!("🔍 Looking up check result - network: {}, check_id: {}, host: {:?}, port: {:?}",
+        network_str, check_id, checking_url, checking_port);
+
     // Query ClickHouse for the check result
     let query = format!(
         r#"
@@ -1176,6 +1180,8 @@ async fn check_result(
         check_id
     );
 
+    info!("🔎 ClickHouse query for result: {}", query.replace("\n", " "));
+
     let response = worker.http_client.post(&worker.clickhouse.url)
         .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
         .header("Content-Type", "text/plain")
@@ -1193,6 +1199,13 @@ async fn check_result(
         actix_web::error::ErrorInternalServerError("Failed to read database response")
     })?;
 
+    info!("📊 ClickHouse response status: {}, body length: {}, empty?: {}", 
+        status, body.len(), body.trim().is_empty());
+    
+    if !body.trim().is_empty() {
+        info!("📄 First line of response: {}", body.lines().next().unwrap_or(""));
+    }
+
     let mut server: Option<ServerInfo> = None;
     let mut server_data: Option<HashMap<String, Value>> = None;
 
@@ -1201,6 +1214,75 @@ async fn check_result(
             if let Some(response_data) = result["response_data"].as_str() {
                 server = serde_json::from_str(response_data).ok();
                 server_data = serde_json::from_str(response_data).ok();
+                info!("✅ Found check result for check_id: {}", check_id);
+            }
+        }
+    } else {
+        // If no results found with LIKE pattern, try a broader search to debug
+        info!("❌ No check results found with check_id LIKE pattern, trying hostname-based lookup");
+        
+        if let Some(host) = &checking_url {
+            let backup_query = format!(
+                r#"
+                WITH latest_results AS (
+                    SELECT 
+                        r.*,
+                        ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+                    FROM {}.results r
+                    WHERE r.checker_module = '{}'
+                    AND r.hostname = '{}'
+                    AND r.checked_at >= now() - INTERVAL 5 MINUTE
+                )
+                SELECT 
+                    hostname,
+                    checked_at,
+                    status,
+                    ping_ms as ping,
+                    response_data
+                FROM latest_results
+                WHERE rn = 1
+                FORMAT JSONEachRow
+                "#,
+                worker.clickhouse.database,
+                network_str,
+                host
+            );
+            
+            info!("🔎 Backup ClickHouse query: {}", backup_query.replace("\n", " "));
+            
+            match worker.http_client.post(&worker.clickhouse.url)
+                .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+                .header("Content-Type", "text/plain")
+                .body(backup_query)
+                .send()
+                .await {
+                    Ok(backup_response) => {
+                        if let Ok(backup_body) = backup_response.text().await {
+                            info!("📊 Backup query response length: {}, empty?: {}", 
+                                backup_body.len(), backup_body.trim().is_empty());
+                            
+                            if !backup_body.trim().is_empty() {
+                                if let Ok(result) = serde_json::from_str::<serde_json::Value>(backup_body.lines().next().unwrap()) {
+                                    if let Some(response_data) = result["response_data"].as_str() {
+                                        info!("🔍 Debug: Found response data in backup query: {}", 
+                                            if response_data.len() > 100 { &response_data[..100] } else { response_data });
+                                        
+                                        // Check if the response contains our check_id
+                                        if response_data.contains(&check_id) {
+                                            info!("✅ Backup query found our check_id! This indicates a LIKE pattern issue.");
+                                            server = serde_json::from_str(response_data).ok();
+                                            server_data = serde_json::from_str(response_data).ok();
+                                        } else {
+                                            info!("❌ Response contains data but not our check_id");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        info!("❌ Backup query failed: {}", e);
+                    }
             }
         }
     }
@@ -1222,11 +1304,16 @@ async fn check_result(
     Ok(HttpResponse::Ok().body(html))
 }
 
-// Add this function to generate a math problem
+// Replace the generate_math_problem function with this simpler version
 fn generate_math_problem() -> (u8, u8, u8) {
-    let mut rng = rand::thread_rng();
-    let a = rng.gen_range(1..10);
-    let b = rng.gen_range(1..10);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    
+    // Use the last few digits of the timestamp to generate numbers
+    let a = ((timestamp % 9) + 1) as u8;
+    let b = (((timestamp / 10) % 9) + 1) as u8;
     (a, b, a + b)
 }
 
@@ -1383,7 +1470,7 @@ async fn main() -> std::io::Result<()> {
         env::var("NATS_HOST").unwrap_or_else(|_| "nats".to_string()),
         env::var("NATS_PORT").unwrap_or_else(|_| "4222".to_string())
     );
-    
+
     let http_client = reqwest::Client::builder()
         .pool_idle_timeout(std::time::Duration::from_secs(300))
         .pool_max_idle_per_host(32)
@@ -1393,7 +1480,6 @@ async fn main() -> std::io::Result<()> {
 
     let worker = Worker {
         nats: async_nats::connect(&nats_url).await.expect("Failed to connect to NATS"),
-        redis: redis::Client::open("redis://redis:6379").expect("Failed to create Redis client"),  // Keep for backward compatibility
         clickhouse: ClickhouseConfig::from_env(),
         http_client,
     };
