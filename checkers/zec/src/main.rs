@@ -1,6 +1,5 @@
 use std::{env, error::Error};
 use chrono::{DateTime, Utc};
-use redis::Commands;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use zingolib;
@@ -83,7 +82,6 @@ impl ClickhouseConfig {
 
 struct Worker {
     nats: async_nats::Client,
-    redis: redis::Client,
     clickhouse: ClickhouseConfig,
     http_client: reqwest::Client,
 }
@@ -103,18 +101,9 @@ impl Worker {
             env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
         );
 
-        let redis_url = format!(
-            "redis://{}:{}",
-            env::var("REDIS_HOST").unwrap_or_else(|_| "redis".into()),
-            env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
-        );
-
         let nats = async_nats::connect(&nats_url).await?;
         info!("Connected to NATS at {}", nats_url);
         
-        let redis = redis::Client::open(redis_url.as_str())?;
-        info!("Connected to Redis at {}", redis_url);
-
         let http_client = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(300))
             .pool_max_idle_per_host(32)
@@ -123,7 +112,6 @@ impl Worker {
 
         Ok(Worker {
             nats,
-            redis,
             clickhouse: ClickhouseConfig::from_env(),
             http_client,
         })
@@ -291,12 +279,6 @@ impl Worker {
             error!(%e, "Failed to publish data to ClickHouse");
         }
 
-        if let Ok(result_json) = serde_json::to_string(&result) {
-            let redis_key = format!("zec:{}", check_request.host);
-            if let Err(e) = self.redis.get_connection()?.set::<_, _, ()>(&redis_key, &result_json) {
-                error!("Redis save failed: {e}");
-            }
-        }
         Ok(())
     }
 }
