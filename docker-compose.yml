@@ -80,8 +80,12 @@ services:
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - NATS_HOST=nats
+      - NATS_PORT=4222
+      - NATS_PREFIX=hosh.
     depends_on:
       - chronicler
+      - nats
 
   discovery:
     build: ./discovery
@@ -114,6 +118,8 @@ services:
       - cargo-cache:/usr/local/cargo/registry
     environment:
       - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+      - TRACING_LEVEL=debug
       - DISCOVERY_INTERVAL=3600
       - CLICKHOUSE_HOST=chronicler
       - CLICKHOUSE_PORT=8123
@@ -123,6 +129,8 @@ services:
     depends_on:
       chronicler:
         condition: service_healthy
+    tty: true
+    stdin_open: true
 
   publisher:
     build: 
@@ -143,6 +151,8 @@ services:
     depends_on:
       nats:
         condition: service_healthy
+      chronicler:
+        condition: service_healthy
       checker-btc:
         condition: service_started
       checker-zec:
@@ -155,10 +165,18 @@ services:
     image: hosh/checker-zec
     container_name: checker-zec
     environment:
-      NATS_HOST: nats
-      NATS_PORT: 4222
+      - RUST_LOG=trace
+      - NATS_HOST=nats
+      - NATS_PORT=4222
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
       nats:
+        condition: service_healthy
+      chronicler:
         condition: service_healthy
 
   checker-http:
@@ -167,12 +185,20 @@ services:
       dockerfile: Dockerfile
     image: hosh/checker-http
     environment:
+      - RUST_LOG=debug
       - NATS_HOST=nats
       - TOR_PROXY_HOST=tor
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
       nats:
         condition: service_healthy
       tor:
+        condition: service_healthy
+      chronicler:
         condition: service_healthy
 
   checker-http-dev:
@@ -447,8 +473,6 @@ services:
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
       - NATS_URL=${NATS_URL:-nats://nats:4222}
       - NATS_PREFIX=${NATS_PREFIX:-hosh.}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
       - CLICKHOUSE_HOST=chronicler
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
