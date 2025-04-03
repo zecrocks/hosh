@@ -101,33 +101,11 @@ impl Publisher {
                     continue;
                 }
 
-                // Split hostname into explorer and chain parts
-                let parts: Vec<&str> = target.hostname.split('.').collect();
-                let (explorer, _chain) = match parts.as_slice() {
-                    [explorer, chain] => (*explorer, *chain),
-                    _ => {
-                        warn!("Invalid hostname format: {}", target.hostname);
-                        continue;
-                    }
-                };
-
-                // Convert hostname to proper URL format
-                let url = match explorer {
-                    // Main block explorers
-                    "blockchair" => "https://blockchair.com",
-                    "blockchair-onion" => "http://blkchairbknpn73cfjhevhla7rkp4ed5gg2knctvv7it4lioy22defid.onion",
-                    "blockstream" => "https://blockstream.info",
-                    "blockchain" => "https://blockchain.com",
-                    "zecrocks" => "https://explorer.zec.rocks",
-                    "zcashexplorer" => "https://mainnet.zcashexplorer.app",
-                    _ => {
-                        debug!("Skipping unknown explorer: {}", explorer);
-                        continue;
-                    }
-                };
+                // Use the hostname directly as the URL
+                let url = target.hostname;
 
                 // Skip if we've already published a check for this URL
-                if !published_urls.insert(url) {
+                if !published_urls.insert(url.clone()) {
                     debug!("Skipping duplicate explorer URL: {}", url);
                     continue;
                 }
