@@ -1,68 +1,63 @@
-use redis::Commands;
+use std::env;
 use std::error::Error;
 use std::fmt;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 use chrono::{DateTime, Utc};
-use std::time::Instant;
+use uuid::{self, Uuid};
+use reqwest;
+use tracing::{error, info};
+use std::process::Command;
+use tracing_subscriber;
+use std::collections::HashMap;
+use crate::types::BlockchainInfo;
 
 mod blockchair;
-mod blockchain;
+mod blockchaindotcom;
 mod blockstream;
 mod mempool;
 mod zecrocks;
 mod zcashexplorer;
-
-// Keep this import since we'll use it as our canonical BlockchainInfo
-use blockchain::BlockchainInfo;
+mod types;
 
 #[derive(Debug)]
 enum CheckerError {
-    Redis(redis::RedisError),
-    Reqwest(reqwest::Error),
-    Var(std::env::VarError),
-    Other(String),
+    Nats(async_nats::Error),
 }
 
 impl fmt::Display for CheckerError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            CheckerError::Redis(e) => write!(f, "Redis error: {}", e),
-            CheckerError::Reqwest(e) => write!(f, "Request error: {}", e),
-            CheckerError::Var(e) => write!(f, "Environment variable error: {}", e),
-            CheckerError::Other(e) => write!(f, "Error: {}", e),
+            CheckerError::Nats(e) => write!(f, "NATS error: {}", e),
         }
     }
 }
 
 impl Error for CheckerError {}
 
-impl From<redis::RedisError> for CheckerError {
-    fn from(err: redis::RedisError) -> CheckerError {
-        CheckerError::Redis(err)
-    }
-}
-
-impl From<reqwest::Error> for CheckerError {
-    fn from(err: reqwest::Error) -> CheckerError {
-        CheckerError::Reqwest(err)
-    }
-}
-
-impl From<std::env::VarError> for CheckerError {
-    fn from(err: std::env::VarError) -> CheckerError {
-        CheckerError::Var(err)
+impl From<async_nats::Error> for CheckerError {
+    fn from(err: async_nats::Error) -> CheckerError {
+        CheckerError::Nats(err)
     }
 }
 
 #[derive(Debug, Deserialize)]
 struct CheckRequest {
-    host: String,
+    #[serde(default)]
+    url: String,
+    #[serde(default = "default_port")]
     port: u16,
+    #[serde(default)]
     check_id: Option<String>,
+    #[serde(default)]
     user_submitted: Option<bool>,
+    #[serde(default)]
+    dry_run: bool,
 }
 
+fn default_port() -> u16 { 80 }
+
+#[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct CheckResult {
     host: String,
@@ -78,82 +73,130 @@ struct CheckResult {
 }
 
 #[derive(Clone)]
+struct ClickhouseConfig {
+    url: String,
+    user: String,
+    password: String,
+    database: String,
+}
+
+impl ClickhouseConfig {
+    fn from_env() -> Self {
+        Self {
+            url: format!("http://{}:{}", 
+                env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".into()),
+                env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".into())
+            ),
+            user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".into()),
+            password: env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set"),
+            database: env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".into()),
+        }
+    }
+}
+
+#[derive(Clone)]
 struct Worker {
     nats: async_nats::Client,
-    redis: redis::Client,
+    clickhouse: ClickhouseConfig,
+    http_client: reqwest::Client,
 }
 
 impl Worker {
-    async fn new() -> Result<Self, Box<dyn Error>> {
+    async fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
         let nats_url = format!(
             "nats://{}:{}",
             std::env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
             std::env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
         );
 
-        let redis_url = format!(
-            "redis://{}:{}",
-            std::env::var("REDIS_HOST").unwrap_or_else(|_| "redis".into()),
-            std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
-        );
-
         let nats = async_nats::connect(&nats_url).await?;
-        let redis = redis::Client::open(redis_url.as_str())?;
 
-        Ok(Worker { nats, redis })
+        let http_client = reqwest::Client::builder()
+            .pool_idle_timeout(std::time::Duration::from_secs(300))
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .timeout(std::time::Duration::from_secs(60))
+            .build()?;
+
+        Ok(Worker { 
+            nats, 
+            clickhouse: ClickhouseConfig::from_env(), 
+            http_client 
+        })
     }
 
     async fn process_check(&self, msg: async_nats::Message) {
-        let _check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
+        let check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
             Ok(req) => req,
             Err(e) => {
-                eprintln!("Failed to parse check request: {e}");
+                error!("Failed to parse check request: {e}");
                 return;
             }
         };
 
-        // Fetch data from all sources concurrently
-        let (blockstream_result, zecrocks_result, blockchair_result, blockchain_result, zcashexplorer_result) = tokio::join!(
-            blockstream::get_blockchain_info(),
-            zecrocks::get_blockchain_info(),
-            blockchair::get_blockchain_info(),
-            blockchain::get_blockchain_info(),
-            zcashexplorer::get_blockchain_info()
-        );
+        // Check if dry run mode is enabled
+        if check_request.dry_run {
+            info!(
+                "DRY RUN: Received check request - url={} port={} check_id={} user_submitted={}",
+                check_request.url,
+                check_request.port,
+                check_request.check_id.as_deref().unwrap_or("none"),
+                check_request.user_submitted.unwrap_or(false)
+            );
+            return;
+        }
 
-        let mut con = match self.redis.get_connection() {
-            Ok(con) => con,
-            Err(e) => {
-                eprintln!("Failed to get Redis connection: {e}");
-                return;
-            }
+        info!("Starting blockchain info fetching for URL: {}", check_request.url);
+        
+        // Determine which explorer to check based on URL
+        let (explorer_name, explorer_result): (String, Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>) = if check_request.url.contains("blockchair.com") {
+            ("blockchair".to_string(), blockchair::get_blockchain_info().await)
+        } else if check_request.url.contains("blkchair") && check_request.url.contains(".onion") {
+            ("blockchair-onion".to_string(), blockchair::get_onion_blockchain_info(&check_request.url).await)
+        } else if check_request.url.contains("blockstream.info") {
+            ("blockstream".to_string(), blockstream::get_blockchain_info().await)
+        } else if check_request.url.contains("zec.rocks") {
+            ("zecrocks".to_string(), zecrocks::get_blockchain_info().await)
+        } else if check_request.url.contains("blockchain.com") {
+            ("blockchain".to_string(), blockchaindotcom::get_blockchain_info().await)
+        } else if check_request.url.contains("zcashexplorer.app") {
+            ("zcashexplorer".to_string(), zcashexplorer::get_blockchain_info().await)
+        } else if check_request.url.contains("mempool.space") {
+            ("mempool".to_string(), mempool::get_blockchain_info().await)
+        } else {
+            error!("Unknown explorer URL: {}", check_request.url);
+            return;
         };
 
-        // Process results and store in Redis
-        let results = [
-            ("blockstream", blockstream_result),
-            ("zecrocks", zecrocks_result),
-            ("blockchair", blockchair_result),
-            ("blockchain", blockchain_result),
-            ("zcashexplorer", zcashexplorer_result),
-        ];
-
-        for (source, result) in results {
-            if let Ok(data) = result {
-                for (chain, info) in data {
+        match explorer_result {
+            Ok(data) => {
+                for (chain_id, info) in data.iter() {
                     if let Some(height) = info.height {
-                        println!("{} height: {} ({})", info.name, height, source);
-                        let _: Result<(), _> = con.set(
-                            format!("http:{}.{}", source, chain),
-                            height
-                        );
+                        let result = CheckResult {
+                            host: format!("{}.{}", chain_id, chain_id),
+                            port: check_request.port,
+                            height,
+                            status: "online".to_string(),
+                            error: None,
+                            last_updated: Utc::now(),
+                            ping: info.response_time_ms as f64,
+                            check_id: check_request.check_id.clone(),
+                            user_submitted: check_request.user_submitted,
+                        };
+                        
+                        if let Err(e) = self.publish_to_clickhouse(&explorer_name, chain_id, &result).await {
+                            error!("Failed to publish to ClickHouse for {}.{}: {}", explorer_name, chain_id, e);
+                        }
                     }
                 }
+            }
+            Err(e) => {
+                error!("Failed to fetch blockchain info: {}", e);
             }
         }
     }
 
-    pub async fn run(&self) -> Result<(), Box<dyn Error>> {
+    pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
         let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
         let mut sub = self.nats.subscribe(format!("{}check.http", nats_prefix)).await?;
         println!("Subscribed to {}check.http", nats_prefix);
@@ -164,10 +207,104 @@ impl Worker {
 
         Ok(())
     }
+
+    async fn publish_to_clickhouse(&self, source: &str, chain_id: &str, result: &CheckResult) -> Result<(), Box<dyn Error + Send + Sync>> {
+        info!("📊 Publishing to ClickHouse for {}.{}", source, chain_id);
+
+        // Insert the block height data
+        info!("Inserting block height data for {}.{} (height: {})", source, chain_id, result.height);
+        let height_query = format!(
+            "INSERT INTO {}.block_explorer_heights 
+             (checked_at, explorer, chain, block_height, response_time_ms, error, dry_run) 
+             VALUES 
+             (now(), '{}', '{}', {}, {}, '{}', {})",
+            self.clickhouse.database,
+            source,
+            chain_id,
+            result.height,
+            result.ping,
+            result.error.as_deref().unwrap_or("").replace("'", "\\'"),
+            result.user_submitted.unwrap_or(false)
+        );
+
+        let response = self.http_client.post(&self.clickhouse.url)
+            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
+            .header("Content-Type", "text/plain")
+            .body(height_query)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            let error_text = response.text().await?;
+            error!("❌ ClickHouse block height insert failed: {}", error_text);
+            return Err(format!("ClickHouse block height insert error: {}", error_text).into());
+        }
+        info!("✅ Block height data insert successful");
+
+        Ok(())
+    }
 }
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
+async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
+    // Initialize tracing
+    tracing_subscriber::fmt()
+        .with_env_filter("info")
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_thread_names(false)
+        .with_file(false)
+        .with_line_number(false)
+        .with_ansi(true)
+        .init();
+
+    // Clear screen based on platform
+    if cfg!(target_os = "windows") {
+        Command::new("cmd")
+            .args(["/C", "cls"])
+            .status()
+            .expect("Failed to clear screen");
+    } else {
+        Command::new("clear")
+            .status()
+            .expect("Failed to clear screen");
+    }
+
+    info!("🔍 HTTP Block Explorer Checker Starting...");
+    info!("==========================================\n");
+
+    info!("Testing Tor connection...");
+    if let Ok(_client) = blockchair::blockchairdotonion::create_client() {
+        info!("✅ Successfully created Tor client");
+    } else {
+        error!("❌ Failed to create Tor client");
+    }
+
+    // Add ClickHouse connection test
     let worker = Worker::new().await?;
+    
+    // Test ClickHouse connection
+    info!("Testing ClickHouse connection...");
+    let test_query = "SELECT 1";
+    let response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(test_query)
+        .send()
+        .await?;
+
+    if response.status().is_success() {
+        info!("✅ Successfully connected to ClickHouse at {}", worker.clickhouse.url);
+    } else {
+        error!("❌ Failed to connect to ClickHouse: {}", response.status());
+        error!("Response: {}", response.text().await?);
+    }
+
+    // Log ClickHouse configuration
+    info!("ClickHouse configuration:");
+    info!("  URL: {}", worker.clickhouse.url);
+    info!("  Database: {}", worker.clickhouse.database);
+    info!("  User: {}", worker.clickhouse.user);
+
     worker.run().await
 }
