@@ -1,78 +1,92 @@
 from dash import html, dcc, dash_table
 import dash_bootstrap_components as dbc
+from data.clickhouse_client import get_client
 
-# Define block explorer URLs
-BLOCK_EXPLORERS = [
-    {"label": "Blockchair.com", "value": "https://blockchair.com"},
-    {"label": "Blockchair.onion", "value": "http://blkchairbknpn73cfjhevhla7rkp4ed5gg2knctvv7it4lioy22defid.onion"},
-    {"label": "Blockstream.info", "value": "https://blockstream.info"},
-    {"label": "Zec.rocks", "value": "https://explorer.zec.rocks"},
-    {"label": "Blockchain.com", "value": "https://blockchain.com"},
-    {"label": "Zcash Explorer", "value": "https://mainnet.zcashexplorer.app"},
-    {"label": "Mempool.space", "value": "https://mempool.space"}
-]
+def get_http_targets():
+    """Get HTTP targets from Clickhouse."""
+    try:
+        query = """
+        SELECT DISTINCT hostname
+        FROM targets
+        WHERE module = 'http'
+        ORDER BY hostname
+        """
+        
+        with get_client() as client:
+            result = client.execute(query)
+            
+        return [{'label': hostname, 'value': hostname} for (hostname,) in result]
+        
+    except Exception as e:
+        print(f"Error fetching HTTP targets from ClickHouse: {e}")
+        return []
 
 def create_layout():
-    """
-    Create the explorer heights page layout.
-    """
+    """Create the blockchain heights page layout."""
+    http_targets = get_http_targets()
+    
     return html.Div([
+        html.H1("Blockchain Heights", className="mb-4"),
+        
+        # HTTP Checks Section
         html.Div([
-            # Add HTTP check trigger section with URL dropdown
-            html.Div([
-                html.Div([
-                    html.Label("Select Explorer URL:", className="me-2"),
+            html.H2("HTTP Block Explorer Checks", className="mb-3"),
+            dbc.Row([
+                dbc.Col([
+                    dbc.Label("Select Block Explorer URL:"),
                     dcc.Dropdown(
-                        id="explorer-dropdown",
-                        options=BLOCK_EXPLORERS,
-                        value=BLOCK_EXPLORERS[0]["value"],
-                        className="d-inline-block",
-                        style={"width": "400px", "marginRight": "10px"}
-                    ),
-                ], className="mb-2"),
-                html.Div([
-                    dbc.Button(
-                        "Trigger HTTP Check", 
-                        id="trigger-http-button", 
-                        color="primary",
-                        className="me-2"
+                        id='http-target-dropdown',
+                        options=http_targets,
+                        value=http_targets[0]['value'] if http_targets else None,
+                        className="mb-3"
                     ),
                     dbc.Switch(
-                        id="http-dry-run-toggle",
+                        id='dry-run-switch',
                         label="Dry Run",
                         value=False,
-                        className="d-inline-block"
-                    )
-                ])
-            ], className="mt-3 mb-3"),
-        ]),
-        
-        # Add result area for HTTP checks
-        html.Div([
-            html.Div(id="http-trigger-result", className="mt-2")
-        ]),
-
-        # Add block explorer results table
-        html.Div([
-            html.H2("Block Explorer Results", className='mb-3'),
-            dash_table.DataTable(
-                id='explorer-heights-table',
-                columns=[
-                    {'name': 'Explorer', 'id': 'explorer', 'type': 'text'},
-                    {'name': 'Chain', 'id': 'chain', 'type': 'text'},
-                    {'name': 'Block Height', 'id': 'block_height', 'type': 'numeric', 'format': {'specifier': ','}},
-                    {'name': 'Response Time (ms)', 'id': 'response_time_ms', 'type': 'numeric', 'format': {'specifier': '.1f'}},
-                    {'name': 'Checked At', 'id': 'checked_at', 'type': 'text'},
-                    {'name': 'Error', 'id': 'error', 'type': 'text'}
-                ],
-                data=[],
-                style_table={'overflowX': 'auto'},
-                style_cell={'textAlign': 'left', 'padding': '5px'},
-                style_header={'fontWeight': 'bold', 'backgroundColor': '#f4f4f4'},
-                sort_action='native',
-                sort_mode='multi',
-                page_size=20,
-                filter_action='native',
-            ),
-        ], className="mt-4"),
+                        className="mb-3"
+                    ),
+                    dbc.Button(
+                        "Trigger HTTP Check",
+                        id="trigger-http-check-button",
+                        color="primary",
+                        className="mb-3"
+                    ),
+                    # Add div for trigger result message
+                    html.Div(id="http-trigger-result", className="mb-3")
+                ], width=6)
+            ]),
+            
+            # Results Table
+            html.Div([
+                html.H3("Results", className="mb-3"),
+                dash_table.DataTable(
+                    id='explorer-heights-table',
+                    columns=[
+                        {'name': 'Hostname', 'id': 'hostname'},
+                        {'name': 'Module', 'id': 'module'},
+                        {'name': 'Last Check', 'id': 'last_check'},
+                        {'name': 'Last Height', 'id': 'last_height'},
+                        {'name': 'Response Time', 'id': 'response_time'}
+                    ],
+                    data=[],
+                    style_table={'overflowX': 'auto'},
+                    style_cell={
+                        'textAlign': 'left',
+                        'padding': '10px',
+                        'whiteSpace': 'normal'
+                    },
+                    style_header={
+                        'backgroundColor': 'rgb(230, 230, 230)',
+                        'fontWeight': 'bold'
+                    },
+                    style_data_conditional=[
+                        {
+                            'if': {'row_index': 'odd'},
+                            'backgroundColor': 'rgb(248, 248, 248)'
+                        }
+                    ]
+                )
+            ])
+        ])
     ]) 

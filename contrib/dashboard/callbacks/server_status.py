@@ -1,6 +1,6 @@
 from dash import Input, Output, State, callback_context
 from data.nats_client import publish_chain_check_trigger
-from data.clickhouse_client import clickhouse_client
+from data.clickhouse_client import get_client
 from datetime import datetime, timezone
 import logging
 import asyncio
@@ -88,7 +88,9 @@ def register_callbacks(app, long_callback_manager):
                 
             query += " ORDER BY checked_at DESC"
             
-            results = clickhouse_client.execute(query, with_column_types=True)
+            with get_client() as client:
+                results = client.execute(query, with_column_types=True)
+            
             rows, columns = results
             
             # Convert results to list of dictionaries
@@ -108,4 +110,41 @@ def register_callbacks(app, long_callback_manager):
             
         except Exception as e:
             logger.error(f"Error fetching server status data: {e}")
-            return [], f"Error fetching data: {str(e)}", "" 
+            return [], f"Error fetching data: {str(e)}", ""
+
+def get_server_stats():
+    """Get server statistics from Clickhouse."""
+    try:
+        query = """
+        SELECT
+            hostname,
+            checker_module,
+            count(*) as total_checks,
+            countIf(status = 'online') as successful_checks,
+            avg(if(status = 'online', ping_ms, null)) as avg_response_time,
+            max(checked_at) as last_check
+        FROM results
+        WHERE checked_at >= now() - INTERVAL 24 HOUR
+        GROUP BY hostname, checker_module
+        ORDER BY hostname, checker_module
+        """
+        
+        with get_client() as client:
+            result = client.execute(query)
+            
+        stats = []
+        for row in result:
+            hostname, module, total, success, avg_time, last_check = row
+            stats.append({
+                'hostname': hostname,
+                'module': module,
+                'total_checks': total,
+                'success_rate': f"{(success/total)*100:.1f}%" if total > 0 else "0%",
+                'avg_response_time': f"{avg_time:.1f}ms" if avg_time else "N/A",
+                'last_check': last_check.strftime('%Y-%m-%d %H:%M:%S') if last_check else 'Never'
+            })
+        return stats
+        
+    except Exception as e:
+        print(f"Error fetching server stats from ClickHouse: {e}")
+        return [] 

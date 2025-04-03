@@ -1,30 +1,27 @@
 from dash import html, dash_table
 import dash_bootstrap_components as dbc
-from data.clickhouse_client import clickhouse_client
+from data.clickhouse_client import get_client
 
 def get_server_count_by_type():
     """Get count of servers by type from Clickhouse."""
-    if not clickhouse_client:
-        return {"btc": 0, "zec": 0}
-        
     try:
         query = """
-            SELECT 
-                module,
-                count(DISTINCT hostname) as count
-            FROM hosh.targets
-            WHERE module IN ('btc', 'zec')
-            GROUP BY module
+        SELECT
+            module,
+            count(*) as count
+        FROM targets
+        WHERE module IN ('btc', 'zec')
+        GROUP BY module
         """
-        results = clickhouse_client.execute(query)
         
-        counts = {"btc": 0, "zec": 0}
-        for row in results:
-            module, count = row
-            if module in counts:
-                counts[module] = count
+        with get_client() as client:
+            result = client.execute(query)
             
+        counts = {"btc": 0, "zec": 0}
+        for module, count in result:
+            counts[module] = count
         return counts
+        
     except Exception as e:
         print(f"Error getting server counts from Clickhouse: {e}")
         return {"btc": 0, "zec": 0}

@@ -160,11 +160,58 @@ def create_layout():
             html.H3("Server Performance Details", className='mb-2'),
             html.Div([
                 html.Label("Select Server:", className='me-2'),
-                dcc.Dropdown(
-                    id='server-selector',
-                    options=[],
-                    placeholder="Select a server to view details",
-                    className='mb-3'
+                # Replace dropdown with a combo of dropdown and text input
+                html.Div([
+                    dcc.Dropdown(
+                        id='server-selector',
+                        options=[],
+                        placeholder="Select a server to view details",
+                        className='mb-3'
+                    ),
+                    html.Div([
+                        html.Label("Or Enter Server Manually:", className='me-2 mt-2'),
+                        html.Div([
+                            dcc.Input(
+                                id='manual-server-input',
+                                type='text',
+                                placeholder='Enter hostname (e.g., example.com)',
+                                className='form-control mb-2',
+                                style={'width': '100%'}
+                            ),
+                            dcc.Dropdown(
+                                id='protocol-selector',
+                                options=[
+                                    {'label': 'Bitcoin', 'value': 'btc'},
+                                    {'label': 'Zcash', 'value': 'zec'},
+                                    {'label': 'HTTP', 'value': 'http'}
+                                ],
+                                placeholder="Select protocol",
+                                value='btc',
+                                className='mb-3'
+                            )
+                        ], className='d-flex flex-column'),
+                        html.Button(
+                            'Use Manual Input',
+                            id='use-manual-input-button',
+                            className='btn btn-primary mb-3 mt-2',
+                        ),
+                        html.Button(
+                            'Reset',
+                            id='reset-manual-input-button',
+                            className='btn btn-secondary mb-3 mt-2 ms-2',
+                        )
+                    ], className='mb-3')
+                ]),
+                # Add user_submitted radio toggle
+                dbc.RadioItems(
+                    id="user-submitted-toggle",
+                    options=[
+                        {"label": "Regular Check", "value": "false"},
+                        {"label": "User-Submitted Check", "value": "true"}
+                    ],
+                    value="false",
+                    inline=True,
+                    className="me-2 mb-3"
                 ),
                 # Add trigger check button
                 html.Button(

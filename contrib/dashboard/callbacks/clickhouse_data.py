@@ -1,5 +1,6 @@
 from dash.dependencies import Input, Output, State
 from dash.long_callback import DiskcacheLongCallbackManager
+import dash
 import plotly.express as px
 import plotly.graph_objects as go
 import pandas as pd
@@ -22,18 +23,41 @@ def register_callbacks(app):
          Input('time-range-selector', 'value'),
          Input('current-page', 'data'),
          Input('targets-table', 'selected_rows'),
-         Input('module-filter', 'value')],
-        [State('targets-table', 'data')]
+         Input('module-filter', 'value'),
+         Input('use-manual-input-button', 'n_clicks')],
+        [State('targets-table', 'data'),
+         State('manual-server-input', 'value'),
+         State('protocol-selector', 'value')]
     )
-    def update_clickhouse_data(n_clicks, time_range, current_page, selected_rows, module_filter, targets_data):
+    def update_clickhouse_data(n_clicks, time_range, current_page, selected_rows, module_filter, 
+                               manual_input_clicks, targets_data, manual_server, protocol):
         """
         Update the Clickhouse data tables and dropdowns.
         """
+        # Get the callback context to determine which input triggered the callback
+        ctx = dash.callback_context
+        triggered_id = ctx.triggered[0]['prop_id'].split('.')[0] if ctx.triggered else None
+        
         # Only update if we're on the Clickhouse data page
         if current_page != 'clickhouse-data':
             return [], [], [], None
         
-        # Fetch targets data first
+        # If triggered by "Use Manual Input" button, prioritize that
+        if triggered_id == 'use-manual-input-button' and manual_server and protocol:
+            # Format the manual input value
+            formatted_value = f"{manual_server}::{protocol}"
+            
+            # We still need to fetch data for other outputs
+            targets = fetch_targets(time_range)
+            if module_filter != 'all':
+                targets = [t for t in targets if t['module'] == module_filter]
+            
+            servers = get_server_list()
+            stats = fetch_server_stats(time_range)
+            
+            return stats, servers, targets, formatted_value
+        
+        # Otherwise, handle normal table/dropdown updates
         targets = fetch_targets(time_range)
         
         # Filter targets based on module selection
@@ -184,32 +208,37 @@ def register_callbacks(app):
                 }
             }, []
 
-    # Add new callback to enable/disable trigger button
-    @app.callback(
-        Output('trigger-check-button', 'disabled'),
-        Input('server-selector', 'value')
-    )
-    def update_trigger_button_state(selected_server):
-        """Enable trigger button only when a server is selected"""
-        return not bool(selected_server)
-
     # Update the trigger check callback to use long_callback
     @app.long_callback(
         Output('trigger-check-button', 'children'),
         Input('trigger-check-button', 'n_clicks'),
-        State('server-selector', 'value'),
+        [State('server-selector', 'value'),
+         State('manual-server-input', 'value'),
+         State('protocol-selector', 'value'),
+         State('user-submitted-toggle', 'value')],
         prevent_initial_call=True,
         running=[
             (Output('trigger-check-button', 'disabled'), True, False),
         ],
     )
-    def trigger_server_check(n_clicks, selected_server):
+    def trigger_server_check(n_clicks, selected_server, manual_server, protocol_selection, user_submitted):
         """Handle trigger check button click"""
-        if not n_clicks or not selected_server:
+        if not n_clicks:
             return 'Trigger Check'
             
         try:
-            host, protocol = selected_server.split('::')
+            # Prioritize dropdown selection if available
+            if selected_server:
+                host, protocol = selected_server.split('::')
+            # Fall back to manual input if dropdown not used but manual input provided
+            elif manual_server and protocol_selection:
+                host = manual_server
+                protocol = protocol_selection
+            else:
+                return 'No Server Selected'
+            
+            # Convert string value to boolean
+            is_user_submitted = user_submitted == "true"
             
             # Create event loop to run async functions
             loop = asyncio.new_event_loop()
@@ -219,13 +248,50 @@ def register_callbacks(app):
             if protocol == 'http':
                 success = loop.run_until_complete(publish_http_check_trigger(host))
             elif protocol in ['btc', 'zec']:
-                success = loop.run_until_complete(publish_chain_check_trigger(protocol, host))
+                success = loop.run_until_complete(publish_chain_check_trigger(
+                    protocol, 
+                    specific_host=host, 
+                    user_submitted=is_user_submitted
+                ))
             else:
                 raise ValueError(f"Unsupported protocol: {protocol}")
             
             loop.close()
             
-            return 'Check Triggered!' if success else 'Failed to trigger check'
+            msg = 'Check Triggered!'
+            if protocol == 'btc':
+                msg += f" ({('User-submitted' if is_user_submitted else 'Regular')} queue)"
+            
+            return msg if success else 'Failed to trigger check'
         except Exception as e:
             print(f"Error triggering check: {e}")
-            return 'Error!' 
+            return 'Error!'
+
+    # Update trigger button callback to work with either dropdown or manual input
+    @app.callback(
+        Output('trigger-check-button', 'disabled'),
+        [Input('server-selector', 'value'),
+         Input('manual-server-input', 'value'),
+         Input('protocol-selector', 'value')]
+    )
+    def update_trigger_button_state(selected_server, manual_input, protocol):
+        """Enable trigger button when either dropdown selection or valid manual input is available"""
+        if selected_server:
+            return False
+        elif manual_input and protocol:
+            # Both hostname and protocol are provided
+            return False
+        return True
+        
+    # Add callback to reset the manual input fields
+    @app.callback(
+        [Output('manual-server-input', 'value'),
+         Output('protocol-selector', 'value')],
+        Input('reset-manual-input-button', 'n_clicks'),
+        prevent_initial_call=True
+    )
+    def reset_manual_input(n_clicks):
+        """Reset the manual input fields to their default/empty values"""
+        if not n_clicks:
+            return dash.no_update, dash.no_update
+        return "", "btc" 

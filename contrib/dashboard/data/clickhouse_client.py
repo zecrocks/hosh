@@ -2,34 +2,75 @@ import os
 import pandas as pd
 from clickhouse_driver import Client
 from datetime import datetime, timedelta
+from contextlib import contextmanager
+import threading
 
 # Clickhouse Configuration
 CLICKHOUSE_HOST = os.environ.get('CLICKHOUSE_HOST', 'chronicler')
 CLICKHOUSE_PORT = int(os.environ.get('CLICKHOUSE_PORT', 8123))
 CLICKHOUSE_DB = os.environ.get('CLICKHOUSE_DB', 'hosh')
 CLICKHOUSE_USER = os.environ.get('CLICKHOUSE_USER', 'hosh')
-CLICKHOUSE_PASSWORD = os.environ.get('CLICKHOUSE_PASSWORD', '')
+CLICKHOUSE_PASSWORD = os.environ.get('CLICKHOUSE_PASSWORD')
+if not CLICKHOUSE_PASSWORD:
+    raise ValueError("CLICKHOUSE_PASSWORD environment variable must be set")
 
-# Connect to Clickhouse
+# Connection pool
+_connection_pool = []
+_connection_lock = threading.Lock()
+MAX_CONNECTIONS = 5
+
+def get_connection():
+    """Get a connection from the pool or create a new one."""
+    with _connection_lock:
+        if not _connection_pool:
+            client = Client(
+                host=CLICKHOUSE_HOST,
+                port=CLICKHOUSE_PORT,
+                database=CLICKHOUSE_DB,
+                user=CLICKHOUSE_USER,
+                password=CLICKHOUSE_PASSWORD,
+                settings={'use_numpy': False}
+            )
+            # Test connection
+            result = client.execute("SELECT 1")
+            if result[0][0] == 1:
+                print("Connected to Clickhouse successfully!")
+            else:
+                print("Clickhouse connection test failed")
+            return client
+        return _connection_pool.pop()
+
+def release_connection(client):
+    """Release a connection back to the pool."""
+    with _connection_lock:
+        if len(_connection_pool) < MAX_CONNECTIONS:
+            _connection_pool.append(client)
+
+@contextmanager
+def get_client():
+    """Context manager for getting and releasing a ClickHouse client."""
+    client = get_connection()
+    try:
+        yield client
+    finally:
+        release_connection(client)
+
+# Initialize the connection pool
 try:
-    clickhouse_client = Client(
-        host=CLICKHOUSE_HOST,
-        port=CLICKHOUSE_PORT,
-        database=CLICKHOUSE_DB,
-        user=CLICKHOUSE_USER,
-        password=CLICKHOUSE_PASSWORD,
-        settings={'use_numpy': False}
-    )
-    # Test connection
-    result = clickhouse_client.execute("SELECT 1")
-    if result[0][0] == 1:
-        print("Connected to Clickhouse successfully!")
-    else:
-        print("Clickhouse connection test failed")
+    for _ in range(MAX_CONNECTIONS):
+        client = Client(
+            host=CLICKHOUSE_HOST,
+            port=CLICKHOUSE_PORT,
+            database=CLICKHOUSE_DB,
+            user=CLICKHOUSE_USER,
+            password=CLICKHOUSE_PASSWORD,
+            settings={'use_numpy': False}
+        )
+        _connection_pool.append(client)
+    print(f"Initialized ClickHouse connection pool with {MAX_CONNECTIONS} connections")
 except Exception as e:
-    print(f"Failed to connect to Clickhouse: {e}")
-    clickhouse_client = None
-
+    print(f"Failed to initialize ClickHouse connection pool: {e}")
+    _connection_pool = []
 
 def get_time_filter(time_range):
     """
@@ -57,7 +98,6 @@ def get_time_filter(time_range):
     
     return f"checked_at >= now() - {interval}"
 
-
 def fetch_server_stats(time_range='24h'):
     """
     Fetch server statistics from ClickHouse.
@@ -68,9 +108,6 @@ def fetch_server_stats(time_range='24h'):
     Returns:
         List of dictionaries with server statistics
     """
-    if not clickhouse_client:
-        return []
-    
     try:
         time_filter = get_time_filter(time_range)
         
@@ -89,7 +126,8 @@ def fetch_server_stats(time_range='24h'):
         ORDER BY hostname, checker_module
         """
         
-        result = clickhouse_client.execute(query)
+        with get_client() as client:
+            result = client.execute(query)
         
         # Convert to list of dictionaries
         stats = []
@@ -118,7 +156,6 @@ def fetch_server_stats(time_range='24h'):
         print(f"Error fetching server stats from ClickHouse: {e}")
         return []
 
-
 def fetch_server_performance(hostname, protocol, time_range='24h'):
     """
     Fetch performance data for a specific server from ClickHouse.
@@ -131,7 +168,7 @@ def fetch_server_performance(hostname, protocol, time_range='24h'):
     Returns:
         List of dictionaries with performance data
     """
-    if not clickhouse_client:
+    if not _connection_pool:
         return []
     
     try:
@@ -149,7 +186,8 @@ def fetch_server_performance(hostname, protocol, time_range='24h'):
         ORDER BY checked_at
         """
         
-        result = clickhouse_client.execute(query)
+        with get_client() as client:
+            result = client.execute(query)
         
         # Convert to list of dictionaries
         performance_data = []
@@ -167,7 +205,6 @@ def fetch_server_performance(hostname, protocol, time_range='24h'):
         print(f"Error fetching server performance from ClickHouse: {e}")
         return []
 
-
 def get_server_list():
     """
     Get a list of all servers in the Clickhouse database.
@@ -175,7 +212,7 @@ def get_server_list():
     Returns:
         List of dictionaries with server information
     """
-    if not clickhouse_client:
+    if not _connection_pool:
         return []
     
     try:
@@ -187,7 +224,8 @@ def get_server_list():
         ORDER BY hostname, checker_module
         """
         
-        result = clickhouse_client.execute(query)
+        with get_client() as client:
+            result = client.execute(query)
         
         # Convert to list of dictionaries
         servers = []
@@ -204,14 +242,10 @@ def get_server_list():
         print(f"Error fetching server list from Clickhouse: {e}")
         return []
 
-
 def fetch_targets(time_range='24h'):
     """
     Fetch active targets from ClickHouse.
     """
-    if not clickhouse_client:
-        return []
-    
     try:
         query = """
         SELECT
@@ -225,7 +259,8 @@ def fetch_targets(time_range='24h'):
         ORDER BY hostname, module
         """
         
-        result = clickhouse_client.execute(query)
+        with get_client() as client:
+            result = client.execute(query)
         
         # Convert to list of dictionaries
         targets = []
@@ -247,7 +282,6 @@ def fetch_targets(time_range='24h'):
         print(f"Error fetching targets from ClickHouse: {e}")
         return []
 
-
 def fetch_check_results(hostname, protocol, time_range='24h'):
     """
     Fetch detailed check results for a specific target from ClickHouse.
@@ -260,7 +294,7 @@ def fetch_check_results(hostname, protocol, time_range='24h'):
     Returns:
         List of dictionaries with check results
     """
-    if not clickhouse_client:
+    if not _connection_pool:
         print("No ClickHouse client available")
         return []
     
@@ -291,7 +325,8 @@ def fetch_check_results(hostname, protocol, time_range='24h'):
         """
         print(f"Executing query: {query}")
         
-        result = clickhouse_client.execute(query)
+        with get_client() as client:
+            result = client.execute(query)
         print(f"Query returned {len(result)} rows")
         
         if result:
@@ -336,7 +371,6 @@ def fetch_check_results(hostname, protocol, time_range='24h'):
         print(f"Query was: {query}")
         return []
 
-
 def get_minutes_from_range(time_range):
     """Convert time range string to minutes for ClickHouse query"""
     units = {
@@ -348,12 +382,8 @@ def get_minutes_from_range(time_range):
     unit = time_range[-1].lower()
     return value * units[unit]
 
-
 def get_targets_and_results_counts():
     """Get counts of targets and results from Clickhouse."""
-    if not clickhouse_client:
-        return {"targets": 0, "results": 0}
-        
     try:
         # Get targets count
         targets_query = """
@@ -361,8 +391,6 @@ def get_targets_and_results_counts():
             FROM targets
             WHERE module IN ('btc', 'zec')
         """
-        targets_result = clickhouse_client.execute(targets_query)
-        targets_count = targets_result[0][0] if targets_result else 0
         
         # Get results count from last hour
         results_query = """
@@ -371,7 +399,12 @@ def get_targets_and_results_counts():
             WHERE checker_module IN ('checker-btc', 'checker-zec')
             AND checked_at >= now() - INTERVAL 1 HOUR
         """
-        results_result = clickhouse_client.execute(results_query)
+        
+        with get_client() as client:
+            targets_result = client.execute(targets_query)
+            results_result = client.execute(results_query)
+            
+        targets_count = targets_result[0][0] if targets_result else 0
         results_count = results_result[0][0] if results_result else 0
         
         return {
