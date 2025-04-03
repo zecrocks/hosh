@@ -1,6 +1,6 @@
 # HTTP Block Explorer Checker
 
-This service monitors various blockchain block explorers to track block heights across different networks. It scrapes data from multiple sources and stores it in Redis for further processing.
+This service monitors various blockchain block explorers to track block heights across different networks. It scrapes data from multiple sources and stores it in ClickHouse for further processing.
 
 ## Overview
 
@@ -12,13 +12,11 @@ The checker fetches block height data from several block explorer websites:
 - Zec.rocks
 - ZcashExplorer.app
 
-## Redis Key Format
+## Data Storage
 
-Keys are stored in Redis using the format: `http:{source}.{chain}`
-
-where:
-- `source` is the explorer name (e.g., blockchair, blockchain, blockstream)
-- `chain` is the canonical chain identifier from the explorer's URL
+Data is stored in ClickHouse using the following format:
+- `targets` table: Stores target information with format `http:{source}.{chain}`
+- `block_explorer_heights` table: Stores block height data with timestamps
 
 Examples:
 - `http:blockchair.bitcoin` (from https://blockchair.com/bitcoin)
@@ -63,16 +61,19 @@ Examples:
 The service can be configured using environment variables:
 - `NATS_HOST`: NATS server hostname (default: "nats")
 - `NATS_PORT`: NATS server port (default: 4222)
-- `REDIS_HOST`: Redis server hostname (default: "redis")
-- `REDIS_PORT`: Redis server port (default: 6379)
 - `NATS_PREFIX`: Prefix for NATS topics (default: "hosh.")
 - `TOR_PROXY_HOST`: Tor proxy hostname (default: "tor")
 - `TOR_PROXY_PORT`: Tor proxy port (default: 9050)
+- `CLICKHOUSE_HOST`: ClickHouse server hostname (default: "chronicler")
+- `CLICKHOUSE_PORT`: ClickHouse server port (default: "8123")
+- `CLICKHOUSE_DB`: ClickHouse database name (default: "hosh")
+- `CLICKHOUSE_USER`: ClickHouse username (default: "hosh")
+- `CLICKHOUSE_PASSWORD`: ClickHouse password (required)
 
 ## Error Handling
 
 The service implements robust error handling:
-- Connection errors (Redis/NATS) are logged and retried
+- Connection errors (NATS/ClickHouse) are logged and retried
 - Parser errors for each explorer are handled independently
 - Failed scrapes for one source don't affect other sources
 
@@ -81,7 +82,6 @@ The service implements robust error handling:
 The checker is written in Rust and uses:
 - `reqwest` for HTTP requests (with SOCKS5 proxy support for Tor)
 - `scraper` for HTML parsing
-- `redis` for data storage
 - `async-nats` for message queue integration
 - `tokio` for async runtime
 

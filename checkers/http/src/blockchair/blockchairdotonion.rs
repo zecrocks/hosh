@@ -125,46 +125,9 @@ pub fn create_client() -> Result<reqwest::Client, Box<dyn Error + Send + Sync>> 
         .build()?)
 }
 
-// Modify get_onion_url to return None if URL not found
-async fn get_onion_url(client: &reqwest::Client) -> Result<Option<String>, Box<dyn Error + Send + Sync>> {
-    let url = "https://blockchair.com";
-    println!("🧅 Fetching onion URL from cleartext site: {}", url);
-    let response = client.get(url).send().await?.text().await?;
-    let document = Html::parse_document(&response);
-    
-    // Look for the link containing "Blockchair Onion v3 URL"
-    let link_selector = Selector::parse("a.column-accordion__item").unwrap();
-    
-    for link in document.select(&link_selector) {
-        if link.text().collect::<String>().contains("Blockchair Onion v3 URL") {
-            if let Some(href) = link.value().attr("href") {
-                println!("🧅 Found onion URL in cleartext site footer: {}", href);
-                return Ok(Some(href.to_string()));
-            }
-        }
-    }
-    
-    println!("🧅 No onion URL found in cleartext site footer");
-    Ok(None)
-}
-
-pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>> {
+pub async fn get_blockchain_info(onion_url: &str) -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error + Send + Sync>> {
     println!("🧅 Starting Blockchair onion site check");
     
-    // Create a regular client first to fetch the onion URL
-    let regular_client = reqwest::Client::builder()
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .timeout(Duration::from_secs(10))
-        .build()?;
-
-    // Get the onion URL using the regular client
-    let Some(onion_url) = get_onion_url(&regular_client).await? else {
-        println!("🧅 Could not find onion URL, skipping onion check");
-        return Ok(HashMap::new());
-    };
-    
-    println!("🧅 Found onion URL: {}", onion_url);
-
     // Test Tor connectivity
     let tor_proxy_host = env::var("TOR_PROXY_HOST").unwrap_or_else(|_| "tor".to_string());
     let tor_proxy_port = env::var("TOR_PROXY_PORT").unwrap_or_else(|_| "9050".to_string());
@@ -173,7 +136,7 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
     match create_client() {
         Ok(tor_client) => {
             println!("🧅 Successfully created Tor client");
-            get_blockchain_data(&tor_client, &onion_url).await
+            get_blockchain_data(&tor_client, onion_url).await
         }
         Err(e) => {
             println!("🧅 Failed to create Tor client: {}", e);

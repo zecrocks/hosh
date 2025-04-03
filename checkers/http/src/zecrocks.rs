@@ -2,6 +2,7 @@ use scraper::{Html, Selector};
 use std::collections::HashMap;
 use crate::types::BlockchainInfo;
 use std::time::Instant;
+use tracing::{info, warn};
 
 pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error + Send + Sync>> {
     let client = reqwest::Client::builder()
@@ -17,9 +18,6 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
     let response_time = start_time.elapsed().as_secs_f32() * 1000.0; // Convert to milliseconds
     let zec_html = zec_response.text().await?;
     
-    // Print HTML for debugging
-    // println!("Zec.rocks HTML: {}", zec_html);
-    
     let zec_document = Html::parse_document(&zec_html);
 
     // Try to find the height in the first row of the blocks table
@@ -28,7 +26,7 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
 
     if let Some(height_element) = zec_document.select(&height_selector).next() {
         let height_str = height_element.text().collect::<String>().trim().to_string();
-        println!("Found Zcash height: {}", height_str);
+        info!("Found Zcash height: {}", height_str);
         if let Ok(height) = height_str.parse::<u64>() {
             blockchain_data.insert("zcash".to_string(), BlockchainInfo {
                 height: Some(height),
@@ -38,7 +36,7 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
             });
         }
     } else {
-        println!("Warning: Could not find Zcash height in HTML");
+        warn!("Could not find Zcash height in HTML");
     }
 
     Ok(blockchain_data)

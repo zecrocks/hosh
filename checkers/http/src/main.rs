@@ -1,4 +1,3 @@
-use redis::Commands;
 use std::env;
 use std::error::Error;
 use std::fmt;
@@ -23,26 +22,18 @@ mod types;
 
 #[derive(Debug)]
 enum CheckerError {
-    Redis(redis::RedisError),
     Nats(async_nats::Error),
 }
 
 impl fmt::Display for CheckerError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            CheckerError::Redis(e) => write!(f, "Redis error: {}", e),
             CheckerError::Nats(e) => write!(f, "NATS error: {}", e),
         }
     }
 }
 
 impl Error for CheckerError {}
-
-impl From<redis::RedisError> for CheckerError {
-    fn from(err: redis::RedisError) -> CheckerError {
-        CheckerError::Redis(err)
-    }
-}
 
 impl From<async_nats::Error> for CheckerError {
     fn from(err: async_nats::Error) -> CheckerError {
@@ -106,7 +97,6 @@ impl ClickhouseConfig {
 #[derive(Clone)]
 struct Worker {
     nats: async_nats::Client,
-    redis: redis::Client,
     clickhouse: ClickhouseConfig,
     http_client: reqwest::Client,
 }
@@ -119,17 +109,7 @@ impl Worker {
             std::env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
         );
 
-        let redis_url = format!(
-            "redis://{}:{}",
-            std::env::var("REDIS_HOST").unwrap_or_else(|_| "redis".into()),
-            std::env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
-        );
-
-        println!("Redis key format: http:{{source}}.{{chain}}");
-        println!("Example: http:blockchair.bitcoin, http:blockchain.bitcoin");
-
         let nats = async_nats::connect(&nats_url).await?;
-        let redis = redis::Client::open(redis_url.as_str())?;
 
         let http_client = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(300))
@@ -138,7 +118,11 @@ impl Worker {
             .timeout(std::time::Duration::from_secs(60))
             .build()?;
 
-        Ok(Worker { nats, redis, clickhouse: ClickhouseConfig::from_env(), http_client })
+        Ok(Worker { 
+            nats, 
+            clickhouse: ClickhouseConfig::from_env(), 
+            http_client 
+        })
     }
 
     async fn process_check(&self, msg: async_nats::Message) {
@@ -162,21 +146,13 @@ impl Worker {
             return;
         }
 
-        let mut con = match self.redis.get_connection() {
-            Ok(con) => con,
-            Err(e) => {
-                error!("Failed to get Redis connection: {e}");
-                return;
-            }
-        };
-
         info!("Starting blockchain info fetching for URL: {}", check_request.url);
         
         // Determine which explorer to check based on URL
         let (explorer_name, explorer_result): (String, Result<HashMap<String, BlockchainInfo>, Box<dyn Error + Send + Sync>>) = if check_request.url.contains("blockchair.com") {
             ("blockchair".to_string(), blockchair::get_blockchain_info().await)
         } else if check_request.url.contains("blkchair") && check_request.url.contains(".onion") {
-            ("blockchair-onion".to_string(), blockchair::get_onion_blockchain_info().await)
+            ("blockchair-onion".to_string(), blockchair::get_onion_blockchain_info(&check_request.url).await)
         } else if check_request.url.contains("blockstream.info") {
             ("blockstream".to_string(), blockstream::get_blockchain_info().await)
         } else if check_request.url.contains("zec.rocks") {
@@ -196,28 +172,20 @@ impl Worker {
             Ok(data) => {
                 for (chain_id, info) in data.iter() {
                     if let Some(height) = info.height {
-                        let redis_key = format!("http:{}.{}", chain_id, chain_id);
-                        match con.set::<_, _, ()>(&redis_key, height) {
-                            Ok(_) => {
-                                let result = CheckResult {
-                                    host: format!("{}.{}", chain_id, chain_id),
-                                    port: check_request.port,
-                                    height,
-                                    status: "online".to_string(),
-                                    error: None,
-                                    last_updated: Utc::now(),
-                                    ping: info.response_time_ms as f64,
-                                    check_id: check_request.check_id.clone(),
-                                    user_submitted: check_request.user_submitted,
-                                };
-                                
-                                if let Err(e) = self.publish_to_clickhouse(&explorer_name, chain_id, &result).await {
-                                    error!("Failed to publish to ClickHouse for {}.{}: {}", explorer_name, chain_id, e);
-                                }
-                            }
-                            Err(e) => {
-                                error!("Failed to set Redis key {}: {}", redis_key, e);
-                            }
+                        let result = CheckResult {
+                            host: format!("{}.{}", chain_id, chain_id),
+                            port: check_request.port,
+                            height,
+                            status: "online".to_string(),
+                            error: None,
+                            last_updated: Utc::now(),
+                            ping: info.response_time_ms as f64,
+                            check_id: check_request.check_id.clone(),
+                            user_submitted: check_request.user_submitted,
+                        };
+                        
+                        if let Err(e) = self.publish_to_clickhouse(&explorer_name, chain_id, &result).await {
+                            error!("Failed to publish to ClickHouse for {}.{}: {}", explorer_name, chain_id, e);
                         }
                     }
                 }
@@ -240,72 +208,8 @@ impl Worker {
         Ok(())
     }
 
-    async fn publish_to_clickhouse(&self, source: &str, chain_id: &str, result: &CheckResult) -> Result<(), Box<dyn Error>> {
+    async fn publish_to_clickhouse(&self, source: &str, chain_id: &str, result: &CheckResult) -> Result<(), Box<dyn Error + Send + Sync>> {
         info!("📊 Publishing to ClickHouse for {}.{}", source, chain_id);
-        
-        let target_id = Uuid::new_v5(
-            &Uuid::NAMESPACE_DNS,
-            format!("http:{}.{}", source, chain_id).as_bytes()
-        ).to_string();
-
-        let escaped_host = format!("{}.{}", source, chain_id).replace("'", "\\'");
-        
-        // Update existing target
-        info!("Updating target in ClickHouse: {}", escaped_host);
-        let update_query = format!(
-            "ALTER TABLE {db}.targets 
-             UPDATE last_queued_at = now(),
-                    last_checked_at = now(),
-                    target_id = '{target_id}'
-             WHERE module = 'http' AND hostname = '{host}'
-             SETTINGS mutations_sync = 1",
-            db = self.clickhouse.database,
-            target_id = target_id,
-            host = escaped_host,
-        );
-
-        let response = self.http_client.post(&self.clickhouse.url)
-            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
-            .header("Content-Type", "text/plain")
-            .body(update_query.clone())
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            error!("❌ ClickHouse update failed: {}", error_text);
-            return Err(format!("ClickHouse update error: {}", error_text).into());
-        }
-        info!("✅ Target update successful");
-
-        // Insert new target if it doesn't exist
-        info!("Inserting new target if not exists: {}", escaped_host);
-        let insert_query = format!(
-            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
-             SELECT '{target_id}', 'http', '{host}', now(), now(), {user_submitted}
-             WHERE NOT EXISTS (
-                 SELECT 1 FROM {db}.targets 
-                 WHERE module = 'http' AND hostname = '{host}'
-             )",
-            db = self.clickhouse.database,
-            target_id = target_id,
-            host = escaped_host,
-            user_submitted = result.user_submitted.unwrap_or(false)
-        );
-
-        let response = self.http_client.post(&self.clickhouse.url)
-            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
-            .header("Content-Type", "text/plain")
-            .body(insert_query.clone())
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            let error_text = response.text().await?;
-            error!("❌ ClickHouse insert failed: {}", error_text);
-            return Err(format!("ClickHouse insert error: {}", error_text).into());
-        }
-        info!("✅ Target insert successful");
 
         // Insert the block height data
         info!("Inserting block height data for {}.{} (height: {})", source, chain_id, result.height);
