@@ -1,18 +1,14 @@
 use std::{env, error::Error, time::Duration};
-use redis::Commands;
 use serde::{Deserialize, Serialize};
 use tokio::time;
 use chrono::{DateTime, Utc};
-use tracing::{info, error, debug};
-use uuid::Uuid;
+use tracing::{info, error, Level};
 use reqwest::Client;
-use env_logger;
-use log;
-use std::io::Write;
+use tracing_subscriber;
+use scraper::{Html, Selector};
 
 // Environment variable constants
 const DEFAULT_DISCOVERY_INTERVAL: u64 = 3600; // 1 hour default
-const FORCE_REFRESH: bool = true; // Set to true to force refresh all servers
 
 // ClickHouse configuration
 struct ClickHouseConfig {
@@ -20,19 +16,68 @@ struct ClickHouseConfig {
     user: String,
     password: String,
     database: String,
+    client: reqwest::Client,
 }
 
 impl ClickHouseConfig {
     fn from_env() -> Self {
+        let host = env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".into());
+        let port = env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".into());
+        let url = format!("http://{}:{}", host, port);
+        info!("Configuring ClickHouse connection to {}", url);
+        
         Self {
-            url: format!("http://{}:{}", 
-                env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".into()),
-                env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".into())
-            ),
+            url,
             user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".into()),
             password: env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set"),
             database: env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".into()),
+            client: reqwest::Client::new(),
         }
+    }
+
+    async fn execute_query(&self, query: &str) -> Result<String, Box<dyn Error>> {
+        info!("Executing ClickHouse query");
+        let response = self.client.post(&self.url)
+            .basic_auth(&self.user, Some(&self.password))
+            .header("Content-Type", "text/plain")
+            .body(query.to_string())
+            .send()
+            .await?;
+        
+        let status = response.status();
+        if !status.is_success() {
+            let error_text = response.text().await?;
+            error!("ClickHouse query failed with status {}: {}", status, error_text);
+            return Err(format!("ClickHouse query failed: {}", error_text).into());
+        }
+        
+        let result = response.text().await?;
+        info!("ClickHouse query executed successfully");
+        Ok(result)
+    }
+
+    async fn target_exists(&self, module: &str, hostname: &str) -> Result<bool, Box<dyn Error>> {
+        let query = format!(
+            "SELECT count() FROM {}.targets WHERE module = '{}' AND hostname = '{}'",
+            self.database, module, hostname
+        );
+        let result = self.execute_query(&query).await?;
+        Ok(result.trim().parse::<i64>()? > 0)
+    }
+
+    async fn insert_target(&self, module: &str, hostname: &str) -> Result<(), Box<dyn Error>> {
+        if self.target_exists(module, hostname).await? {
+            info!("Target already exists: {} {}", module, hostname);
+            return Ok(());
+        }
+
+        let query = format!(
+            "INSERT INTO TABLE {}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted) VALUES (generateUUIDv4(), '{}', '{}', now64(3, 'UTC'), now64(3, 'UTC'), false)",
+            self.database, module, hostname
+        );
+        self.execute_query(&query).await?;
+        info!("Successfully inserted target: {} {}", module, hostname);
+        Ok(())
     }
 }
 
@@ -58,12 +103,20 @@ const ZEC_SERVERS: &[(&str, u16)] = &[
     ("lwd8.zcash-infra.com", 9067),
 ];
 
+// Static HTTP block explorer configuration
+const HTTP_EXPLORERS: &[(&str, &str)] = &[
+    ("blockchair", "https://blockchair.com"),
+    ("blockstream", "https://blockstream.info"),
+    ("zecrocks", "https://explorer.zec.rocks"),
+    ("blockchain", "https://blockchain.com"),
+    ("zcashexplorer", "https://mainnet.zcashexplorer.app"),
+    // ("mempool", "https://mempool.space"), // Cannot parse height because  it's a single-page application (SPA) built with Angular
+];
+
 #[derive(Debug, Deserialize)]
 struct BtcServerDetails {
     #[serde(default)]
     s: Option<String>,
-    #[serde(default)]
-    version: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -96,204 +149,179 @@ async fn fetch_btc_servers() -> Result<std::collections::HashMap<String, BtcServ
     Ok(servers)
 }
 
-async fn update_servers(redis_client: redis::Client, clickhouse: ClickHouseConfig, http_client: Client) -> Result<(), Box<dyn Error>> {
-    let mut conn = redis_client.get_connection()?;
-    let mut btc_count = 0;
-    let mut zec_count = 0;
+async fn get_server_details(client: &Client, host: &str, port: u16) -> Result<ServerData, Box<dyn Error>> {
+    let start_time = std::time::Instant::now();
+    let url = format!("http://{}:{}", host, port);
     
-    loop {        
-        info!("Starting discovery cycle...");
+    let response = client.get(&url)
+        .timeout(Duration::from_secs(5))
+        .send()
+        .await?;
+    
+    let ping = start_time.elapsed().as_secs_f64();
+    let version = response.headers()
+        .get("server")
+        .and_then(|v| v.to_str().ok())
+        .map(|s| s.to_string());
+    
+    Ok(ServerData {
+        host: host.to_string(),
+        port,
+        height: 0, // We'll get this from the server response in the future
+        status: "active".to_string(),
+        error: None,
+        last_updated: Utc::now(),
+        ping,
+        version,
+    })
+}
+
+async fn get_blockchair_onion_url(client: &Client) -> Result<Option<String>, Box<dyn Error>> {
+    let url = "https://blockchair.com";
+    let response = client.get(url).send().await?;
+    let text = response.text().await?;
+    let document = Html::parse_document(&text);
+    
+    // Use a more specific selector to target the onion URL link directly
+    let link_selector = Selector::parse("a[href*='.onion']").unwrap();
+    
+    if let Some(link) = document.select(&link_selector).next() {
+        if let Some(href) = link.value().attr("href") {
+            // Only return the URL if it contains the blkchair prefix
+            if href.contains("blkchair") {
+                info!("Found Blockchair onion URL: {}", href);
+                return Ok(Some(href.to_string()));
+            } else {
+                info!("Found onion URL but it's not Blockchair's: {}", href);
+            }
+        }
+    }
+    
+    info!("No Blockchair onion URL found");
+    Ok(None)
+}
+
+async fn update_servers(
+    client: &reqwest::Client,
+    clickhouse: &ClickHouseConfig,
+) -> Result<(), Box<dyn std::error::Error>> {
+    // Process ZEC servers first
+    info!("Processing {} ZEC servers...", ZEC_SERVERS.len());
+    for (host, port) in ZEC_SERVERS {
+        info!("Processing ZEC server: {}:{}", host, port);
+        if !clickhouse.target_exists("zec", host).await? {
+            if let Err(e) = clickhouse.insert_target("zec", host).await {
+                error!("Failed to insert ZEC server {}:{}: {}", host, port, e);
+            }
+        } else {
+            info!("ZEC server {}:{} already exists, skipping", host, port);
+        }
+    }
+
+    // Process HTTP block explorers second
+    info!("Processing {} HTTP block explorers...", HTTP_EXPLORERS.len());
+    for (explorer, url) in HTTP_EXPLORERS {
+        info!("Processing HTTP explorer: {} ({})", explorer, url);
         
-        match fetch_btc_servers().await {
-            Ok(btc_servers) => {
-                for (host, details) in btc_servers {
-                    let redis_key = format!("btc:{}", host);
-                    let exists = conn.exists::<_, bool>(&redis_key)?;
-                    
-                    if !exists || FORCE_REFRESH {
-                        let port = details.s
-                            .and_then(|s| s.parse::<u16>().ok())
-                            .unwrap_or(50002);
+        // Insert the main explorer target if it doesn't exist
+        if !clickhouse.target_exists("http", url).await? {
+            if let Err(e) = clickhouse.insert_target("http", url).await {
+                error!("Failed to insert HTTP explorer {}: {}", url, e);
+                continue;
+            }
+        } else {
+            info!("HTTP explorer {} already exists, skipping", url);
+        }
 
-                        let server_data = ServerData {
-                            host: host.clone(),
-                            port,
-                            height: 0,
-                            status: "new".to_string(),
-                            error: None,
-                            last_updated: Utc::now(),
-                            ping: 0.0,
-                            version: details.version,
-                        };
-                        
-                        let json = serde_json::to_string(&server_data)?;
-                        conn.set::<_, _, ()>(&redis_key, json)?;
-                        debug!("Added/Updated BTC server: {}:{}", host, port);
-                        btc_count += 1;
+        // Special handling for Blockchair to get onion URL
+        if explorer == &"blockchair" {
+            if let Some(onion_url) = get_blockchair_onion_url(client).await? {
+                info!("Found Blockchair onion URL: {}", onion_url);
+                if !clickhouse.target_exists("http", &onion_url).await? {
+                    if let Err(e) = clickhouse.insert_target("http", &onion_url).await {
+                        error!("Failed to insert Blockchair onion URL {}: {}", onion_url, e);
+                    }
+                } else {
+                    info!("Blockchair onion URL {} already exists, skipping", onion_url);
+                }
+            } else {
+                error!("Failed to get Blockchair onion URL");
+            }
+        }
+    }
 
-                        // Publish to ClickHouse
-                        let target_id = Uuid::new_v5(
-                            &Uuid::NAMESPACE_DNS,
-                            format!("btc:{}", host).as_bytes()
-                        ).to_string();
-
-                        let escaped_host = host.replace("'", "\\'");
-                        
-                        // Update existing target or create new one
-                        let upsert_query = format!(
-                            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
-                             SELECT '{target_id}', 'btc', '{host}', now(), now(), false
-                             WHERE NOT EXISTS (
-                                 SELECT 1 FROM {db}.targets 
-                                 WHERE module = 'btc' AND hostname = '{host}'
-                             )",
-                            db = clickhouse.database,
-                            target_id = target_id,
-                            host = escaped_host,
-                        );
-
-                        let response = http_client.post(&clickhouse.url)
-                            .basic_auth(&clickhouse.user, Some(&clickhouse.password))
-                            .header("Content-Type", "text/plain")
-                            .body(upsert_query)
-                            .send()
-                            .await?;
-
-                        if !response.status().is_success() {
-                            error!("Failed to insert BTC target into ClickHouse: {}", response.text().await?);
-                        }
-                    } else {
-                        debug!("BTC server already exists: {}:{}", host, details.s.as_deref().unwrap_or("50002"));
+    // Process BTC servers last
+    let btc_servers = fetch_btc_servers().await?;
+    info!("Processing {} BTC servers...", btc_servers.len());
+    for (host, details) in btc_servers {
+        let port = details.s
+            .and_then(|s| s.parse::<u16>().ok())
+            .unwrap_or(50001);
+        info!("Processing BTC server: {}:{}", host, port);
+        
+        if !clickhouse.target_exists("btc", &host).await? {
+            // Try to get details but don't require success
+            let details = get_server_details(client, &host, port).await;
+            match details {
+                Ok(_) => {
+                    if let Err(e) = clickhouse.insert_target("btc", &host).await {
+                        error!("Failed to insert BTC server {}:{}: {}", host, port, e);
+                    }
+                }
+                Err(e) => {
+                    // Still insert the target even if verification fails
+                    info!("Could not verify BTC server {}:{}: {}, but inserting anyway", host, port, e);
+                    if let Err(e) = clickhouse.insert_target("btc", &host).await {
+                        error!("Failed to insert BTC server {}:{}: {}", host, port, e);
                     }
                 }
             }
-            Err(e) => error!("Error fetching BTC servers: {}", e),
+        } else {
+            info!("BTC server {}:{} already exists, skipping", host, port);
         }
-
-        info!("Processing {} ZEC servers...", ZEC_SERVERS.len());
-        for (host, port) in ZEC_SERVERS {
-            let redis_key = format!("zec:{}", host);
-            let exists = conn.exists::<_, bool>(&redis_key)?;
-
-            if !exists || FORCE_REFRESH {
-                let server_data = ServerData {
-                    host: host.to_string(),
-                    port: *port,
-                    height: 0,
-                    status: "new".to_string(),
-                    error: None,
-                    last_updated: Utc::now(),
-                    ping: 0.0,
-                    version: None,
-                };
-                
-                let json = serde_json::to_string(&server_data)?;
-                conn.set::<_, _, ()>(&redis_key, json)?;
-                debug!("Added/Updated ZEC server: {}:{}", host, port);
-                zec_count += 1;
-
-                // Publish to ClickHouse
-                let target_id = Uuid::new_v5(
-                    &Uuid::NAMESPACE_DNS,
-                    format!("zec:{}", host).as_bytes()
-                ).to_string();
-
-                let escaped_host = host.replace("'", "\\'");
-                
-                // Update existing target or create new one
-                let upsert_query = format!(
-                    "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
-                     SELECT '{target_id}', 'zec', '{host}', now(), now(), false
-                     WHERE NOT EXISTS (
-                         SELECT 1 FROM {db}.targets 
-                         WHERE module = 'zec' AND hostname = '{host}'
-                     )",
-                    db = clickhouse.database,
-                    target_id = target_id,
-                    host = escaped_host,
-                );
-
-                let response = http_client.post(&clickhouse.url)
-                    .basic_auth(&clickhouse.user, Some(&clickhouse.password))
-                    .header("Content-Type", "text/plain")
-                    .body(upsert_query)
-                    .send()
-                    .await?;
-
-                if !response.status().is_success() {
-                    error!("Failed to insert ZEC target into ClickHouse: {}", response.text().await?);
-                }
-            } else {
-                debug!("ZEC server already exists: {}:{}", host, port);
-            }
-        }
-
-        // Print current server counts from Redis
-        let btc_keys: Vec<String> = redis::cmd("KEYS")
-            .arg("btc:*")
-            .query(&mut conn)?;
-        let zec_keys: Vec<String> = redis::cmd("KEYS")
-            .arg("zec:*")
-            .query(&mut conn)?;
-        
-        info!(
-            btc_servers = btc_count,
-            zec_servers = zec_count,
-            total_btc_servers = btc_keys.len(),
-            total_zec_servers = zec_keys.len(),
-            "Discovery cycle complete. Added/Updated {} BTC and {} ZEC servers. Total servers in Redis: {} BTC, {} ZEC. Sleeping for {} seconds", 
-            btc_count,
-            zec_count,
-            btc_keys.len(),
-            zec_keys.len(),
-            DEFAULT_DISCOVERY_INTERVAL
-        );
-        
-        time::sleep(Duration::from_secs(DEFAULT_DISCOVERY_INTERVAL)).await;
     }
+
+    Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize logging with more detailed format
-    env_logger::Builder::new()
-        .filter_level(log::LevelFilter::Debug)
-        .filter_module("hyper", log::LevelFilter::Warn)  // Reduce hyper verbosity
-        .filter_module("reqwest", log::LevelFilter::Warn)  // Reduce reqwest verbosity
-        .format(|buf, record| {
-            writeln!(
-                buf,
-                "{} {} {}:{}: {}",
-                chrono::Utc::now().format("%Y-%m-%dT%H:%M:%S.%fZ"),
-                record.level(),
-                record.file().unwrap_or("unknown"),
-                record.line().unwrap_or(0),
-                record.args()
-            )
-        })
+    // Initialize tracing subscriber with more verbose output
+    tracing_subscriber::fmt()
+        .with_max_level(Level::DEBUG)
+        .with_target(true)
+        .with_thread_ids(true)
+        .with_thread_names(true)
+        .with_file(true)
+        .with_line_number(true)
+        .with_ansi(true)
+        .with_env_filter("html5ever=warn,discovery=debug")
         .init();
 
     info!("Starting discovery service...");
-
-    let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| "redis".to_string());
-    let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| "6379".to_string());
-    
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
-    info!("Connecting to Redis at {}:{}", redis_host, redis_port);
-    
-    let redis_client = redis::Client::open(redis_url.as_str())?;
-    
-    // Test Redis connection
-    let mut conn = redis_client.get_connection()?;
-    redis::cmd("PING").query::<String>(&mut conn)?;
-    info!("Successfully connected to Redis");
 
     // Initialize ClickHouse client
     let clickhouse = ClickHouseConfig::from_env();
     let http_client = Client::new();
     info!("Initialized ClickHouse client");
 
-    update_servers(redis_client, clickhouse, http_client).await?;
+    // Get discovery interval from environment or use default
+    let discovery_interval = env::var("DISCOVERY_INTERVAL")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_DISCOVERY_INTERVAL);
 
-    Ok(())
+    info!("Discovery interval set to {} seconds", discovery_interval);
+
+    loop {
+        info!("Starting discovery cycle...");
+        
+        match update_servers(&http_client, &clickhouse).await {
+            Ok(_) => info!("Discovery cycle completed successfully"),
+            Err(e) => error!("Error during discovery cycle: {}", e),
+        }
+
+        info!("Sleeping for {} seconds before next discovery cycle", discovery_interval);
+        time::sleep(Duration::from_secs(discovery_interval)).await;
+    }
 } 

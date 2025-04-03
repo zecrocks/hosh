@@ -88,9 +88,13 @@ services:
     image: hosh/discovery
     container_name: discovery
     environment:
-      - REDIS_HOST=redis
       - RUST_LOG=info
       - DISCOVERY_INTERVAL=3600
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
       chronicler:
         condition: service_healthy
