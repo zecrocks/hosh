@@ -29,6 +29,8 @@ const ZEC_SERVERS: &[(&str, u16)] = &[
     ("lwd6.zcash-infra.com", 9067),
     ("lwd7.zcash-infra.com", 9067),
     ("lwd8.zcash-infra.com", 9067),
+    ("lwd8.zcash-infra.com", 9067),
+    ("lightwalletd.stakehold.rs", 443),
 ];
 
 #[derive(Debug, Serialize, Deserialize)]
