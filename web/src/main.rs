@@ -9,24 +9,12 @@ use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
 use rand::Rng;
-use std::collections::HashSet;
 use tracing::{info, warn, error, Level};
 use tracing_subscriber::FmtSubscriber;
 
 mod filters {
     use askama::Result;
     use serde_json::Value;
-
-    pub fn filter<T, F>(items: &[T], pred: F) -> Vec<&T>
-    where
-        F: Fn(&&T) -> bool,
-    {
-        items.iter().filter(pred).collect()
-    }
-
-    pub fn first<T>(items: &[T]) -> Option<&T> {
-        items.first()
-    }
 
     #[allow(dead_code)]
     pub fn format_value(v: &Value) -> Result<String> {
@@ -38,11 +26,6 @@ mod filters {
             _ => Ok(v.to_string())
         }
     }
-}
-
-
-fn upper(s: &str) -> askama::Result<String> {
-    Ok(s.to_uppercase())
 }
 
 #[derive(Template)]
@@ -210,7 +193,12 @@ impl ServerInfo {
         
         // Hacky check to see if the server is running Zaino (doesn't start with "v")
         let lwd_display = if !lwd_version.is_empty() && lwd_version != "-" && !lwd_version.starts_with('v') {
-            format!("{} (Zaino 🚀)", lwd_version)
+            // Only show Zaino indicator for ZEC currency
+            if self.extra.get("zcashd_subversion").is_some() {
+                format!("{} (Zaino 🚀)", lwd_version)
+            } else {
+                lwd_version
+            }
         } else {
             lwd_version
         };
@@ -278,7 +266,6 @@ struct CheckTemplate {
     check_id: String,
     server: Option<ServerInfo>,
     network: String,
-    is_public_server: bool,
     checking_url: Option<String>,
     checking_port: Option<u16>,
     server_data: Option<HashMap<String, Value>>,
@@ -384,17 +371,7 @@ async fn network_status(
         })?;
 
         match serde_json::from_str::<ServerInfo>(&value) {
-            Ok(mut server_info) => {
-                // Skip servers without last_updated
-                if server_info.last_updated.is_none() {
-                    continue;
-                }
-                // Check if `last_updated` is the default value and convert to None
-                if server_info.last_updated == Some("0001-01-01T00:00:00".to_string()) {
-                    server_info.last_updated = None;
-                    continue;  // Skip default values too
-                }
-                
+            Ok(server_info) => {
                 // Skip user-submitted checks
                 if server_info.extra.get("user_submitted")
                     .and_then(|v| v.as_bool())
@@ -765,7 +742,6 @@ async fn check_result(
     // We'll store the discovered server info and raw data here if we find a match
     let mut server: Option<ServerInfo> = None;
     let mut server_data: Option<HashMap<String, Value>> = None;
-    let mut is_public_server = false;
 
     for key in keys {
         // Grab the JSON
@@ -788,18 +764,6 @@ async fn check_result(
                 server_data = Some(data);
                 break;
             }
-
-            // Otherwise, check if it's a public server
-            let user_submitted = data.get("user_submitted")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true);
-
-            if !user_submitted && key.ends_with(&check_id) {
-                is_public_server = true;
-                server = serde_json::from_str(&value).ok();
-                server_data = Some(data);
-                break;
-            }
         }
     }
 
@@ -807,7 +771,6 @@ async fn check_result(
         check_id,
         server,
         network: network_str.clone(),
-        is_public_server,
         checking_url,
         checking_port,
         server_data,
