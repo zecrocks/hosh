@@ -17,11 +17,13 @@ use routes::{
 };
 
 #[tokio::main]
-async fn main() {
-    // Initialize tracing
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing first, before any logging calls
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .init();
+
+    let worker = worker::Worker::new().await?;
 
     // Check if we should run in worker mode
     let is_worker = std::env::var("RUN_MODE")
@@ -29,16 +31,8 @@ async fn main() {
         .unwrap_or(false);
 
     if is_worker {
-        info!("Starting in worker mode...");
-        match worker::Worker::new().await {
-            Ok(worker) => {
-                if let Err(e) = worker.run().await {
-                    error!("Worker error: {}", e);
-                }
-            }
-            Err(e) => {
-                error!("Failed to create worker: {}", e);
-            }
+        if let Err(e) = worker.run().await {
+            error!("MAIN: Worker error: {}", e);
         }
     } else {
         info!("Starting in API server mode...");
@@ -62,4 +56,6 @@ async fn main() {
             error!("Server error: {}", e);
         }
     }
+
+    Ok(())
 }
