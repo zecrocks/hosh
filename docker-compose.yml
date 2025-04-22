@@ -449,10 +449,13 @@ services:
       - ./web/target:/usr/src/web/target  # Persist build artifacts
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      - RUST_LOG=debug
-      - NATS_URL=nats://nats:4222
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - NATS_HOST=nats
+      - NATS_PORT=4222
     depends_on:
       chronicler:
         condition: service_healthy

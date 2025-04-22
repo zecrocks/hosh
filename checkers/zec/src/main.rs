@@ -231,7 +231,30 @@ impl Worker {
         let start_time = Instant::now();
         let (height, error, server_info) = match zingolib::grpc_connector::get_info(uri).await {
             Ok(info) => (info.block_height, None, Some(info)),
-            Err(e) => (0, Some(e.to_string()), None),
+            Err(e) => {
+                let simplified_error = if e.to_string().contains("tls handshake eof") {
+                    "TLS handshake failed - server may be offline or not accepting connections".to_string()
+                } else if e.to_string().contains("connection refused") {
+                    "Connection refused - server may be offline or not accepting connections".to_string()
+                } else if e.to_string().contains("InvalidContentType") {
+                    "Invalid content type - server may not be a valid Zcash node".to_string()
+                } else {
+                    let error_str = e.to_string();
+                    if let Some(start) = error_str.find("message: \"") {
+                        let start = start + 10;
+                        if let Some(end) = error_str[start..].find("\", source:") {
+                            error_str[start..start + end].to_string()
+                        } else if let Some(end) = error_str[start..].find("\"") {
+                            error_str[start..start + end].to_string()
+                        } else {
+                            error_str
+                        }
+                    } else {
+                        error_str
+                    }
+                };
+                (0, Some(simplified_error), None)
+            },
         };
 
         let latency = start_time.elapsed().as_secs_f64() * 1000.0;

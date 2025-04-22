@@ -3,12 +3,13 @@ use std::collections::HashMap;
 use actix_web::{get, post, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
 use actix_files as fs;
 use askama::Template;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Deserializer};
+use serde::de::Error;
 use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{info, warn, error, Level};
+use tracing::{info, warn, error, Level, debug};
 use tracing_subscriber::FmtSubscriber;
 use reqwest;
 use async_nats;
@@ -77,20 +78,28 @@ fn deserialize_port<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    // Always deserialize as Value first to handle any JSON type
     let value = serde_json::Value::deserialize(deserializer)?;
-    
-    // Convert the value to a string
-    let port_str = match value {
-        serde_json::Value::String(s) => s,
-        serde_json::Value::Number(n) => n.to_string(),
-        _ => return Ok(None),
-    };
-    
-    // Try to parse the string as a number
-    port_str.parse::<u16>()
-        .map(Some)
-        .or_else(|_| Ok(None))
+    match value {
+        Value::Number(n) => n.as_u64()
+            .and_then(|n| u16::try_from(n).ok())
+            .map(Some)
+            .or(Some(None))
+            .ok_or_else(|| D::Error::custom("Invalid port number")),
+        Value::String(s) => {
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<u16>()
+                    .map(Some)
+                    .or(Ok(None))
+            }
+        },
+        Value::Null => Ok(None),
+        _ => {
+            warn!("Unexpected port value format: {:?}", value);
+            Ok(None)
+        }
+    }
 }
 
 fn deserialize_error_field<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
@@ -100,56 +109,76 @@ where
     let value = serde_json::Value::deserialize(deserializer)?;
     
     match value {
-        serde_json::Value::String(s) if !s.is_empty() => {
-            // Extract just the main error message
-            let cleaned = if s.contains("Status {") {
-                // First try to find the message field directly
-                if let Some(msg_start) = s.find("message: \"") {
-                    let msg_part = &s[msg_start + 9..]; // Skip "message: \""
-                    if let Some(msg_end) = msg_part.find('\"') {
-                        let message = &msg_part[..msg_end];
-                        
-                        if message == "client error (Connect)" {
-                            // Look for the final error message
-                            if let Some(final_error) = s.rfind("error: \"") {
-                                let error_part = &s[final_error + 8..]; // Skip "error: \""
-                                if let Some(error_end) = error_part.find('\"') {
-                                    let error_msg = &error_part[..error_end];
-                                    
-                                    // Clean up common error messages
-                                    if error_msg.contains("tls handshake eof") {
-                                        "TLS handshake failed".to_string()
-                                    } else if error_msg.contains("Connection refused") {
-                                        "Connection refused".to_string()
-                                    } else {
-                                        error_msg.to_string()
-                                    }
-                                } else {
-                                    message.to_string()
-                                }
-                            } else {
-                                message.to_string()
-                            }
-                        } else {
-                            message.to_string()
-                        }
+        // Handle null as None
+        serde_json::Value::Null => Ok(None),
+        
+        // Handle direct strings
+        serde_json::Value::String(s) => {
+            if s.is_empty() {
+                return Ok(None);
+            }
+            
+            // Clean up common error messages
+            let cleaned = s
+                .replace("\\n", " ")
+                .replace("\\r", " ")
+                .replace("\\t", " ")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+                .trim()
+                .to_string();
+                
+            // Extract error message from Status structure if present
+            let error_msg = if cleaned.contains("Status {") {
+                if let Some(start) = cleaned.find("message: \"") {
+                    let start = start + 10; // Skip "message: \""
+                    if let Some(end) = cleaned[start..].find("\", source:") {
+                        cleaned[start..start + end].to_string()
+                    } else if let Some(end) = cleaned[start..].find("\"") {
+                        cleaned[start..start + end].to_string()
                     } else {
-                        warn!("No closing quote found in message part");
-                        "Unknown error".to_string()
+                        cleaned
                     }
                 } else {
-                    warn!("Could not find message field in: {}", s);
-                    "Unknown error".to_string()
+                    cleaned
                 }
             } else {
-                s
+                cleaned
             };
-            Ok(Some(cleaned))
+                
+            // Map common error messages to more user-friendly versions
+            let mapped = if error_msg.contains("tls handshake eof") {
+                "TLS handshake failed - server may be offline or not accepting connections".to_string()
+            } else if error_msg.contains("connection refused") {
+                "Connection refused - server may be offline or not accepting connections".to_string()
+            } else if error_msg.contains("InvalidContentType") {
+                "Invalid content type - server may not be a valid Zcash node".to_string()
+            } else {
+                error_msg
+            };
+            
+            Ok(Some(mapped))
         },
         
-        serde_json::Value::Bool(false) | serde_json::Value::Null => Ok(None),
-        serde_json::Value::Bool(true) => Ok(Some("Unknown error".to_string())),
-        _ => Ok(Some(value.to_string())),
+        // Handle objects that might contain error messages
+        serde_json::Value::Object(obj) => {
+            // Try to extract error message from common fields
+            let error_msg = obj.get("error")
+                .or_else(|| obj.get("message"))
+                .or_else(|| obj.get("detail"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+                
+            if let Some(msg) = error_msg {
+                Ok(Some(msg))
+            } else {
+                // If no error message found, return None
+                Ok(None)
+            }
+        },
+        
+        // Everything else is treated as None
+        _ => Ok(None),
     }
 }
 
@@ -598,27 +627,43 @@ async fn network_status(
             continue;
         }
 
+        // Log the raw response for debugging
+        debug!("Raw server response: {}", line);
+        
         match serde_json::from_str::<serde_json::Value>(line) {
             Ok(result) => {
-                // First parse the response_data string into a Value
-                let response_data = result["response_data"].as_str().unwrap_or("{}");
+                // Get response_data, with better error handling
+                let response_data = match result.get("response_data") {
+                    Some(val) => match val {
+                        Value::String(s) => s,
+                        _ => {
+                            error!("response_data is not a string: {:?}", val);
+                            "{}"
+                        }
+                    },
+                    None => {
+                        error!("No response_data field in response: {:?}", result);
+                        "{}"
+                    }
+                };
                 
-                // Now parse that string into ServerInfo
+                // Now parse that string into ServerInfo with better error reporting
                 match serde_json::from_str::<ServerInfo>(response_data) {
                     Ok(server_info) => {
                         servers.push(server_info);
                     }
                     Err(e) => {
                         error!(
-                            "Failed to parse server info for host {}: {}", 
+                            "Failed to parse server info for host {}: {} (raw data: {})", 
                             result["hostname"].as_str().unwrap_or("unknown"),
-                            e
+                            e,
+                            response_data
                         );
                     }
                 }
             }
             Err(e) => {
-                error!("Failed to parse JSON line: {}, Error: {}", line, e);
+                error!("Failed to parse JSON line: {} (raw line: {})", e, line);
             }
         }
     }
@@ -880,7 +925,7 @@ async fn network_api(
         .map(|server| {
             let (port, protocol) = match network.0 {
                 "btc" => (server.port.unwrap_or(50002), "ssl"),
-                "zec" => (server.port.unwrap_or(9067), "grpc"),
+                "zec" => (server.port.unwrap_or(443), "grpc"),
                 "http" => (server.port.unwrap_or(80), "http"),
                 _ => unreachable!(),
             };

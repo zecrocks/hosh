@@ -83,29 +83,19 @@ impl ClickHouseConfig {
 
 // Static ZEC server configuration
 const ZEC_SERVERS: &[(&str, u16)] = &[
-    ("zec.rocks", 443),
-    ("na.zec.rocks", 443),
-    ("sa.zec.rocks", 443),
-    ("eu.zec.rocks", 443),
-    ("ap.zec.rocks", 443),
-    ("me.zec.rocks", 443),
+    ("zaino.testnet.unsafe.zec.rocks", 443),
     ("testnet.zec.rocks", 443),
     ("zcashd.zec.rocks", 443),
+    ("ap.zec.rocks", 443),
+    ("zec.rocks", 443),
+    ("me.zec.rocks", 443),
+    ("eu.zec.rocks", 443),
     ("zaino.unsafe.zec.rocks", 443),
-    ("zaino.testnet.unsafe.zec.rocks", 443),
-    ("lwd1.zcash-infra.com", 9067),
-    ("lwd2.zcash-infra.com", 9067),
-    ("lwd3.zcash-infra.com", 9067),
-    ("lwd4.zcash-infra.com", 9067),
-    ("lwd5.zcash-infra.com", 9067),
-    ("lwd6.zcash-infra.com", 9067),
-    ("lwd7.zcash-infra.com", 9067),
-    ("lwd8.zcash-infra.com", 9067),
-    ("lwd8.zcash-infra.com", 9067),
-    ("lightwalletd.stakehold.rs", 443),
     ("zcash.mysideoftheweb.com", 9067),
-    ("zcash.mysideoftheweb.com", 19067),
+    ("na.zec.rocks", 443),
+    ("sa.zec.rocks", 443),
     ("zaino.stakehold.rs", 443),
+    ("lightwalletd.stakehold.rs", 443),
 ];
 
 // Static HTTP block explorer configuration
