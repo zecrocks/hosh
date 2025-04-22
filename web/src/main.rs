@@ -713,6 +713,16 @@ async fn network_status(
     let online_count = servers.iter().filter(|s| s.is_online()).count();
     let total_count = servers.len();
 
+    servers.sort_by(|a, b| {
+        match (a.height > 0, b.height > 0) {
+            (true, true) => b.height.cmp(&a.height)  // Both have heights > 0, sort by height desc
+                .then(a.host.to_lowercase().cmp(&b.host.to_lowercase())),  // Then by hostname (case insensitive)
+            (true, false) => std::cmp::Ordering::Less,  // a has height > 0, b doesn't, so a comes first
+            (false, true) => std::cmp::Ordering::Greater,  // b has height > 0, a doesn't, so b comes first
+            (false, false) => a.host.to_lowercase().cmp(&b.host.to_lowercase()),  // Neither has height > 0, sort by hostname
+        }
+    });
+
     let template = IndexTemplate {
         servers,
         percentile_height,
@@ -1088,6 +1098,16 @@ async fn check_server(
                 .collect::<Vec<_>>(), 
             90
         );
+
+        servers.sort_by(|a, b| {
+            match (a.height > 0, b.height > 0) {
+                (true, true) => b.height.cmp(&a.height)  // Both have heights > 0, sort by height desc
+                    .then(a.host.to_lowercase().cmp(&b.host.to_lowercase())),  // Then by hostname (case insensitive)
+                (true, false) => std::cmp::Ordering::Less,  // a has height > 0, b doesn't, so a comes first
+                (false, true) => std::cmp::Ordering::Greater,  // b has height > 0, a doesn't, so b comes first
+                (false, false) => a.host.to_lowercase().cmp(&b.host.to_lowercase()),  // Neither has height > 0, sort by hostname
+            }
+        });
 
         let template = IndexTemplate {
             servers,
