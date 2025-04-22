@@ -1,8 +1,9 @@
 use scraper::{Html, Selector};
 use std::collections::HashMap;
-use crate::blockchain::BlockchainInfo;
+use crate::types::BlockchainInfo;
+use std::time::Instant;
 
-pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error>> {
+pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Box<dyn std::error::Error + Send + Sync>> {
     let client = reqwest::Client::builder()
         .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
         .build()?;
@@ -11,7 +12,9 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
     
     // Fetch Zcash height from mainnet.zcashexplorer.app
     let url = "https://mainnet.zcashexplorer.app/";
+    let start_time = Instant::now();
     let response = client.get(url).send().await?;
+    let response_time = start_time.elapsed().as_secs_f32() * 1000.0; // Convert to milliseconds
     let html = response.text().await?;
     
     let document = Html::parse_document(&html);
@@ -28,7 +31,8 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
             blockchain_data.insert("zcash".to_string(), BlockchainInfo {
                 height: Some(height),
                 name: "Zcash".to_string(),
-                symbol: "zec".to_string(),
+                response_time_ms: response_time,
+                extra: HashMap::new(),
             });
         }
     } else {

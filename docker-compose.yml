@@ -21,18 +21,21 @@ services:
     environment:
       RUST_LOG: info
       RUN_MODE: worker
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
       NATS_SUBJECT: "hosh.check.btc"
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
+      CLICKHOUSE_HOST: chronicler
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
-        condition: service_healthy
       nats:
         condition: service_healthy
       tor:
+        condition: service_healthy
+      chronicler:
         condition: service_healthy
 
   checker-btc-user:
@@ -42,18 +45,21 @@ services:
       RUST_LOG: info
       RUN_MODE: worker
       MAX_CONCURRENT_CHECKS: 1
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
       NATS_URL: "nats://nats:4222"
       NATS_SUBJECT: "hosh.check.btc.user"
       TOR_PROXY_HOST: tor
       TOR_PROXY_PORT: 9050
+      CLICKHOUSE_HOST: chronicler
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
-        condition: service_healthy
       nats:
         condition: service_healthy
       tor:
+        condition: service_healthy
+      chronicler:
         condition: service_healthy
 
   dashboard:
@@ -63,29 +69,68 @@ services:
     ports:
       - "8050:8050"
     profiles:
-      - disabled
       - dev
     volumes:
       - ./contrib/dashboard:/app
     environment:
       - REDIS_HOST=redis
       - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - NATS_HOST=nats
+      - NATS_PORT=4222
+      - NATS_PREFIX=hosh.
     depends_on:
-      - redis
+      - chronicler
+      - nats
 
   discovery:
     build: ./discovery
     image: hosh/discovery
     container_name: discovery
     environment:
-      - REDIS_HOST=redis
       - RUST_LOG=info
       - DISCOVERY_INTERVAL=3600
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
+      chronicler:
         condition: service_healthy
       # checker-btc: # TODO: Re-enable after implementing peer discovery
       #   condition: service_healthy
+
+  discovery-dev:
+    build:
+      context: ./discovery
+      dockerfile: dev.Dockerfile
+    image: hosh/discovery-dev
+    profiles:
+      - dev
+    volumes:
+      - ./discovery:/usr/src/app
+      - ./discovery/target:/usr/src/app/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=debug
+      - RUST_BACKTRACE=1
+      - TRACING_LEVEL=debug
+      - DISCOVERY_INTERVAL=3600
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    depends_on:
+      chronicler:
+        condition: service_healthy
+    tty: true
+    stdin_open: true
 
   publisher:
     build: 
@@ -98,12 +143,15 @@ services:
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
       - NATS_URL=${NATS_URL:-nats://nats:4222}
       - NATS_PREFIX=${NATS_PREFIX:-hosh.}
-      - REDIS_HOST=${REDIS_HOST:-redis}
-      - REDIS_PORT=${REDIS_PORT:-6379}
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
-      redis:
-        condition: service_healthy
       nats:
+        condition: service_healthy
+      chronicler:
         condition: service_healthy
       checker-btc:
         condition: service_started
@@ -117,28 +165,159 @@ services:
     image: hosh/checker-zec
     container_name: checker-zec
     environment:
-      NATS_HOST: nats
-      NATS_PORT: 4222
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      - RUST_LOG=trace
+      - NATS_HOST=nats
+      - NATS_PORT=4222
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
       nats:
         condition: service_healthy
-      redis:
+      chronicler:
         condition: service_healthy
 
   checker-http:
-    build: checkers/http
+    build:
+      context: ./checkers/http
+      dockerfile: Dockerfile
     image: hosh/checker-http
     environment:
-      NATS_HOST: nats
-      NATS_PORT: 4222
-      REDIS_HOST: redis
-      REDIS_PORT: 6379
+      - RUST_LOG=debug
+      - NATS_HOST=nats
+      - TOR_PROXY_HOST=tor
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
       nats:
         condition: service_healthy
-      redis:
+      tor:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
+
+  checker-http-dev:
+    build:
+      context: ./checkers/http
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-http-dev
+    profiles:
+      - dev
+    volumes:
+      - ./checkers/http:/usr/src/app
+      - ./checkers/http/target:/usr/src/app/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - NATS_HOST=nats
+      - TOR_PROXY_HOST=tor
+      - RUST_LOG=debug
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    depends_on:
+      nats:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
+
+  checker-btc-dev:
+    build:
+      context: ./checkers/btc
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-btc-dev
+    profiles:
+      - dev
+    volumes:
+      - ./checkers/btc:/usr/src/btc
+      - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      RUST_LOG: debug
+      RUN_MODE: worker
+      NATS_URL: "nats://nats:4222"
+      NATS_SUBJECT: "hosh.check.btc"
+      TOR_PROXY_HOST: tor
+      TOR_PROXY_PORT: 9050
+      CLICKHOUSE_HOST: chronicler
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    depends_on:
+      nats:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
+
+  checker-btc-user-dev:
+    build:
+      context: ./checkers/btc
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-btc-dev
+    profiles:
+      - dev
+    volumes:
+      - ./checkers/btc:/usr/src/btc
+      - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      RUST_LOG: debug
+      RUN_MODE: worker
+      MAX_CONCURRENT_CHECKS: 1
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      NATS_URL: "nats://nats:4222"
+      NATS_SUBJECT: "hosh.check.btc.user"
+      TOR_PROXY_HOST: tor
+      TOR_PROXY_PORT: 9050
+      CLICKHOUSE_HOST: chronicler
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    depends_on:
+      nats:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
+
+  checker-zec-dev:
+    build:
+      context: ./checkers/zec
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-zec-dev
+    profiles:
+      - dev
+    volumes:
+      - ./checkers/zec:/usr/src/zec
+      - ./checkers/zec/target:/usr/src/zec/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      RUST_LOG: trace
+      NATS_HOST: nats
+      NATS_PORT: 4222
+      CLICKHOUSE_HOST: chronicler
+      CLICKHOUSE_PORT: 8123
+      CLICKHOUSE_DB: ${CLICKHOUSE_DB}
+      CLICKHOUSE_USER: ${CLICKHOUSE_USER}
+      CLICKHOUSE_PASSWORD: ${CLICKHOUSE_PASSWORD}
+    depends_on:
+      nats:
+        condition: service_healthy
+      chronicler:
         condition: service_healthy
 
   redis:
@@ -155,6 +334,8 @@ services:
       - redis-data:/data
     command: redis-server --appendonly yes
     restart: always
+    profiles:
+      - dev
 
   tor:
     image: osminogin/tor-simple
@@ -187,10 +368,17 @@ services:
     ports:
       - "8080:8080"
     environment:
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - NATS_HOST=nats
+      - NATS_PORT=4222
     depends_on:
-      redis:
+      chronicler:
+        condition: service_healthy
+      nats:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080"]
@@ -219,10 +407,96 @@ services:
       - "3000:3000"
       - "3001:3001"
     volumes:
-      - ./docs:/book
+      - .:/hosh
     command: ["serve", "--hostname", "0.0.0.0", "--port", "3000"]
-    working_dir: /book
+    working_dir: /hosh/docs
+
+  chronicler:
+    build: ./chronicler
+    container_name: chronicler
+    environment:
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+    ports:
+      - "8123:8123"  # HTTP interface
+      - "9000:9000"  # Native interface
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+      - ./chronicler/migrations:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8123/ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+  web-dev:
+    build:
+      context: ./web
+      dockerfile: dev.Dockerfile
+    image: hosh/web-dev
+    profiles:
+      - dev
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./web:/usr/src/web
+      - ./web/target:/usr/src/web/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - NATS_HOST=nats
+      - NATS_PORT=4222
+    depends_on:
+      chronicler:
+        condition: service_healthy
+      nats:
+        condition: service_healthy
+
+  publisher-dev:
+    build:
+      context: ./publisher
+      dockerfile: dev.Dockerfile
+    profiles:
+      - dev
+    volumes:
+      - ./publisher:/usr/src/app
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=debug
+      - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
+      - NATS_URL=${NATS_URL:-nats://nats:4222}
+      - NATS_PREFIX=${NATS_PREFIX:-hosh.}
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    depends_on:
+      nats:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
+
+  hosh-dev:
+    build:
+      context: .
+      dockerfile: dev.Dockerfile
+    image: hosh/dev
+    profiles:
+      - dev
 
 volumes:
+  cargo-cache:
   btc-data:
   redis-data:
+  clickhouse-data:

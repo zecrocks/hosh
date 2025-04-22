@@ -3,20 +3,21 @@ use std::collections::HashMap;
 use actix_web::{get, post, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
 use actix_files as fs;
 use askama::Template;
-use redis::Commands;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::Deserializer};
+use serde::de::Error;
 use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
-use rand::Rng;
-use tracing::{info, warn, error, Level};
+use std::time::{SystemTime, UNIX_EPOCH};
+use tracing::{info, warn, error, Level, debug};
 use tracing_subscriber::FmtSubscriber;
+use reqwest;
+use async_nats;
 
 mod filters {
     use askama::Result;
     use serde_json::Value;
 
-    #[allow(dead_code)]
     pub fn format_value(v: &Value) -> Result<String> {
         match v {
             Value::String(s) => Ok(s.to_string()),
@@ -37,7 +38,7 @@ struct IndexTemplate<'a> {
     online_count: usize,
     total_count: usize,
     check_error: Option<&'a str>,
-    math_problem: (u8, u8),
+    math_problem: (u8, u8, u8),
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -52,6 +53,12 @@ struct ServerInfo {
     height: u64,
 
     #[serde(default)]
+    status: String,
+
+    #[serde(default, deserialize_with = "deserialize_error_field")]
+    error: Option<String>,
+
+    #[serde(default)]
     last_updated: Option<String>,
 
     #[serde(default)]
@@ -61,10 +68,7 @@ struct ServerInfo {
     server_version: Option<String>,
 
     #[serde(default)]
-    error: Option<bool>,
-
-    #[serde(default)]
-    error_time: Option<String>,
+    user_submitted: bool,
 
     #[serde(flatten)]
     extra: HashMap<String, serde_json::Value>,
@@ -74,20 +78,108 @@ fn deserialize_port<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {
-    // Always deserialize as Value first to handle any JSON type
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        Value::Number(n) => n.as_u64()
+            .and_then(|n| u16::try_from(n).ok())
+            .map(Some)
+            .or(Some(None))
+            .ok_or_else(|| D::Error::custom("Invalid port number")),
+        Value::String(s) => {
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<u16>()
+                    .map(Some)
+                    .or(Ok(None))
+            }
+        },
+        Value::Null => Ok(None),
+        _ => {
+            warn!("Unexpected port value format: {:?}", value);
+            Ok(None)
+        }
+    }
+}
+
+fn deserialize_error_field<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
     let value = serde_json::Value::deserialize(deserializer)?;
     
-    // Convert the value to a string
-    let port_str = match value {
-        serde_json::Value::String(s) => s,
-        serde_json::Value::Number(n) => n.to_string(),
-        _ => return Ok(None),
-    };
-    
-    // Try to parse the string as a number
-    port_str.parse::<u16>()
-        .map(Some)
-        .or_else(|_| Ok(None))
+    match value {
+        // Handle null as None
+        serde_json::Value::Null => Ok(None),
+        
+        // Handle direct strings
+        serde_json::Value::String(s) => {
+            if s.is_empty() {
+                return Ok(None);
+            }
+            
+            // Clean up common error messages
+            let cleaned = s
+                .replace("\\n", " ")
+                .replace("\\r", " ")
+                .replace("\\t", " ")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+                .trim()
+                .to_string();
+                
+            // Extract error message from Status structure if present
+            let error_msg = if cleaned.contains("Status {") {
+                if let Some(start) = cleaned.find("message: \"") {
+                    let start = start + 10; // Skip "message: \""
+                    if let Some(end) = cleaned[start..].find("\", source:") {
+                        cleaned[start..start + end].to_string()
+                    } else if let Some(end) = cleaned[start..].find("\"") {
+                        cleaned[start..start + end].to_string()
+                    } else {
+                        cleaned
+                    }
+                } else {
+                    cleaned
+                }
+            } else {
+                cleaned
+            };
+                
+            // Map common error messages to more user-friendly versions
+            let mapped = if error_msg.contains("tls handshake eof") {
+                "TLS handshake failed - server may be offline or not accepting connections".to_string()
+            } else if error_msg.contains("connection refused") {
+                "Connection refused - server may be offline or not accepting connections".to_string()
+            } else if error_msg.contains("InvalidContentType") {
+                "Invalid content type - server may not be a valid Zcash node".to_string()
+            } else {
+                error_msg
+            };
+            
+            Ok(Some(mapped))
+        },
+        
+        // Handle objects that might contain error messages
+        serde_json::Value::Object(obj) => {
+            // Try to extract error message from common fields
+            let error_msg = obj.get("error")
+                .or_else(|| obj.get("message"))
+                .or_else(|| obj.get("detail"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+                
+            if let Some(msg) = error_msg {
+                Ok(Some(msg))
+            } else {
+                // If no error message found, return None
+                Ok(None)
+            }
+        },
+        
+        // Everything else is treated as None
+        _ => Ok(None),
+    }
 }
 
 impl ServerInfo {
@@ -149,9 +241,8 @@ impl ServerInfo {
         }
     }
 
-    // TODO: Show status based on something other than height
     fn is_online(&self) -> bool {
-        !self.error.unwrap_or(false) && self.height > 0
+        self.status == "success" && self.height > 0
     }
 
     fn is_height_behind(&self, percentile_height: &u64) -> bool {
@@ -170,18 +261,6 @@ impl ServerInfo {
     fn is_height_ahead(&self, percentile_height: &u64) -> bool {
         // Consider a server suspiciously ahead if it's more than 3 blocks ahead of the 90th percentile
         self.height > 0 && self.height > percentile_height + 3
-    }
-
-    fn get_rank(&self, percentile_height: &u64) -> u8 {
-        if !self.is_online() {
-            0
-        } else if self.is_height_behind(percentile_height) {
-            1
-        } else if self.is_height_ahead(percentile_height) {
-            2
-        } else {
-            3
-        }
     }
 
     fn formatted_version(&self) -> String {
@@ -228,10 +307,6 @@ impl SafeNetwork {
             _ => None
         }
     }
-    
-    fn redis_prefix(&self) -> String {
-        format!("{}:*", self.0)
-    }
 }
 
 #[derive(Template)]
@@ -261,7 +336,7 @@ struct ApiResponse {
 }
 
 #[derive(Template)]
-#[template(path = "check.html", escape = "none")]
+#[template(path = "check.html")]
 struct CheckTemplate {
     check_id: String,
     server: Option<ServerInfo>,
@@ -272,8 +347,23 @@ struct CheckTemplate {
 }
 
 impl CheckTemplate {
-    fn network_upper(network: &str) -> String {
-        network.to_uppercase()
+    fn network_upper(&self) -> String {
+        self.network.to_uppercase()
+    }
+
+    fn is_checking(&self) -> bool {
+        self.server.is_none()
+    }
+
+    fn has_error(&self) -> bool {
+        self.server.as_ref()
+            .map(|s| s.error.is_some())
+            .unwrap_or(false)
+    }
+
+    fn error_message(&self) -> Option<&str> {
+        self.server.as_ref()
+            .and_then(|s| s.error.as_deref())
     }
 }
 
@@ -283,27 +373,12 @@ struct CheckQuery {
     port: Option<u16>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Deserialize)]
 struct ExplorerRow {
     chain: String,
-    blockchair: Option<u64>,
-    blockchain_com: Option<u64>,
-    blockstream: Option<u64>,
-    zecrocks: Option<u64>,
-    zcashexplorer: Option<u64>,
-}
-
-impl ExplorerRow {
-    // Helper method to count how many heights are available for this chain
-    fn available_height_count(&self) -> usize {
-        let mut count = 0;
-        if self.blockchair.is_some() { count += 1; }
-        if self.blockchain_com.is_some() { count += 1; }
-        if self.blockstream.is_some() { count += 1; }
-        if self.zecrocks.is_some() { count += 1; }
-        if self.zcashexplorer.is_some() { count += 1; }
-        count
-    }
+    explorer: String,
+    #[serde(deserialize_with = "deserialize_string_or_number")]
+    block_height: Option<u64>,
 }
 
 #[derive(Template)]
@@ -313,30 +388,151 @@ struct BlockchainHeightsTemplate {
 }
 
 impl BlockchainHeightsTemplate {
-    // Helper function to format chain names
     fn format_chain_name(&self, chain: &str) -> String {
         chain.replace("-", " ")
     }
 
-    fn get_height_difference(&self, height: &u64, row: &ExplorerRow) -> Option<String> {
-        // Collect all heights for this row
-        let mut heights: Vec<u64> = vec![];
-        if let Some(h) = row.blockchair { heights.push(h); }
-        if let Some(h) = row.blockchain_com { heights.push(h); }
-        if let Some(h) = row.blockstream { heights.push(h); }
-        if let Some(h) = row.zecrocks { heights.push(h); }
-        if let Some(h) = row.zcashexplorer { heights.push(h); }
+    fn get_unique_chains(&self) -> Vec<&str> {
+        // First collect chains and their active explorer counts
+        let mut chains_with_counts: Vec<(&str, usize)> = self.rows.iter()
+            .map(|row| row.chain.as_str())
+            .collect::<std::collections::HashSet<_>>()  // Get unique chains
+            .into_iter()
+            .map(|chain| {
+                // Count non-empty heights for this chain
+                let active_count = self.rows.iter()
+                    .filter(|row| row.chain == chain && row.block_height.is_some())
+                    .count();
+                (chain, active_count)
+            })
+            .collect();
 
-        // If we have at least 2 heights (to compare), and this height exists
-        if heights.len() >= 2 {
-            let min_height = heights.iter().copied().min()?;
-            let diff = (*height).saturating_sub(min_height);
+        // Sort by number of active explorers (descending), then alphabetically by chain name
+        chains_with_counts.sort_by(|a, b| {
+            b.1.cmp(&a.1)  // Sort by count descending
+                .then(a.0.cmp(&b.0))  // Then alphabetically by chain name
+        });
+
+        // Return just the chain names in sorted order
+        chains_with_counts.into_iter()
+            .map(|(chain, _)| chain)
+            .collect()
+    }
+
+    fn get_unique_explorers(&self) -> Vec<&str> {
+        // First collect explorers and their chain counts
+        let mut explorers_with_counts: Vec<(&str, usize)> = self.rows.iter()
+            .map(|row| row.explorer.as_str())
+            .collect::<std::collections::HashSet<_>>()  // Get unique explorers
+            .into_iter()
+            .map(|explorer| {
+                // Count how many chains this explorer tracks
+                let chain_count = self.rows.iter()
+                    .filter(|row| row.explorer == explorer && row.block_height.is_some())
+                    .map(|row| &row.chain)
+                    .collect::<std::collections::HashSet<_>>()
+                    .len();
+                (explorer, chain_count)
+            })
+            .collect();
+
+        // Sort by number of chains tracked (descending), then alphabetically by explorer name
+        explorers_with_counts.sort_by(|a, b| {
+            b.1.cmp(&a.1)  // Sort by count descending
+                .then(a.0.cmp(&b.0))  // Then alphabetically by explorer name
+        });
+
+        // Return just the explorer names in sorted order
+        explorers_with_counts.into_iter()
+            .map(|(explorer, _)| explorer)
+            .collect()
+    }
+
+    fn get_chain_logo(&self, chain: &str) -> String {
+        // Use the old Blockchair URL format for chain logos, with ⛓ as fallback
+        format!("https://loutre.blockchair.io/w4/assets/images/blockchains/{}/logo_light_48.webp", chain)
+    }
+
+    fn get_explorer_logo(&self, explorer: &str) -> String {
+        match explorer {
+            "blockchair" => "https://blockchair.com/favicon.ico",
+            "blockchain" => "https://www.blockchain.com/favicon.ico", 
+            "blockstream" => "https://blockstream.info/favicon.ico",
+            "zecrocks" => "https://explorer.zec.rocks/favicon.ico",
+            "zcashexplorer" => "https://mainnet.zcashexplorer.app/favicon.ico",
+            _ => "⛓" // Use chain symbol instead of default favicon
+        }.to_string()
+    }
+
+    fn get_explorer_url(&self, explorer: &str) -> String {
+        match explorer {
+            "blockchair" => "https://blockchair.com",
+            "blockchain" => "https://www.blockchain.com/explorer",
+            "blockstream" => "https://blockstream.info",
+            "zecrocks" => "https://explorer.zec.rocks",
+            "zcashexplorer" => "https://mainnet.zcashexplorer.app",
+            _ => "#" // Default fallback
+        }.to_string()
+    }
+
+    fn get_chain_height(&self, chain: &str, explorer: &str) -> Option<(u64, Option<String>)> {
+        let row = self.rows.iter()
+            .find(|r| r.chain == chain && r.explorer == explorer)?;
+        
+        let height = row.block_height?;
+        
+        // Calculate difference if there are multiple heights for this chain
+        let diff = self.get_height_difference(height, chain);
+        
+        Some((height, diff))
+    }
+
+    fn get_height_difference(&self, height: u64, chain: &str) -> Option<String> {
+        let chain_heights: Vec<u64> = self.rows.iter()
+            .filter(|row| row.chain == chain)
+            .filter_map(|row| row.block_height)
+            .collect();
+            
+        if chain_heights.len() >= 2 {
+            let min_height = chain_heights.iter().min()?;
+            let diff = height.saturating_sub(*min_height);
             if diff > 0 {
                 return Some(format!(" (+{})", diff));
             }
         }
         None
     }
+}
+
+#[derive(Clone)]
+struct ClickhouseConfig {
+    url: String,
+    user: String,
+    password: String,
+    database: String,
+}
+
+impl ClickhouseConfig {
+    fn from_env() -> Self {
+        Self {
+            url: format!("http://{}:{}", 
+                env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".into()),
+                env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".into())
+            ),
+            user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".into()),
+            password: env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set"),
+            database: env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".into()),
+        }
+    }
+}
+
+// Update the Worker struct to include ClickHouse
+#[derive(Clone)]
+struct Worker {
+    #[allow(dead_code)]
+    nats: async_nats::Client,
+    clickhouse: ClickhouseConfig,
+    http_client: reqwest::Client,
 }
 
 #[get("/")]
@@ -346,83 +542,142 @@ async fn root() -> Result<Redirect> {
 
 #[get("/{network}")]
 async fn network_status(
-    redis: web::Data<redis::Client>,
+    worker: web::Data<Worker>,
     network: web::Path<String>,
 ) -> Result<HttpResponse> {
     let network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
 
-    let mut conn = redis.get_connection().map_err(|e| {
-        error!("Redis connection error: {}", e);
-        actix_web::error::ErrorInternalServerError("Redis connection failed")
-    })?;
+    // Update query to handle empty results and use FORMAT JSONEachRow
+    let query = format!(
+        r#"
+        WITH latest_results AS (
+            SELECT 
+                r.*,
+                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+            FROM {}.results r
+            WHERE r.checker_module = '{}'
+            AND r.checked_at >= now() - INTERVAL 1 HOUR
+        )
+        SELECT 
+            hostname,
+            checked_at,
+            status,
+            ping_ms as ping,
+            response_data
+        FROM latest_results
+        WHERE rn = 1
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database,
+        network.0
+    );
 
-    let keys: Vec<String> = conn.keys(network.redis_prefix()).map_err(|e| {
-        error!("Redis keys error: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
-    })?;
+    info!("Executing ClickHouse query for network {}", network.0);
 
-    let mut servers = Vec::new();
-
-    for key in keys {
-        let value: String = conn.get(&key).map_err(|e| {
-            error!("Redis get error for key {}: {}", key, e);
-            actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
+    let response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(query.clone())
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
         })?;
 
-        match serde_json::from_str::<ServerInfo>(&value) {
-            Ok(server_info) => {
-                // Skip user-submitted checks
-                if server_info.extra.get("user_submitted")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false) {
-                    continue;
-                }
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        error!("Failed to read response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
+    })?;
+
+    if !status.is_success() {
+        error!("ClickHouse query failed with status {}: {}", status, body);
+        return Err(actix_web::error::ErrorInternalServerError("Database query failed"));
+    }
+
+    // Handle empty response case
+    if body.trim().is_empty() {
+        info!("No results found for network {}", network.0);
+        let template = IndexTemplate {
+            servers: Vec::new(),
+            percentile_height: 0,
+            current_network: network.0,
+            online_count: 0,
+            total_count: 0,
+            check_error: None,
+            math_problem: generate_math_problem(),
+        };
+
+        let html = template.render().map_err(|e| {
+            error!("Template rendering error: {}", e);
+            actix_web::error::ErrorInternalServerError("Template rendering failed")
+        })?;
+
+        return Ok(HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .body(html));
+    }
+
+    // Parse results line by line (JSONEachRow format)
+    let mut servers = Vec::new();
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        // Log the raw response for debugging
+        debug!("Raw server response: {}", line);
+        
+        match serde_json::from_str::<serde_json::Value>(line) {
+            Ok(result) => {
+                // Get response_data, with better error handling
+                let response_data = match result.get("response_data") {
+                    Some(val) => match val {
+                        Value::String(s) => s,
+                        _ => {
+                            error!("response_data is not a string: {:?}", val);
+                            "{}"
+                        }
+                    },
+                    None => {
+                        error!("No response_data field in response: {:?}", result);
+                        "{}"
+                    }
+                };
                 
-                servers.push(server_info);
-            },
+                // Now parse that string into ServerInfo with better error reporting
+                match serde_json::from_str::<ServerInfo>(response_data) {
+                    Ok(server_info) => {
+                        servers.push(server_info);
+                    }
+                    Err(e) => {
+                        error!(
+                            "Failed to parse server info for host {}: {} (raw data: {})", 
+                            result["hostname"].as_str().unwrap_or("unknown"),
+                            e,
+                            response_data
+                        );
+                    }
+                }
+            }
             Err(e) => {
-                error!("Failed to deserialize JSON for key {}: {}", key, e);
-                println!("Retrieved JSON for key {}: {}", key, value);
+                error!("Failed to parse JSON line: {} (raw line: {})", e, line);
             }
         }
     }
 
-    // Calculate 90th percentile of block heights (only for online servers) FIRST
-    let mut heights: Vec<u64> = servers
-        .iter()
+    // Calculate percentile height
+    let heights: Vec<u64> = servers.iter()
         .filter(|s| s.height > 0)
         .map(|s| s.height)
         .collect();
-    
-    heights.sort_unstable();
-    let percentile_height = if !heights.is_empty() {
-        let index = (heights.len() as f64 * 0.9).ceil() as usize - 1;
-        heights[index.min(heights.len() - 1)]
-    } else {
-        0
-    };
-
-    // THEN sort servers using the calculated percentile_height
-    servers.sort_by(|a, b| {
-        // First compare by rank
-        b.get_rank(&percentile_height).cmp(&a.get_rank(&percentile_height))
-            // Then by height in reverse order
-            .then_with(|| b.height.cmp(&a.height))
-            // Finally by ping
-            .then_with(|| {
-                a.ping
-                    .unwrap_or(f64::MAX)
-                    .partial_cmp(&b.ping.unwrap_or(f64::MAX))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
-    });
+    let percentile_height = calculate_percentile(&heights, 90);
 
     let online_count = servers.iter().filter(|s| s.is_online()).count();
     let total_count = servers.len();
 
-    let (num1, num2, _answer) = generate_math_problem();
-    
     let template = IndexTemplate {
         servers,
         percentile_height,
@@ -430,9 +685,9 @@ async fn network_status(
         online_count,
         total_count,
         check_error: None,
-        math_problem: (num1, num2),
+        math_problem: generate_math_problem(),
     };
-    
+
     let html = template.render().map_err(|e| {
         error!("Template rendering error: {}", e);
         actix_web::error::ErrorInternalServerError("Template rendering failed")
@@ -445,48 +700,132 @@ async fn network_status(
 
 #[get("/{network}/{host}")]
 async fn server_detail(
-    _redis: web::Data<redis::Client>,
+    worker: web::Data<Worker>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse> {
     let (network, host) = path.into_inner();
     let safe_network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
     
-    let key = format!("{}:{}", network, host);
-    
-    let mut conn = _redis.get_connection().map_err(|e| {
-        error!("Redis connection error: {}", e);
-        actix_web::error::ErrorInternalServerError("Redis connection failed")
-    })?;
-    
-    let value: String = conn.get(&key).map_err(|e| {
-        error!("Redis get error for key {}: {}", key, e);
-        actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
-    })?;
-    
-    let data: HashMap<String, Value> = serde_json::from_str(&value).map_err(|e| {
-        error!("JSON deserialization error for key {}: {}", key, e);
-        actix_web::error::ErrorInternalServerError("Failed to parse server data")
-    })?;
-    
-    let keys: Vec<String> = conn.keys(safe_network.redis_prefix()).map_err(|e| {
-        error!("Redis error: {}", e);
-        actix_web::error::ErrorInternalServerError("Redis error")
-    })?;
-    
-    let total_count = keys.len();
-    let mut heights = Vec::new();
+    // Query the targets table to get server information
+    let query = format!(
+        r#"
+        WITH latest_results AS (
+            SELECT 
+                r.*,
+                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+            FROM {}.results r
+            WHERE r.checker_module = '{}'
+            AND r.hostname = '{}'
+            AND r.checked_at >= now() - INTERVAL 1 HOUR
+        )
+        SELECT 
+            hostname,
+            checked_at,
+            status,
+            ping_ms as ping,
+            response_data
+        FROM latest_results
+        WHERE rn = 1
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database,
+        safe_network.0,
+        host
+    );
 
-    for key in keys {
-        if let Ok(Some(data)) = conn.get::<_, Option<String>>(&key) {
-            if let Ok(server_data) = serde_json::from_str::<Value>(&data) {
-                if let Some(height) = server_data.get("height").and_then(|h| h.as_u64()) {
-                    if height > 0 {
-                        heights.push(height);
+    let response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(query.clone())
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        error!("Failed to read response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
+    })?;
+
+    if !status.is_success() {
+        error!("ClickHouse query failed with status {}: {}", status, body);
+        return Err(actix_web::error::ErrorInternalServerError("Database query failed"));
+    }
+
+    // Parse the response data
+    let mut data: HashMap<String, Value> = HashMap::new();
+    if !body.trim().is_empty() {
+        if let Ok(result) = serde_json::from_str::<serde_json::Value>(body.lines().next().unwrap()) {
+            if let Some(response_data) = result["response_data"].as_str() {
+                if let Ok(parsed_data) = serde_json::from_str::<HashMap<String, Value>>(response_data) {
+                    data = parsed_data;
+                }
+            }
+        }
+    }
+
+    // Get total count and heights for percentile calculation
+    let count_query = format!(
+        r#"
+        WITH latest_results AS (
+            SELECT 
+                r.*,
+                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+            FROM {}.results r
+            WHERE r.checker_module = '{}'
+            AND r.checked_at >= now() - INTERVAL 1 HOUR
+        )
+        SELECT 
+            hostname,
+            response_data
+        FROM latest_results
+        WHERE rn = 1
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database,
+        safe_network.0
+    );
+
+    let count_response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(count_query)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
+
+    let count_body = count_response.text().await.map_err(|e| {
+        error!("Failed to read response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
+    })?;
+
+    let mut heights = Vec::new();
+    let mut total_count = 0;
+
+    for line in count_body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(response_data) = result["response_data"].as_str() {
+                if let Ok(server_data) = serde_json::from_str::<Value>(response_data) {
+                    if let Some(height) = server_data.get("height").and_then(|h| h.as_u64()) {
+                        if height > 0 {
+                            heights.push(height);
+                        }
                     }
                 }
             }
         }
+        total_count += 1;
     }
 
     let online_count = heights.len();
@@ -514,20 +853,80 @@ async fn server_detail(
 
 #[get("/api/v0/{network}.json")]
 async fn network_api(
-    redis: web::Data<redis::Client>,
+    worker: web::Data<Worker>,
     network: web::Path<String>,
 ) -> Result<HttpResponse> {
     let network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
     
-    let servers = fetch_network_servers(&redis, network.0).await?;
+    // Query the results table to get all servers for the network
+    let query = format!(
+        r#"
+        WITH latest_results AS (
+            SELECT 
+                r.*,
+                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+            FROM {}.results r
+            WHERE r.checker_module = '{}'
+            AND r.checked_at >= now() - INTERVAL 1 HOUR
+        )
+        SELECT 
+            hostname,
+            checked_at,
+            status,
+            ping_ms as ping,
+            response_data
+        FROM latest_results
+        WHERE rn = 1
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database,
+        network.0
+    );
+
+    let response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(query.clone())
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        error!("Failed to read response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
+    })?;
+
+    if !status.is_success() {
+        error!("ClickHouse query failed with status {}: {}", status, body);
+        return Err(actix_web::error::ErrorInternalServerError("Database query failed"));
+    }
+
+    let mut servers = Vec::new();
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
+            if let Some(response_data) = result["response_data"].as_str() {
+                if let Ok(server_info) = serde_json::from_str::<ServerInfo>(response_data) {
+                    servers.push(server_info);
+                }
+            }
+        }
+    }
     
     let api_servers: Vec<ApiServerInfo> = servers.into_iter()
         .map(|server| {
             let (port, protocol) = match network.0 {
                 "btc" => (server.port.unwrap_or(50002), "ssl"),
-                "zec" => (server.port.unwrap_or(9067), "grpc"),
-                "http" => (server.port.unwrap_or(80), "http"),  // Add HTTP case
+                "zec" => (server.port.unwrap_or(443), "grpc"),
+                "http" => (server.port.unwrap_or(80), "http"),
                 _ => unreachable!(),
             };
             
@@ -544,37 +943,6 @@ async fn network_api(
     Ok(HttpResponse::Ok()
         .content_type("application/json")
         .json(ApiResponse { servers: api_servers }))
-}
-
-// Helper function to reduce code duplication
-async fn fetch_network_servers(redis: &redis::Client, network: &str) -> Result<Vec<ServerInfo>> {
-    let mut conn = redis.get_connection().map_err(|e| {
-        error!("Redis connection error: {}", e);
-        actix_web::error::ErrorInternalServerError("Redis connection failed")
-    })?;
-
-    let keys: Vec<String> = conn.keys(format!("{}:*", network)).map_err(|e| {
-        error!("Redis keys error: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
-    })?;
-
-    let mut servers = Vec::new();
-    for key in keys {
-        let value: String = conn.get(&key).map_err(|e| {
-            error!("Redis get error for key {}: {}", key, e);
-            actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
-        })?;
-
-        match serde_json::from_str::<ServerInfo>(&value) {
-            Ok(server_info) => servers.push(server_info),
-            Err(e) => {
-                error!("Failed to deserialize JSON for key {}: {}", key, e);
-                println!("Retrieved JSON for key {}: {}", key, value);
-            }
-        }
-    }
-
-    Ok(servers)
 }
 
 fn calculate_percentile(values: &[u64], percentile: u8) -> u64 {
@@ -599,7 +967,7 @@ struct CheckServerForm {
 
 #[post("/{network}/check")]
 async fn check_server(
-    redis: web::Data<redis::Client>,
+    worker: web::Data<Worker>,
     network: web::Path<String>,
     form: web::Form<CheckServerForm>,
 ) -> Result<HttpResponse> {
@@ -609,10 +977,71 @@ async fn check_server(
 
     // Parse and verify the math answer
     let answer: u8 = form.verification.parse().unwrap_or(0);
-    let (num1, num2, _expected) = generate_math_problem();  // We'll use this if verification fails
+    let (num1, num2, _expected) = generate_math_problem();
     
     if answer != form.expected_answer.parse().unwrap_or(0) {
-        let servers = fetch_network_servers(&redis, network.0).await?;
+        // Query ClickHouse for server list
+        let query = format!(
+            r#"
+            WITH latest_results AS (
+                SELECT 
+                    r.*,
+                    ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+                FROM {}.results r
+                WHERE r.checker_module = '{}'
+                AND r.checked_at >= now() - INTERVAL 1 HOUR
+            )
+            SELECT 
+                hostname,
+                checked_at,
+                status,
+                ping_ms as ping,
+                response_data
+            FROM latest_results
+            WHERE rn = 1
+            FORMAT JSONEachRow
+            "#,
+            worker.clickhouse.database,
+            network.0
+        );
+
+        let response = worker.http_client.post(&worker.clickhouse.url)
+            .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+            .header("Content-Type", "text/plain")
+            .body(query)
+            .send()
+            .await
+            .map_err(|e| {
+                error!("ClickHouse query error: {}", e);
+                actix_web::error::ErrorInternalServerError("Database query failed")
+            })?;
+
+        let status = response.status();
+        let body = response.text().await.map_err(|e| {
+            error!("Failed to read response body: {}", e);
+            actix_web::error::ErrorInternalServerError("Failed to read database response")
+        })?;
+
+        if !status.is_success() {
+            error!("ClickHouse query failed with status {}: {}", status, body);
+            return Err(actix_web::error::ErrorInternalServerError("Database query failed"));
+        }
+
+        let mut servers = Vec::new();
+        for line in body.lines() {
+            if line.trim().is_empty() {
+                continue;
+            }
+
+            if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
+                if let Some(response_data) = result["response_data"].as_str() {
+                    if let Ok(server_info) = serde_json::from_str::<ServerInfo>(response_data) {
+                        servers.push(server_info);
+                    }
+                }
+            }
+        }
+
         let online_count = servers.iter().filter(|s| s.is_online()).count();
         let total_count = servers.len();
         let percentile_height = calculate_percentile(
@@ -630,7 +1059,7 @@ async fn check_server(
             online_count,
             total_count,
             check_error: Some("Incorrect answer, please try again"),
-            math_problem: (num1, num2),
+            math_problem: (num1, num2, 0),
         };
 
         let html = template.render().map_err(|e| {
@@ -651,21 +1080,64 @@ async fn check_server(
     let check_id = Uuid::new_v4().to_string();
     
     // Check if this server is already in our public list
-    let mut conn = redis.get_connection().map_err(|e| {
-        error!("Redis connection error: {}", e);
-        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    let query = format!(
+        r#"
+        WITH latest_results AS (
+            SELECT 
+                r.*,
+                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+            FROM {}.results r
+            WHERE r.checker_module = '{}'
+            AND r.hostname = '{}'
+            AND r.checked_at >= now() - INTERVAL 1 HOUR
+        )
+        SELECT 
+            response_data
+        FROM latest_results
+        WHERE rn = 1
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database,
+        network.0,
+        form.url
+    );
+
+    let response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(query)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        error!("Failed to read response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
     })?;
 
-    let key = format!("{}:{}", network.0, &form.url);
-    let existing_server: Option<ServerInfo> = conn.get(&key)
-        .ok()
-        .and_then(|value: String| serde_json::from_str(&value).ok());
-
-    let is_user_submitted = existing_server
-        .map(|s| s.extra.get("user_submitted")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(true))
-        .unwrap_or(true);
+    let is_user_submitted = if status.is_success() && !body.trim().is_empty() {
+        if let Ok(result) = serde_json::from_str::<serde_json::Value>(body.lines().next().unwrap()) {
+            if let Some(response_data) = result["response_data"].as_str() {
+                if let Ok(server_data) = serde_json::from_str::<Value>(response_data) {
+                    server_data.get("user_submitted")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(true)
+                } else {
+                    true
+                }
+            } else {
+                true
+            }
+        } else {
+            true
+        }
+    } else {
+        true
+    };
 
     let check_request = serde_json::json!({
         "host": form.url,
@@ -674,25 +1146,33 @@ async fn check_server(
         "check_id": check_id
     });
 
-    info!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}",
-        form.url, form.port.unwrap_or(50002), check_id
+    info!("📤 Submitting check request to NATS - host: {}, port: {}, check_id: {}, user_submitted: {}",
+        form.url, form.port.unwrap_or(50002), check_id, is_user_submitted
     );
 
-    let nats = nats::connect("nats://nats:4222").map_err(|e| {
+    // Log the full JSON payload for debugging
+    info!("📦 Check request payload: {}", serde_json::to_string(&check_request).unwrap_or_default());
+
+    let nats_url = format!("nats://{}:{}",
+        env::var("NATS_HOST").unwrap_or_else(|_| "nats".to_string()),
+        env::var("NATS_PORT").unwrap_or_else(|_| "4222".to_string())
+    );
+
+    let nats = async_nats::connect(&nats_url).await.map_err(|e| {
         error!("NATS connection error: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to connect to NATS")
     })?;
 
     // Use different subjects for BTC vs ZEC vs HTTP
     let subject = match network.0 {
-        "btc" => format!("hosh.check.btc.user"), // BTC still uses separate user queue
-        "zec" => format!("hosh.check.zec"), // ZEC uses single queue for all checks
-        "http" => format!("hosh.check.http"),  // HTTP case handles all explorers
+        "btc" => format!("hosh.check.btc.user"), // BTC uses separate user queue
+        "zec" => format!("hosh.check.zec"),
+        "http" => format!("hosh.check.http"),
         _ => unreachable!("Invalid network"),
     };
     info!("📤 Publishing to NATS subject: {}", subject);
     
-    nats.publish(&subject, &serde_json::to_vec(&check_request).unwrap())
+    nats.publish(subject, serde_json::to_vec(&check_request).unwrap().into()).await
         .map_err(|e| {
             error!("NATS publish error: {}", e);
             actix_web::error::ErrorInternalServerError("Failed to publish check request")
@@ -719,7 +1199,7 @@ async fn check_server(
 async fn check_result(
     path: web::Path<(String, String)>,
     query: web::Query<CheckQuery>,
-    redis: web::Data<redis::Client>,
+    worker: web::Data<Worker>,
 ) -> Result<HttpResponse> {
     let (network_str, check_id) = path.into_inner();
 
@@ -727,42 +1207,139 @@ async fn check_result(
     let checking_url = query.host.clone();
     let checking_port = query.port;
 
-    // We'll actually fetch from Redis to see if the checker wrote any data
-    let mut conn = redis.get_connection().map_err(|e| {
-        error!("Redis connection error: {}", e);
-        actix_web::error::ErrorInternalServerError("Redis connection failed")
+    info!("🔍 Looking up check result - network: {}, check_id: {}, host: {:?}, port: {:?}",
+        network_str, check_id, checking_url, checking_port);
+
+    // Query ClickHouse for the check result
+    let query = format!(
+        r#"
+        WITH latest_results AS (
+            SELECT 
+                r.*,
+                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+            FROM {}.results r
+            WHERE r.checker_module = '{}'
+            AND r.checked_at >= now() - INTERVAL 1 HOUR
+        )
+        SELECT 
+            hostname,
+            checked_at,
+            status,
+            ping_ms as ping,
+            response_data
+        FROM latest_results
+        WHERE rn = 1
+        AND response_data LIKE '%"check_id":"{}"%'
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database,
+        network_str,
+        check_id
+    );
+
+    info!("🔎 ClickHouse query for result: {}", query.replace("\n", " "));
+
+    let response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(query)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        error!("Failed to read response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
     })?;
 
-    let prefix = format!("{}:", network_str);
-    let keys: Vec<String> = conn.keys(format!("{}*", prefix)).map_err(|e| {
-        error!("Redis keys error: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to fetch Redis keys")
-    })?;
+    info!("📊 ClickHouse response status: {}, body length: {}, empty?: {}", 
+        status, body.len(), body.trim().is_empty());
+    
+    if !body.trim().is_empty() {
+        info!("📄 First line of response: {}", body.lines().next().unwrap_or(""));
+    }
 
-    // We'll store the discovered server info and raw data here if we find a match
     let mut server: Option<ServerInfo> = None;
     let mut server_data: Option<HashMap<String, Value>> = None;
 
-    for key in keys {
-        // Grab the JSON
-        let value: String = conn.get(&key).map_err(|e| {
-            error!("Redis get error for key {}: {}", key, e);
-            actix_web::error::ErrorInternalServerError("Failed to fetch Redis value")
-        })?;
-
-        // Parse the raw JSON data
-        if let Ok(data) = serde_json::from_str::<HashMap<String, Value>>(&value) {
-            // Check if this key has the right check_id
-            let has_check_id = data.get("check_id")
-                .and_then(|v| v.as_str())
-                .map(|c| c == check_id)
-                .unwrap_or(false);
-
-            if has_check_id {
-                // If found a matching check_id, we use that data
-                server = serde_json::from_str(&value).ok();
-                server_data = Some(data);
-                break;
+    if status.is_success() && !body.trim().is_empty() {
+        if let Ok(result) = serde_json::from_str::<serde_json::Value>(body.lines().next().unwrap()) {
+            if let Some(response_data) = result["response_data"].as_str() {
+                server = serde_json::from_str(response_data).ok();
+                server_data = serde_json::from_str(response_data).ok();
+                info!("✅ Found check result for check_id: {}", check_id);
+            }
+        }
+    } else {
+        // If no results found with LIKE pattern, try a broader search to debug
+        info!("❌ No check results found with check_id LIKE pattern, trying hostname-based lookup");
+        
+        if let Some(host) = &checking_url {
+            let backup_query = format!(
+                r#"
+                WITH latest_results AS (
+                    SELECT 
+                        r.*,
+                        ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+                    FROM {}.results r
+                    WHERE r.checker_module = '{}'
+                    AND r.hostname = '{}'
+                    AND r.checked_at >= now() - INTERVAL 5 MINUTE
+                )
+                SELECT 
+                    hostname,
+                    checked_at,
+                    status,
+                    ping_ms as ping,
+                    response_data
+                FROM latest_results
+                WHERE rn = 1
+                FORMAT JSONEachRow
+                "#,
+                worker.clickhouse.database,
+                network_str,
+                host
+            );
+            
+            info!("🔎 Backup ClickHouse query: {}", backup_query.replace("\n", " "));
+            
+            match worker.http_client.post(&worker.clickhouse.url)
+                .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+                .header("Content-Type", "text/plain")
+                .body(backup_query)
+                .send()
+                .await {
+                    Ok(backup_response) => {
+                        if let Ok(backup_body) = backup_response.text().await {
+                            info!("📊 Backup query response length: {}, empty?: {}", 
+                                backup_body.len(), backup_body.trim().is_empty());
+                            
+                            if !backup_body.trim().is_empty() {
+                                if let Ok(result) = serde_json::from_str::<serde_json::Value>(backup_body.lines().next().unwrap()) {
+                                    if let Some(response_data) = result["response_data"].as_str() {
+                                        info!("🔍 Debug: Found response data in backup query: {}", 
+                                            if response_data.len() > 100 { &response_data[..100] } else { response_data });
+                                        
+                                        // Check if the response contains our check_id
+                                        if response_data.contains(&check_id) {
+                                            info!("✅ Backup query found our check_id! This indicates a LIKE pattern issue.");
+                                            server = serde_json::from_str(response_data).ok();
+                                            server_data = serde_json::from_str(response_data).ok();
+                                        } else {
+                                            info!("❌ Response contains data but not our check_id");
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    },
+                    Err(e) => {
+                        info!("❌ Backup query failed: {}", e);
+                    }
             }
         }
     }
@@ -784,70 +1361,111 @@ async fn check_result(
     Ok(HttpResponse::Ok().body(html))
 }
 
-// Add this function to generate a math problem
+// Replace the generate_math_problem function with this simpler version
 fn generate_math_problem() -> (u8, u8, u8) {
-    let mut rng = rand::thread_rng();
-    let a = rng.gen_range(1..10);
-    let b = rng.gen_range(1..10);
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    
+    // Use the last few digits of the timestamp to generate numbers
+    let a = ((timestamp % 9) + 1) as u8;
+    let b = (((timestamp / 10) % 9) + 1) as u8;
     (a, b, a + b)
 }
 
 #[get("/explorers")]
-async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpResponse> {
-    let mut con = redis.get_connection().map_err(|e| {
-        error!("Redis connection error: {}", e);
-        actix_web::error::ErrorInternalServerError("Redis connection failed")
+async fn blockchain_heights(worker: web::Data<Worker>) -> Result<HttpResponse> {
+    let query = format!(
+        r#"
+        WITH latest_heights AS (
+            SELECT 
+                explorer,
+                chain,
+                block_height,
+                response_time_ms,
+                error,
+                ROW_NUMBER() OVER (PARTITION BY explorer, chain ORDER BY checked_at DESC) as rn
+            FROM {}.block_explorer_heights
+            WHERE checked_at >= now() - INTERVAL 1 HOUR
+        ),
+        chain_stats AS (
+            SELECT 
+                chain,
+                countIf(block_height IS NOT NULL AND block_height != 0) as active_explorers,
+                count(*) as total_explorers
+            FROM latest_heights
+            WHERE rn = 1
+            GROUP BY chain
+        )
+        SELECT 
+            h.explorer,
+            h.chain,
+            h.block_height,
+            h.response_time_ms,
+            h.error
+        FROM latest_heights h
+        JOIN chain_stats s ON h.chain = s.chain
+        WHERE h.rn = 1
+        ORDER BY 
+            s.active_explorers DESC,           -- Sort by number of active explorers first
+            s.total_explorers DESC,            -- Then by total explorers
+            h.chain ASC,                       -- Then alphabetically by chain
+            h.explorer ASC                     -- Finally by explorer name
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database
+    );
+
+    let response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(query.clone())
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        error!("Failed to read response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
     })?;
 
-    // Get all keys matching http:*
-    let keys: Vec<String> = con.keys("http:*").map_err(|e| {
-        error!("Redis keys error: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to fetch keys from Redis")
-    })?;
+    if !status.is_success() {
+        error!("ClickHouse query failed with status {}: {}", status, body);
+        return Err(actix_web::error::ErrorInternalServerError("Database query failed"));
+    }
 
-    // Create a map to collect heights by chain
-    let mut chain_heights: HashMap<String, ExplorerRow> = HashMap::new();
+    if body.trim().is_empty() {
+        info!("No block explorer heights found");
+        let template = BlockchainHeightsTemplate { rows: Vec::new() };
+        let html = template.render().map_err(|e| {
+            error!("Template rendering error: {}", e);
+            actix_web::error::ErrorInternalServerError("Template rendering failed")
+        })?;
 
-    // Process all keys
-    for key in &keys {
-        if let Ok(height) = con.get::<_, u64>(key) {
-            // Parse the key format "http:source.chain"
-            let parts: Vec<&str> = key.split('.').collect();
-            if parts.len() == 2 {
-                let source = parts[0].replace("http:", "");
-                let chain = parts[1].to_string();
+        return Ok(HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .body(html));
+    }
 
-                // Get or create the ExplorerRow for this chain
-                let row = chain_heights.entry(chain.clone()).or_insert_with(|| ExplorerRow {
-                    chain,
-                    blockchair: None,
-                    blockchain_com: None,
-                    blockstream: None,
-                    zecrocks: None,
-                    zcashexplorer: None,
-                });
+    // Parse results line by line
+    let mut rows = Vec::new();
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
 
-                // Update the appropriate height based on the source
-                match source.as_str() {
-                    "blockchair" => row.blockchair = Some(height),
-                    "blockchain" => row.blockchain_com = Some(height),
-                    "blockstream" => row.blockstream = Some(height),
-                    "zecrocks" => row.zecrocks = Some(height),
-                    "zcashexplorer" => row.zcashexplorer = Some(height),
-                    _ => {}
-                }
+        match serde_json::from_str::<ExplorerRow>(line) {
+            Ok(row) => rows.push(row),
+            Err(e) => {
+                error!("Failed to parse explorer row: {}", e);
             }
         }
     }
-
-    // Convert the map to a vector and sort by number of available heights (descending) then chain name
-    let mut rows: Vec<ExplorerRow> = chain_heights.into_values().collect();
-    rows.sort_by(|a, b| {
-        // First sort by number of available heights (descending)
-        b.available_height_count().cmp(&a.available_height_count())
-            // Then by chain name for stable ordering of equal counts
-            .then(a.chain.cmp(&b.chain))
-    });
 
     let template = BlockchainHeightsTemplate { rows };
     let html = template.render().map_err(|e| {
@@ -860,11 +1478,42 @@ async fn blockchain_heights(redis: web::Data<redis::Client>) -> Result<HttpRespo
         .body(html))
 }
 
+// Add this deserialization function near the other deserialize functions
+fn deserialize_string_or_number<'de, D>(deserializer: D) -> Result<Option<u64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    
+    match value {
+        // Handle direct numbers
+        serde_json::Value::Number(n) => n.as_u64().map(Some).ok_or_else(|| {
+            serde::de::Error::custom("Invalid number format")
+        }),
+        
+        // Handle strings that contain numbers
+        serde_json::Value::String(s) => {
+            if s.is_empty() {
+                return Ok(None);
+            }
+            s.parse().map(Some).map_err(|_| {
+                serde::de::Error::custom("Failed to parse string as number")
+            })
+        },
+        
+        // Handle null as None
+        serde_json::Value::Null => Ok(None),
+        
+        // Everything else is an error
+        _ => Err(serde::de::Error::custom("Expected number or string")),
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize tracing subscriber
     let _subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+        .with_max_level(Level::DEBUG)
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
@@ -873,27 +1522,30 @@ async fn main() -> std::io::Result<()> {
         .with_ansi(true)
         .pretty()
         .init();
-
-    let redis_host = env::var("REDIS_HOST").unwrap_or_else(|_| {
-        warn!("⚠️  REDIS_HOST not set, using default 'redis'");
-        "redis".to_string()
-    });
-    let redis_port = env::var("REDIS_PORT").unwrap_or_else(|_| {
-        warn!("⚠️  REDIS_PORT not set, using default '6379'");
-        "6379".to_string()
-    });
-    let redis_url = format!("redis://{}:{}", redis_host, redis_port);
     
-    info!("🔌 Connecting to Redis at {}", redis_url);
+    let nats_url = format!("nats://{}:{}",
+        env::var("NATS_HOST").unwrap_or_else(|_| "nats".to_string()),
+        env::var("NATS_PORT").unwrap_or_else(|_| "4222".to_string())
+    );
 
-    let redis_client = redis::Client::open(redis_url.as_str())
-        .expect("Failed to create Redis client");
+    let http_client = reqwest::Client::builder()
+        .pool_idle_timeout(std::time::Duration::from_secs(300))
+        .pool_max_idle_per_host(32)
+        .tcp_keepalive(std::time::Duration::from_secs(60))
+        .build()
+        .expect("Failed to create HTTP client");
+
+    let worker = Worker {
+        nats: async_nats::connect(&nats_url).await.expect("Failed to connect to NATS"),
+        clickhouse: ClickhouseConfig::from_env(),
+        http_client,
+    };
 
     info!("🚀 Starting server at http://0.0.0.0:8080");
 
     HttpServer::new(move || {
         App::new()
-            .app_data(web::Data::new(redis_client.clone()))
+            .app_data(web::Data::new(worker.clone()))
             .service(fs::Files::new("/static", "./static"))
             .service(root)
             .service(blockchain_heights)

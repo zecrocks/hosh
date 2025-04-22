@@ -1,11 +1,12 @@
 use std::{env, error::Error};
 use chrono::{DateTime, Utc};
-use redis::Commands;
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 use zingolib;
 use futures_util::StreamExt;
 use tracing::{info, error};
+use uuid::Uuid;
+use reqwest;
 
 #[derive(Debug, Deserialize)]
 struct CheckRequest {
@@ -58,42 +59,164 @@ struct CheckResult {
     donation_address: Option<String>,
 }
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn Error>> {
-    tracing_subscriber::fmt::init();
+struct ClickhouseConfig {
+    url: String,
+    user: String,
+    password: String,
+    database: String,
+}
 
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .expect("Failed to install rustls crypto provider");
+impl ClickhouseConfig {
+    fn from_env() -> Self {
+        Self {
+            url: format!("http://{}:{}", 
+                env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".into()),
+                env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".into())
+            ),
+            user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".into()),
+            password: env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set"),
+            database: env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".into()),
+        }
+    }
+}
 
-    let nats_prefix = env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
-    let nats_url = format!(
-        "nats://{}:{}",
-        env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
-        env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
-    );
+struct Worker {
+    nats: async_nats::Client,
+    clickhouse: ClickhouseConfig,
+    http_client: reqwest::Client,
+}
 
-    let redis_url = format!(
-        "redis://{}:{}",
-        env::var("REDIS_HOST").unwrap_or_else(|_| "redis".into()),
-        env::var("REDIS_PORT").unwrap_or_else(|_| "6379".into())
-    );
+impl Worker {
+    pub async fn new() -> Result<Self, Box<dyn Error>> {
+        tracing_subscriber::fmt::init();
 
-    let mut redis_conn = redis::Client::open(redis_url.as_str())?.get_connection()?;
-    info!("Connected to Redis at {}", redis_url);
-    
-    let nc = async_nats::connect(&nats_url).await?;
-    info!("Connected to NATS at {}", nats_url);
-    
-    let mut sub = nc.subscribe(format!("{}check.zec", nats_prefix)).await?;
-    info!("Subscribed to {}check.zec", nats_prefix);
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .expect("Failed to install rustls crypto provider");
 
-    while let Some(msg) = sub.next().await {
+        let _nats_prefix = env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
+        let nats_url = format!(
+            "nats://{}:{}",
+            env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
+            env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
+        );
+
+        let nats = async_nats::connect(&nats_url).await?;
+        info!("Connected to NATS at {}", nats_url);
+        
+        let http_client = reqwest::Client::builder()
+            .pool_idle_timeout(std::time::Duration::from_secs(300))
+            .pool_max_idle_per_host(32)
+            .tcp_keepalive(std::time::Duration::from_secs(60))
+            .build()?;
+
+        Ok(Worker {
+            nats,
+            clickhouse: ClickhouseConfig::from_env(),
+            http_client,
+        })
+    }
+
+    async fn publish_to_clickhouse(&self, check_request: &CheckRequest, result: &CheckResult) -> Result<(), Box<dyn Error>> {
+        let target_id = uuid::Uuid::new_v5(
+            &uuid::Uuid::NAMESPACE_DNS,
+            format!("zec:{}", check_request.host).as_bytes()
+        ).to_string();
+
+        let escaped_host = check_request.host.replace("'", "\\'");
+        
+        // First update existing target
+        let update_query = format!(
+            "ALTER TABLE {db}.targets 
+             UPDATE last_queued_at = now(),
+                    last_checked_at = now(),
+                    target_id = '{target_id}'
+             WHERE module = 'zec' AND hostname = '{host}'
+             SETTINGS mutations_sync = 1",
+            db = self.clickhouse.database,
+            target_id = target_id,
+            host = escaped_host,
+        );
+
+        let response = self.http_client.post(&self.clickhouse.url)
+            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
+            .header("Content-Type", "text/plain")
+            .body(update_query)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse update error: {}", response.text().await?).into());
+        }
+
+        // Then insert new target if it doesn't exist
+        let insert_query = format!(
+            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
+             SELECT '{target_id}', 'zec', '{host}', now(), now(), {user_submitted}
+             WHERE NOT EXISTS (
+                 SELECT 1 FROM {db}.targets 
+                 WHERE module = 'zec' AND hostname = '{host}'
+             )",
+            db = self.clickhouse.database,
+            target_id = target_id,
+            host = escaped_host,
+            user_submitted = check_request.user_submitted.unwrap_or(false)
+        );
+
+        let response = self.http_client.post(&self.clickhouse.url)
+            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
+            .header("Content-Type", "text/plain")
+            .body(insert_query)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse insert error: {}", response.text().await?).into());
+        }
+
+        // Finally insert the result
+        let result_query = format!(
+            "INSERT INTO {}.results 
+             (target_id, checked_at, hostname, resolved_ip, ip_version, 
+              checker_module, status, ping_ms, checker_location, checker_id, response_data, user_submitted) 
+             VALUES 
+             ('{}', now(), '{}', '', 4, 'zec', '{}', {}, 'default', '{}', '{}', {})",
+            self.clickhouse.database,
+            target_id,
+            escaped_host,
+            if result.error.is_some() { "offline" } else { "online" },
+            result.ping,
+            Uuid::new_v4(),
+            serde_json::to_string(&result)?.replace("'", "\\'"),
+            check_request.user_submitted.unwrap_or(false)
+        );
+
+        let response = self.http_client.post(&self.clickhouse.url)
+            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
+            .header("Content-Type", "text/plain")
+            .body(result_query)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            return Err(format!("ClickHouse error: {}", response.text().await?).into());
+        }
+
+        info!(
+            host = %check_request.host,
+            check_id = %check_request.check_id.as_deref().unwrap_or("none"),
+            "Successfully saved check data to ClickHouse"
+        );
+
+        Ok(())
+    }
+
+    async fn process_check(&self, msg: async_nats::Message) -> Result<(), Box<dyn Error>> {
         let check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
             Ok(req) => req,
             Err(e) => {
-                error!("Failed to parse check request: {e}");
-                continue;
+                error!("Failed to parse check request: {}", e);
+                return Ok(());
             }
         };
 
@@ -101,14 +224,37 @@ async fn main() -> Result<(), Box<dyn Error>> {
             Ok(u) => u,
             Err(e) => {
                 error!("Invalid URI: {e}");
-                continue;
+                return Ok(());
             }
         };
 
         let start_time = Instant::now();
         let (height, error, server_info) = match zingolib::grpc_connector::get_info(uri).await {
             Ok(info) => (info.block_height, None, Some(info)),
-            Err(e) => (0, Some(e.to_string()), None),
+            Err(e) => {
+                let simplified_error = if e.to_string().contains("tls handshake eof") {
+                    "TLS handshake failed - server may be offline or not accepting connections".to_string()
+                } else if e.to_string().contains("connection refused") {
+                    "Connection refused - server may be offline or not accepting connections".to_string()
+                } else if e.to_string().contains("InvalidContentType") {
+                    "Invalid content type - server may not be a valid Zcash node".to_string()
+                } else {
+                    let error_str = e.to_string();
+                    if let Some(start) = error_str.find("message: \"") {
+                        let start = start + 10;
+                        if let Some(end) = error_str[start..].find("\", source:") {
+                            error_str[start..start + end].to_string()
+                        } else if let Some(end) = error_str[start..].find("\"") {
+                            error_str[start..start + end].to_string()
+                        } else {
+                            error_str
+                        }
+                    } else {
+                        error_str
+                    }
+                };
+                (0, Some(simplified_error), None)
+            },
         };
 
         let latency = start_time.elapsed().as_secs_f64() * 1000.0;
@@ -134,7 +280,7 @@ async fn main() -> Result<(), Box<dyn Error>> {
             error,
             last_updated: Utc::now(),
             ping,
-            check_id: check_request.check_id,
+            check_id: check_request.check_id.clone(),
             user_submitted: check_request.user_submitted,
             vendor: server_info.as_ref().map(|info| info.vendor.clone()),
             git_commit: server_info.as_ref().map(|info| info.git_commit.clone()),
@@ -152,11 +298,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
             donation_address: server_info.as_ref().map(|info| info.donation_address.clone()),
         };
 
-        if let Ok(result_json) = serde_json::to_string(&result) {
-            let redis_key = format!("zec:{}", check_request.host);
-            if let Err(e) = redis_conn.set::<_, _, ()>(&redis_key, &result_json) {
-                error!("Redis save failed: {e}");
-            }
+        if let Err(e) = self.publish_to_clickhouse(&check_request, &result).await {
+            error!(%e, "Failed to publish data to ClickHouse");
+        }
+
+        Ok(())
+    }
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn Error>> {
+    let worker = Worker::new().await?;
+    
+    let mut subscription = worker.nats.subscribe(format!("{}check.zec", "hosh.")).await?;
+    info!("Subscribed to hosh.check.zec");
+
+    while let Some(msg) = subscription.next().await {
+        if let Err(e) = worker.process_check(msg).await {
+            error!("Error processing check: {}", e);
         }
     }
 

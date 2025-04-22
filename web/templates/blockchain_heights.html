@@ -17,122 +17,58 @@
             <thead>
                 <tr class="bg-gray-100">
                     <th class="px-4 py-2 border w-48">Explorer</th>
-                    {% for row in rows %}
+                    {% for chain in self.get_unique_chains() %}
                     <th class="px-4 py-3 border w-40">
                         <div class="flex flex-col items-center gap-1">
                             <div class="flex items-center gap-2">
-                                <img src="https://loutre.blockchair.io/w4/assets/images/blockchains/{{ row.chain }}/logo_light_48.webp" 
-                                     alt="{{ row.chain }}" 
+                                <img src="{{ self.get_chain_logo(chain) }}" 
+                                     alt="{{ chain }}" 
                                      class="w-6 h-6"
-                                     onerror="this.onerror=null; this.src='https://blockchair.com/favicon.ico';">
+                                     onerror="this.onerror=null; this.innerText='⛓';">
                             </div>
-                            <span class="capitalize whitespace-nowrap text-sm">{{ self.format_chain_name(row.chain) }}</span>
+                            <span class="capitalize whitespace-nowrap text-sm">{{ self.format_chain_name(chain) }}</span>
                         </div>
                     </th>
                     {% endfor %}
                 </tr>
             </thead>
             <tbody>
-                <tr>
-                    <td class="px-4 py-2 border w-48">
-                        <div class="flex items-center gap-2">
-                            <img src="https://blockchair.com/favicon.ico" alt="Blockchair" class="w-4 h-4">
-                            <a href="https://blockchair.com" class="hover:text-indigo-600" target="_blank" rel="noopener">
-                                Blockchair
-                            </a>
-                        </div>
-                    </td>
-                    {% for row in rows %}
-                    <td class="px-4 py-2 border w-40">
-                        <div class="flex justify-end items-baseline gap-1 font-mono">
-                            {% if let Some(height) = row.blockchair %}
-                                <span>{{ height }}</span>
-                                {% if let Some(diff) = self.get_height_difference(height, row) %}
-                                    <span class="text-sm text-gray-600">{{ diff }}</span>
+                {% for explorer in self.get_unique_explorers() %}
+                    <tr>
+                        <td class="px-4 py-2 border w-48">
+                            <div class="flex items-center gap-2">
+                                {% if self.get_explorer_logo(explorer) == "⛓" %}
+                                    <span class="w-4 h-4 inline-flex items-center justify-center">⛓</span>
+                                {% else %}
+                                    <img src="{{ self.get_explorer_logo(explorer) }}" 
+                                         alt="{{ explorer }}" 
+                                         class="w-4 h-4"
+                                         onerror="this.onerror=null; this.parentElement.innerHTML='<span class=\'w-4 h-4 inline-flex items-center justify-center\'>⛓</span>';">
                                 {% endif %}
-                            {% else %}
-                                <span>-</span>
-                            {% endif %}
-                        </div>
-                    </td>
-                    {% endfor %}
-                </tr>
-                <tr>
-                    <td class="px-4 py-2 border w-48">
-                        <div class="flex items-center gap-2">
-                            <img src="https://www.blockchain.com/favicon.ico" alt="Blockchain.com" class="w-4 h-4">
-                            <a href="https://www.blockchain.com/explorer" class="hover:text-indigo-600" target="_blank" rel="noopener">
-                                Blockchain.com
-                            </a>
-                        </div>
-                    </td>
-                    {% for row in rows %}
-                    <td class="px-4 py-2 border w-40 text-right font-mono">
-                        {% if let Some(height) = row.blockchain_com %}
-                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
-                        {% else %}
-                            -
-                        {% endif %}
-                    </td>
-                    {% endfor %}
-                </tr>
-                <tr>
-                    <td class="px-4 py-2 border w-48">
-                        <div class="flex items-center gap-2">
-                            <img src="https://blockstream.info/favicon.ico" alt="Blockstream" class="w-4 h-4">
-                            <a href="https://blockstream.info" class="hover:text-indigo-600" target="_blank" rel="noopener">
-                                Blockstream
-                            </a>
-                        </div>
-                    </td>
-                    {% for row in rows %}
-                    <td class="px-4 py-2 border w-40 text-right font-mono">
-                        {% if let Some(height) = row.blockstream %}
-                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
-                        {% else %}
-                            -
-                        {% endif %}
-                    </td>
-                    {% endfor %}
-                </tr>
-                <tr>
-                    <td class="px-4 py-2 border w-48">
-                        <div class="flex items-center gap-2">
-                            <img src="https://explorer.zec.rocks/favicon.ico" alt="Zec.rocks" class="w-4 h-4">
-                            <a href="https://explorer.zec.rocks" class="hover:text-indigo-600" target="_blank" rel="noopener">
-                                Zec.rocks
-                            </a>
-                        </div>
-                    </td>
-                    {% for row in rows %}
-                    <td class="px-4 py-2 border w-40 text-right font-mono">
-                        {% if let Some(height) = row.zecrocks %}
-                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
-                        {% else %}
-                            -
-                        {% endif %}
-                    </td>
-                    {% endfor %}
-                </tr>
-                <tr>
-                    <td class="px-4 py-2 border w-48">
-                        <div class="flex items-center gap-2">
-                            <img src="https://mainnet.zcashexplorer.app/favicon.ico" alt="Zcash Explorer" class="w-4 h-4">
-                            <a href="https://mainnet.zcashexplorer.app" class="hover:text-indigo-600" target="_blank" rel="noopener">
-                                Zcash Explorer
-                            </a>
-                        </div>
-                    </td>
-                    {% for row in rows %}
-                    <td class="px-4 py-2 border w-40 text-right font-mono">
-                        {% if let Some(height) = row.zcashexplorer %}
-                            {{ height }}{% if let Some(diff) = self.get_height_difference(height, row) %}{{ diff }}{% endif %}
-                        {% else %}
-                            -
-                        {% endif %}
-                    </td>
-                    {% endfor %}
-                </tr>
+                                <a href="{{ self.get_explorer_url(explorer) }}" 
+                                   class="hover:text-indigo-600" 
+                                   target="_blank" 
+                                   rel="noopener">
+                                    {{ explorer }}
+                                </a>
+                            </div>
+                        </td>
+                        {% for chain in self.get_unique_chains() %}
+                            <td class="px-4 py-2 border w-40">
+                                <div class="flex justify-end items-baseline gap-1 font-mono">
+                                    {% if let Some((height, diff)) = self.get_chain_height(chain, explorer) %}
+                                        <span>{{ height }}</span>
+                                        {% if let Some(d) = diff %}
+                                            <span class="text-sm text-gray-600">{{ d }}</span>
+                                        {% endif %}
+                                    {% else %}
+                                        <span>-</span>
+                                    {% endif %}
+                                </div>
+                            </td>
+                        {% endfor %}
+                    </tr>
+                {% endfor %}
             </tbody>
         </table>
     </div>

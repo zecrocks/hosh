@@ -1,0 +1,1 @@
+{{#include /hosh/checkers/http/README.md}} 

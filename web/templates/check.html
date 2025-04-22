@@ -6,57 +6,7 @@
     <div class="bg-white shadow rounded-lg p-6">
         <p class="text-gray-600 mb-4">Check ID: {{ check_id }}</p>
         
-        {% if let Some(server) = server %}
-            <div class="border-t border-gray-200 pt-4">
-                <h2 class="text-xl font-semibold mb-2">Server Details</h2>
-                <dl class="grid grid-cols-2 gap-4">
-                    <div>
-                        <dt class="text-gray-600">Host</dt>
-                        <dd>{{ server.host_with_port() }}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-gray-600">Status</dt>
-                        <dd class="{% if server.is_online() %}text-green-600{% else %}text-red-600{% endif %}">
-                            {% if server.is_online() %}Online{% else %}Offline{% endif %}
-                        </dd>
-                    </div>
-                    <div>
-                        <dt class="text-gray-600">Last Updated</dt>
-                        <dd>{{ server.formatted_last_updated() }}</dd>
-                    </div>
-                    <div>
-                        <dt class="text-gray-600">Height</dt>
-                        <dd>{{ server.height }}</dd>
-                    </div>
-                    {% if let Some(true) = server.error %}
-                        {% if let Some(msg) = server.extra.get("error_message") %}
-                        <div class="col-span-2">
-                            <dt class="text-gray-600">Error</dt>
-                            <dd class="text-red-600">{{ msg }}</dd>
-                        </div>
-                        {% endif %}
-                    {% endif %}
-                </dl>
-            </div>
-
-            {% if let Some(data) = server_data %}
-                <div class="mt-8">
-                    <h3 class="text-xl font-semibold mb-4">Advanced Details</h3>
-                    <div class="bg-white shadow rounded-lg overflow-hidden">
-                        <table class="table-auto w-full">
-                            <tbody>
-                                {% for (key, value) in data.iter() %}
-                                <tr class="border-b">
-                                    <td class="px-4 py-2 bg-gray-50 font-medium">{{ key }}</td>
-                                    <td class="px-4 py-2">{{ value|format_value }}</td>
-                                </tr>
-                                {% endfor %}
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            {% endif %}
-        {% else %}
+        {% if self.is_checking() %}
             <p>
                 Checking server 
                 {% if let Some(url) = checking_url %}
@@ -65,25 +15,74 @@
                 <span class="animate-spin ml-2">⏳</span>
             </p>
             <script>
-                // Refresh the page every 5 seconds until we get a result
                 setTimeout(function checkResult() {
                     fetch(window.location.href)
                         .then(response => response.text())
                         .then(html => {
                             if (html.includes('Checking server')) {
-                                // No result yet, check again in 5 seconds
                                 setTimeout(checkResult, 5000);
                             } else {
-                                // Result found, refresh the page
                                 window.location.reload();
                             }
                         });
                 }, 5000);
             </script>
+        {% else %}
+            {% if let Some(server) = server %}
+                <div class="border-t border-gray-200 pt-4">
+                    <h2 class="text-xl font-semibold mb-2">Server Details</h2>
+                    <dl class="grid grid-cols-2 gap-4">
+                        <div>
+                            <dt class="text-gray-600">Host</dt>
+                            <dd>{{ server.host_with_port() }}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-gray-600">Status</dt>
+                            <dd class="{% if server.is_online() %}text-green-600{% else %}text-red-600{% endif %}">
+                                {% if server.is_online() %}Online{% else %}Offline{% endif %}
+                            </dd>
+                        </div>
+                        <div>
+                            <dt class="text-gray-600">Last Updated</dt>
+                            <dd>{{ server.formatted_last_updated() }}</dd>
+                        </div>
+                        <div>
+                            <dt class="text-gray-600">Height</dt>
+                            <dd>{{ server.height }}</dd>
+                        </div>
+                        {% if self.has_error() %}
+                            {% if let Some(msg) = self.error_message() %}
+                            <div class="col-span-2">
+                                <dt class="text-gray-600">Error</dt>
+                                <dd class="text-red-600">{{ msg }}</dd>
+                            </div>
+                            {% endif %}
+                        {% endif %}
+                    </dl>
+                </div>
+
+                {% if let Some(data) = server_data %}
+                    <div class="mt-8">
+                        <h3 class="text-xl font-semibold mb-4">Advanced Details</h3>
+                        <div class="bg-white shadow rounded-lg overflow-hidden">
+                            <table class="table-auto w-full">
+                                <tbody>
+                                    {% for (key, value) in data.iter() %}
+                                    <tr class="border-b">
+                                        <td class="px-4 py-2 bg-gray-50 font-medium">{{ key }}</td>
+                                        <td class="px-4 py-2">{{ value|format_value }}</td>
+                                    </tr>
+                                    {% endfor %}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                {% endif %}
+            {% endif %}
         {% endif %}
 
-        <div class="mt-6">
-            <a href="/{{ network }}" class="text-blue-600 hover:text-blue-800">← Back to {{ CheckTemplate::network_upper(network) }}</a>
+        <div class="mt-4">
+            <a href="/{{ network }}" class="text-blue-600 hover:text-blue-800">← Back to {{ self.network_upper() }}</a>
         </div>
     </div>
 </div>
