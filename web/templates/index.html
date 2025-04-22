@@ -23,7 +23,7 @@
                             <td>
                                 {{ server.height }}
                                 {% if server.is_height_behind(percentile_height) %}
-                                <span class="text-warning" title="Server is behind the majority">⚠️</span>
+                                <!-- <span class="text-warning" title="Server is behind the majority">⚠️</span> -->
                                 {% else if server.is_height_ahead(percentile_height) %}
                                 <span class="text-primary" title="Server is ahead of the majority">ℹ️</span>
                                 {% endif %}

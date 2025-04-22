@@ -101,6 +101,11 @@ const ZEC_SERVERS: &[(&str, u16)] = &[
     ("lwd6.zcash-infra.com", 9067),
     ("lwd7.zcash-infra.com", 9067),
     ("lwd8.zcash-infra.com", 9067),
+    ("lwd8.zcash-infra.com", 9067),
+    ("lightwalletd.stakehold.rs", 443),
+    ("zcash.mysideoftheweb.com", 9067),
+    ("zcash.mysideoftheweb.com", 19067),
+    ("zaino.stakehold.rs", 443),
 ];
 
 // Static HTTP block explorer configuration

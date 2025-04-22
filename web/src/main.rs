@@ -240,17 +240,29 @@ impl ServerInfo {
             .map(String::as_str)
             .unwrap_or("-")
             .to_string();
+        
+        // Hacky check to see if the server is running Zaino (doesn't start with "v")
+        let lwd_display = if !lwd_version.is_empty() && lwd_version != "-" && !lwd_version.starts_with('v') {
+            // Only show Zaino indicator for ZEC currency
+            if self.extra.get("zcashd_subversion").is_some() {
+                format!("{} (Zaino 🚀)", lwd_version)
+            } else {
+                lwd_version
+            }
+        } else {
+            lwd_version
+        };
 
         // Display both LWD and Zebra versions for ZEC if available
         if let Some(subversion) = self.extra.get("zcashd_subversion") {
             if let Some(subversion_str) = subversion.as_str() {
                 // Remove slashes from subversion string
                 let cleaned_subversion = subversion_str.replace('/', "");
-                return format!("{}\nLWD: {}", cleaned_subversion, lwd_version);
+                return format!("{}\nLWD: {}", cleaned_subversion, lwd_display);
             }
         }
         
-        lwd_version
+        lwd_display
     }
 }
 
