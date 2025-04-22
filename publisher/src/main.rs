@@ -7,8 +7,8 @@ fn setup_logging() {
 
     // Create a more restrictive filter
     let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::INFO.into())
-        .parse_lossy("info,hyper=off,reqwest=off,h2=off,tower=off,tonic=off");
+        .with_default_directive(LevelFilter::WARN.into())
+        .parse_lossy("warn,hyper=off,reqwest=off,h2=off,tower=off,tonic=off");
 
     fmt()
         .with_env_filter(env_filter)

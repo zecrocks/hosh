@@ -1550,7 +1550,7 @@ where
 async fn main() -> std::io::Result<()> {
     // Initialize tracing subscriber
     let _subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::WARN)
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)

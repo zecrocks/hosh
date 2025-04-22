@@ -283,14 +283,14 @@ async fn update_servers(
 async fn main() -> Result<(), Box<dyn Error>> {
     // Initialize tracing subscriber with more verbose output
     tracing_subscriber::fmt()
-        .with_max_level(Level::DEBUG)
+        .with_max_level(Level::WARN)
         .with_target(true)
         .with_thread_ids(true)
         .with_thread_names(true)
         .with_file(true)
         .with_line_number(true)
         .with_ansi(true)
-        .with_env_filter("html5ever=warn,discovery=debug")
+        .with_env_filter("html5ever=warn,discovery=warn")
         .init();
 
     info!("Starting discovery service...");

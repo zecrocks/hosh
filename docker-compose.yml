@@ -19,7 +19,7 @@ services:
     build: ./checkers/btc
     image: hosh/checker-btc
     environment:
-      RUST_LOG: info
+      RUST_LOG: warning
       RUN_MODE: worker
       NATS_URL: "nats://nats:4222"
       NATS_SUBJECT: "hosh.check.btc"
@@ -42,7 +42,7 @@ services:
     build: ./checkers/btc
     image: hosh/checker-btc
     environment:
-      RUST_LOG: info
+      RUST_LOG: warning
       RUN_MODE: worker
       MAX_CONCURRENT_CHECKS: 1
       NATS_URL: "nats://nats:4222"
@@ -92,7 +92,7 @@ services:
     image: hosh/discovery
     container_name: discovery
     environment:
-      - RUST_LOG=info
+      - RUST_LOG=warning
       - DISCOVERY_INTERVAL=3600
       - CLICKHOUSE_HOST=chronicler
       - CLICKHOUSE_PORT=8123
@@ -117,9 +117,9 @@ services:
       - ./discovery/target:/usr/src/app/target  # Persist build artifacts
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=warning
       - RUST_BACKTRACE=1
-      - TRACING_LEVEL=debug
+      - TRACING_LEVEL=warning
       - DISCOVERY_INTERVAL=3600
       - CLICKHOUSE_HOST=chronicler
       - CLICKHOUSE_PORT=8123
@@ -139,7 +139,7 @@ services:
     image: hosh/publisher-rust
     container_name: publisher
     environment:
-      - RUST_LOG=info
+      - RUST_LOG=warning
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
       - NATS_URL=${NATS_URL:-nats://nats:4222}
       - NATS_PREFIX=${NATS_PREFIX:-hosh.}
@@ -165,7 +165,7 @@ services:
     image: hosh/checker-zec
     container_name: checker-zec
     environment:
-      - RUST_LOG=trace
+      - RUST_LOG=warning
       - NATS_HOST=nats
       - NATS_PORT=4222
       - CLICKHOUSE_HOST=chronicler
@@ -185,7 +185,7 @@ services:
       dockerfile: Dockerfile
     image: hosh/checker-http
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=warning
       - NATS_HOST=nats
       - TOR_PROXY_HOST=tor
       - CLICKHOUSE_HOST=chronicler
@@ -215,7 +215,7 @@ services:
     environment:
       - NATS_HOST=nats
       - TOR_PROXY_HOST=tor
-      - RUST_LOG=debug
+      - RUST_LOG=warning
       - CLICKHOUSE_HOST=chronicler
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
@@ -241,7 +241,7 @@ services:
       - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      RUST_LOG: debug
+      RUST_LOG: warning
       RUN_MODE: worker
       NATS_URL: "nats://nats:4222"
       NATS_SUBJECT: "hosh.check.btc"
@@ -272,7 +272,7 @@ services:
       - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      RUST_LOG: debug
+      RUST_LOG: warning
       RUN_MODE: worker
       MAX_CONCURRENT_CHECKS: 1
       REDIS_HOST: redis
@@ -306,7 +306,7 @@ services:
       - ./checkers/zec/target:/usr/src/zec/target  # Persist build artifacts
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      RUST_LOG: trace
+      RUST_LOG: warning
       NATS_HOST: nats
       NATS_PORT: 4222
       CLICKHOUSE_HOST: chronicler
@@ -474,7 +474,7 @@ services:
       - ./publisher:/usr/src/app
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      - RUST_LOG=debug
+      - RUST_LOG=warning
       - CHECK_INTERVAL=${CHECK_INTERVAL:-300}
       - NATS_URL=${NATS_URL:-nats://nats:4222}
       - NATS_PREFIX=${NATS_PREFIX:-hosh.}

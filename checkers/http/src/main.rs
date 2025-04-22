@@ -249,7 +249,7 @@ impl Worker {
 async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Initialize tracing
     tracing_subscriber::fmt()
-        .with_env_filter("info")
+        .with_env_filter("info,html5ever=error")
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
