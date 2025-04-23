@@ -3,7 +3,6 @@ use serde::{Deserialize, Serialize};
 use tracing::{error, info, trace};
 use reqwest::Client;
 use chrono::{DateTime, Utc, NaiveDateTime};
-use tracing::{debug, warn};
 
 #[derive(Debug, Clone)]
 pub struct ClickHouseClient {
@@ -40,6 +39,7 @@ impl ClickHouseClient {
             "SELECT target_id, hostname, module, last_queued_at, last_checked_at, user_submitted 
              FROM {}.targets 
              WHERE module = '{}'
+             ORDER BY last_checked_at ASC
              FORMAT TabSeparatedWithNames",
             self.database, module
         );

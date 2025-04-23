@@ -2,7 +2,7 @@ use crate::config::{Config, PREFIXES};
 use crate::clickhouse::ClickHouseClient;
 use anyhow::Result;
 use async_nats::Client as NatsClient;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 use tokio::time::{interval_at, Instant, Duration};
 
 pub struct Publisher {
