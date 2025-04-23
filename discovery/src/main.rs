@@ -83,19 +83,39 @@ impl ClickHouseConfig {
 
 // Static ZEC server configuration
 const ZEC_SERVERS: &[(&str, u16)] = &[
-    ("zaino.testnet.unsafe.zec.rocks", 443),
-    ("testnet.zec.rocks", 443),
-    ("zcashd.zec.rocks", 443),
-    ("ap.zec.rocks", 443),
     ("zec.rocks", 443),
-    ("me.zec.rocks", 443),
+    ("testnet.zec.rocks", 443),
+    ("ap.zec.rocks", 443),
     ("eu.zec.rocks", 443),
-    ("zaino.unsafe.zec.rocks", 443),
-    ("zcash.mysideoftheweb.com", 9067),
+    ("me.zec.rocks", 443),
     ("na.zec.rocks", 443),
     ("sa.zec.rocks", 443),
+    ("zcashd.zec.rocks", 443),
+    ("zaino.unsafe.zec.rocks", 443),
+    ("zaino.testnet.unsafe.zec.rocks", 443),
+    //// Tor nodes
+    // Zec.rocks Mainnet (Zebra + Zaino)
+    // ("6fiyttjv3awhv6afdqeeerfxckdqlt6vejjsadeiqawnt7e3hxdcaxqd.onion", 443),
+    // ("lzzfytqg24a7v6ejqh2q4ecaop6mf62gupvdimc4ryxeixtdtzxxjmad.onion", 443),
+    // ("vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion", 443),
+    // Zec.rocks Mainnet (Zcashd + Lightwalletd)
+    // ("ltefw7pqlslcst5n465kxwgqmb4wxwp7djvhzqlfwhh3wx53xzuwr2ad.onion", 443),
+    // Zec.rocks Testnet (Zebra + Zaino)
+    // ("gnsujqzqaepdmxjq4ixm74kapd7grp3j5selm7nsejz6ctxa3yx4q3yd.onion", 443),
+    // ("ti64zsaj6w66um42o4nyjtstzg4zryqkph2c45x4bwfqhydxeznrfgad.onion", 443),
+    //// Community nodes
+    ("zcash.mysideoftheweb.com", 9067), // eZcash
     ("zaino.stakehold.rs", 443),
     ("lightwalletd.stakehold.rs", 443),
+    // Ywallet nodes
+    ("lwd1.zcash-infra.com", 9067),
+    ("lwd2.zcash-infra.com", 9067),
+    ("lwd3.zcash-infra.com", 9067),
+    ("lwd4.zcash-infra.com", 9067),
+    ("lwd5.zcash-infra.com", 9067),
+    ("lwd6.zcash-infra.com", 9067),
+    ("lwd7.zcash-infra.com", 9067),
+    ("lwd8.zcash-infra.com", 9067),
 ];
 
 // Static HTTP block explorer configuration
@@ -105,7 +125,6 @@ const HTTP_EXPLORERS: &[(&str, &str)] = &[
     ("zecrocks", "https://explorer.zec.rocks"),
     ("blockchain", "https://blockchain.com"),
     ("zcashexplorer", "https://mainnet.zcashexplorer.app"),
-    // ("mempool", "https://mempool.space"), // Cannot parse height because  it's a single-page application (SPA) built with Angular
 ];
 
 #[derive(Debug, Deserialize)]
