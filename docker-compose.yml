@@ -373,6 +373,7 @@ services:
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - RESULTS_WINDOW_DAYS=${RESULTS_WINDOW_DAYS:-1} # optional, defaults to 1
       - NATS_HOST=nats
       - NATS_PORT=4222
     depends_on:
@@ -454,6 +455,7 @@ services:
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - RESULTS_WINDOW_DAYS=${RESULTS_WINDOW_DAYS:-1} # optional, defaults to 1
       - NATS_HOST=nats
       - NATS_PORT=4222
     depends_on:

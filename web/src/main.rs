@@ -59,6 +59,12 @@ struct ServerInfo {
     error: Option<String>,
 
     #[serde(default)]
+    error_type: Option<String>,
+
+    #[serde(default)]
+    error_message: Option<String>,
+
+    #[serde(default)]
     last_updated: Option<String>,
 
     #[serde(default)]
@@ -69,6 +75,9 @@ struct ServerInfo {
 
     #[serde(default)]
     user_submitted: bool,
+
+    #[serde(default)]
+    check_id: Option<String>,
 
     #[serde(flatten)]
     extra: HashMap<String, serde_json::Value>,
@@ -526,13 +535,34 @@ impl ClickhouseConfig {
     }
 }
 
-// Update the Worker struct to include ClickHouse
+#[derive(Clone)]
+struct Config {
+    results_window_days: u64,
+}
+
+impl Config {
+    fn from_env() -> Result<Self, actix_web::Error> {
+        let results_window_days = env::var("RESULTS_WINDOW_DAYS")
+            .unwrap_or_else(|_| "1".to_string())
+            .parse()
+            .map_err(|e| {
+                warn!("Failed to parse RESULTS_WINDOW_DAYS: {}", e);
+                actix_web::error::ErrorBadRequest(format!("Invalid RESULTS_WINDOW_DAYS value: {}", e))
+            })?;
+
+        Ok(Self {
+            results_window_days,
+        })
+    }
+}
+
 #[derive(Clone)]
 struct Worker {
     #[allow(dead_code)]
     nats: async_nats::Client,
     clickhouse: ClickhouseConfig,
     http_client: reqwest::Client,
+    config: Config,
 }
 
 #[get("/")]
@@ -557,7 +587,7 @@ async fn network_status(
                 ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
-            AND r.checked_at >= now() - INTERVAL 1 HOUR
+            AND r.checked_at >= now() - INTERVAL {} DAY
         )
         SELECT 
             hostname,
@@ -570,10 +600,15 @@ async fn network_status(
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database,
-        network.0
+        network.0,
+        worker.config.results_window_days
     );
 
-    info!("Executing ClickHouse query for network {}", network.0);
+    info!(
+        "Executing ClickHouse query for network {} with window of {} days", 
+        network.0,
+        worker.config.results_window_days
+    );
 
     let response = worker.http_client.post(&worker.clickhouse.url)
         .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
@@ -717,7 +752,7 @@ async fn server_detail(
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.hostname = '{}'
-            AND r.checked_at >= now() - INTERVAL 1 HOUR
+            AND r.checked_at >= now() - INTERVAL {} DAY
         )
         SELECT 
             hostname,
@@ -731,7 +766,8 @@ async fn server_detail(
         "#,
         worker.clickhouse.database,
         safe_network.0,
-        host
+        host,
+        worker.config.results_window_days
     );
 
     let response = worker.http_client.post(&worker.clickhouse.url)
@@ -777,7 +813,7 @@ async fn server_detail(
                 ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
-            AND r.checked_at >= now() - INTERVAL 1 HOUR
+            AND r.checked_at >= now() - INTERVAL 1 DAY
         )
         SELECT 
             hostname,
@@ -868,7 +904,7 @@ async fn network_api(
                 ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
-            AND r.checked_at >= now() - INTERVAL 1 HOUR
+            AND r.checked_at >= now() - INTERVAL {} DAY
         )
         SELECT 
             hostname,
@@ -881,7 +917,8 @@ async fn network_api(
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database,
-        network.0
+        network.0,
+        worker.config.results_window_days
     );
 
     let response = worker.http_client.post(&worker.clickhouse.url)
@@ -989,7 +1026,7 @@ async fn check_server(
                     ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
                 FROM {}.results r
                 WHERE r.checker_module = '{}'
-                AND r.checked_at >= now() - INTERVAL 1 HOUR
+                AND r.checked_at >= now() - INTERVAL 1 DAY
             )
             SELECT 
                 hostname,
@@ -1089,7 +1126,7 @@ async fn check_server(
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.hostname = '{}'
-            AND r.checked_at >= now() - INTERVAL 1 HOUR
+            AND r.checked_at >= now() - INTERVAL 1 DAY
         )
         SELECT 
             response_data
@@ -1219,7 +1256,7 @@ async fn check_result(
                 ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
-            AND r.checked_at >= now() - INTERVAL 1 HOUR
+            AND r.checked_at >= now() - INTERVAL 1 DAY
         )
         SELECT 
             hostname,
@@ -1288,7 +1325,7 @@ async fn check_result(
                     FROM {}.results r
                     WHERE r.checker_module = '{}'
                     AND r.hostname = '{}'
-                    AND r.checked_at >= now() - INTERVAL 5 MINUTE
+                    AND r.checked_at >= now() - INTERVAL 5 DAY
                 )
                 SELECT 
                     hostname,
@@ -1387,7 +1424,7 @@ async fn blockchain_heights(worker: web::Data<Worker>) -> Result<HttpResponse> {
                 error,
                 ROW_NUMBER() OVER (PARTITION BY explorer, chain ORDER BY checked_at DESC) as rn
             FROM {}.block_explorer_heights
-            WHERE checked_at >= now() - INTERVAL 1 HOUR
+            WHERE checked_at >= now() - INTERVAL 1 DAY
         ),
         chain_stats AS (
             SELECT 
@@ -1535,10 +1572,13 @@ async fn main() -> std::io::Result<()> {
         .build()
         .expect("Failed to create HTTP client");
 
+    let config = Config::from_env().expect("Failed to load config from environment");
+
     let worker = Worker {
         nats: async_nats::connect(&nats_url).await.expect("Failed to connect to NATS"),
         clickhouse: ClickhouseConfig::from_env(),
         http_client,
+        config,
     };
 
     info!("🚀 Starting server at http://0.0.0.0:8080");
