@@ -153,8 +153,6 @@ async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error>> {
 
 impl Worker {
     pub async fn new() -> Result<Self, Box<dyn Error>> {
-        tracing_subscriber::fmt::init();
-
         rustls::crypto::ring::default_provider()
             .install_default()
             .expect("Failed to install rustls crypto provider");
