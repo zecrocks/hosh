@@ -1,8 +1,11 @@
-use std::{env, error::Error};
+use std::{env, error::Error, time::Duration};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use zingolib;
+use zcash_client_backend::{
+    proto::service::{compact_tx_streamer_client::CompactTxStreamerClient, Empty},
+};
+use tonic::{Request, transport::{Uri, ClientTlsConfig, Endpoint}};
 use futures_util::StreamExt;
 use tracing::{info, error};
 use uuid::Uuid;
@@ -55,8 +58,24 @@ struct CheckResult {
     zcashd_build: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     zcashd_subversion: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    donation_address: Option<String>,
+}
+
+#[derive(Debug)]
+struct ServerInfo {
+    block_height: u64,
+    vendor: String,
+    git_commit: String,
+    chain_name: String,
+    sapling_activation_height: u64,
+    consensus_branch_id: String,
+    taddr_support: bool,
+    branch: String,
+    build_date: String,
+    build_user: String,
+    estimated_height: u64,
+    version: String,
+    zcashd_build: String,
+    zcashd_subversion: String,
 }
 
 struct ClickhouseConfig {
@@ -84,6 +103,52 @@ struct Worker {
     nats: async_nats::Client,
     clickhouse: ClickhouseConfig,
     http_client: reqwest::Client,
+}
+
+// Connect directly (without Tor)
+async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error>> {
+    info!("Connecting to lightwalletd server at {}", uri);
+    
+    let endpoint = Endpoint::from(uri.clone())
+        .tls_config(ClientTlsConfig::new().with_webpki_roots())?;
+    
+    info!("Establishing secure connection...");
+    let channel = endpoint.connect().await?;
+    
+    let mut client = CompactTxStreamerClient::with_origin(channel, uri);
+    
+    info!("Sending gRPC request for lightwalletd info...");
+    let chain_info = match client.get_lightd_info(Request::new(Empty {})).await {
+        Ok(response) => {
+            info!("Received successful gRPC response");
+            response.into_inner()
+        },
+        Err(e) => {
+            error!("gRPC request failed: {}", e);
+            return Err(format!("gRPC error: {}", e).into());
+        }
+    };
+
+    info!("Processing server response...");
+    let info = ServerInfo {
+        block_height: chain_info.block_height,
+        vendor: chain_info.vendor,
+        chain_name: chain_info.chain_name,
+        git_commit: chain_info.git_commit,
+        sapling_activation_height: chain_info.sapling_activation_height,
+        consensus_branch_id: chain_info.consensus_branch_id,
+        taddr_support: chain_info.taddr_support,
+        branch: chain_info.branch,
+        build_date: chain_info.build_date,
+        build_user: chain_info.build_user,
+        estimated_height: chain_info.estimated_height,
+        version: chain_info.version,
+        zcashd_build: chain_info.zcashd_build,
+        zcashd_subversion: chain_info.zcashd_subversion,
+    };
+
+    info!("Successfully gathered server info");
+    Ok(info)
 }
 
 impl Worker {
@@ -220,7 +285,7 @@ impl Worker {
             }
         };
 
-        let uri = match format!("https://{}:{}", check_request.host, check_request.port).parse() {
+        let uri: Uri = match format!("https://{}:{}", check_request.host, check_request.port).parse() {
             Ok(u) => u,
             Err(e) => {
                 error!("Invalid URI: {e}");
@@ -229,7 +294,8 @@ impl Worker {
         };
 
         let start_time = Instant::now();
-        let (height, error, server_info) = match zingolib::grpc_connector::get_info(uri).await {
+
+        let (height, error, server_info) = match get_info_direct(uri).await {
             Ok(info) => (info.block_height, None, Some(info)),
             Err(e) => {
                 let simplified_error = if e.to_string().contains("tls handshake eof") {
@@ -295,7 +361,6 @@ impl Worker {
             server_version: server_info.as_ref().map(|info| info.version.clone()),
             zcashd_build: server_info.as_ref().map(|info| info.zcashd_build.clone()),
             zcashd_subversion: server_info.as_ref().map(|info| info.zcashd_subversion.clone()),
-            donation_address: server_info.as_ref().map(|info| info.donation_address.clone()),
         };
 
         if let Err(e) = self.publish_to_clickhouse(&check_request, &result).await {
@@ -308,6 +373,79 @@ impl Worker {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = env::args().collect();
+    
+    let subscriber = tracing_subscriber::fmt();
+    if args.len() > 1 && args[1] == "--test" {
+        subscriber.with_max_level(tracing::Level::INFO).init();
+        info!("Running in test mode");
+    } else {
+        subscriber.init();
+    }
+    
+    if args.len() > 1 && args[1] == "--test" {
+        let target = if args.len() > 2 {
+            args[2].clone()
+        } else {
+            "zec.rocks:443".to_string()
+        };
+        
+        let parts: Vec<&str> = target.split(':').collect();
+        let (test_server, test_port) = if parts.len() >= 2 {
+            (parts[0].to_string(), parts[1].parse().unwrap_or(443))
+        } else {
+            (target.clone(), 443)
+        };
+        
+        // Check if it's an onion address which we don't support yet
+        if test_server.ends_with(".onion") {
+            error!("Cannot connect to .onion address: Tor support is disabled");
+            return Err("Cannot connect to .onion addresses: Tor support is disabled".into());
+        }
+        
+        info!("Testing direct connection to {}:{}", test_server, test_port);
+        
+        let uri_str = format!("https://{}:{}", test_server, test_port);
+        info!("Constructing URI: {}", uri_str);
+        
+        let uri = match uri_str.parse::<Uri>() {
+            Ok(u) => u,
+            Err(e) => {
+                error!("Failed to parse URI: {}", e);
+                return Err(format!("URI parsing error: {}", e).into());
+            }
+        };
+        
+        let wait_time = 20;
+        
+        info!("Starting connection attempt to {} (timeout: {} seconds)...", uri, wait_time);
+        let start_time = Instant::now();
+        
+        match tokio::time::timeout(
+            Duration::from_secs(wait_time),
+            get_info_direct(uri)
+        ).await {
+            Ok(result) => {
+                match result {
+                    Ok(info) => {
+                        let latency = start_time.elapsed().as_secs_f64() * 1000.0;
+                        info!("Successfully connected! Block height: {}, Latency: {:.2}ms", 
+                             info.block_height, latency);
+                    },
+                    Err(e) => {
+                        error!("Failed to connect: {}", e);
+                    }
+                }
+            },
+            Err(_) => {
+                error!("Connection timed out after {} seconds", wait_time);
+            }
+        }
+        
+        return Ok(());
+    }
+    
+    info!("Starting ZEC checker in normal mode");
     let worker = Worker::new().await?;
     
     let mut subscription = worker.nats.subscribe(format!("{}check.zec", "hosh.")).await?;
