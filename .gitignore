@@ -91,10 +91,11 @@ pytestdebug.log
 *.log
 *.sqlite3
 
-
 # Environment variables
 .env
-.env.*
+
+# Vim
+*.swp
 
 # Mac stuff
 *.DS_Store
