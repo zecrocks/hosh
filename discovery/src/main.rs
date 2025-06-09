@@ -153,7 +153,7 @@ async fn fetch_btc_servers() -> Result<std::collections::HashMap<String, BtcServ
     info!("Fetching BTC servers from Electrum repository...");
     let client = reqwest::Client::new();
     let response = client
-        .get("https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/electrum/chains/servers.json")
+        .get("https://raw.githubusercontent.com/spesmilo/electrum/refs/heads/master/electrum/chains/mainnet/servers.json")
         .timeout(Duration::from_secs(10))
         .send()
         .await?;
