@@ -3,7 +3,7 @@ use axum::{
     Router,
 };
 use std::net::SocketAddr;
-use tracing::{info, error};
+use tracing::{info, error, Level};
 use tracing_subscriber;
 
 mod routes;
@@ -17,11 +17,17 @@ use routes::{
 };
 
 #[tokio::main]
-async fn main() {
-    // Initialize tracing
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    // Initialize tracing subscriber
     tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_max_level(Level::INFO)
+        .with_target(false)
+        .with_thread_ids(false)
+        .with_file(false)
+        .with_line_number(false)
         .init();
+
+    info!("🚀 Starting BTC checker...");
 
     // Check if we should run in worker mode
     let is_worker = std::env::var("RUN_MODE")
@@ -62,4 +68,6 @@ async fn main() {
             error!("Server error: {}", e);
         }
     }
+
+    Ok(())
 }

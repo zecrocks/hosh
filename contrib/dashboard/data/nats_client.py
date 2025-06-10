@@ -131,34 +131,40 @@ async def publish_chain_check_trigger(chain_type, specific_host=None, user_submi
         
         # If we have a specific host, we don't need to query Clickhouse
         if specific_host:
-            hosts = [(specific_host,)]
-        else:
-            # Query to get unique hostnames for the chain type
+            # Query to get the port for the specific host
             query = f"""
-                SELECT DISTINCT hostname
+                SELECT hostname, port
+                FROM targets
+                WHERE module = '{chain_type}'
+                AND hostname = '{specific_host}'
+            """
+        else:
+            # Query to get unique hostnames and ports for the chain type
+            query = f"""
+                SELECT DISTINCT hostname, port
                 FROM targets
                 WHERE module = '{chain_type}'
                 AND last_checked_at < now() - INTERVAL 5 MINUTE
             """
                 
-            print(f"Executing Clickhouse query: {query}")
-            
-            with get_client() as client:
-                hosts = client.execute(query)
-                print(f"Query returned {len(hosts) if hosts else 0} results")
-            
-            if not hosts:
-                print(f"No {chain_type} servers found in Clickhouse")
-                return False
-            
+        print(f"Executing Clickhouse query: {query}")
+        
+        with get_client() as client:
+            hosts = client.execute(query)
+            print(f"Query returned {len(hosts) if hosts else 0} results")
+        
+        if not hosts:
+            print(f"No {chain_type} servers found in Clickhouse")
+            return False
+        
         # Publish a check request for each host
         count = 0
-        for (hostname,) in hosts:
+        for (hostname, port) in hosts:
             try:
                 # Create message matching the CheckRequest struct
                 message = {
                     "host": hostname,
-                    "port": 50002 if chain_type == 'btc' else 9067,
+                    "port": port,
                     "version": "unknown",
                     "check_id": str(uuid.uuid4()),  # Generate a UUID string for check_id
                     "user_submitted": user_submitted
@@ -173,7 +179,7 @@ async def publish_chain_check_trigger(chain_type, specific_host=None, user_submi
                 print(f"Publishing to subject: {subject}")
                 await nc.publish(subject, json.dumps(message).encode())
                 count += 1
-                print(f"Published check request for {hostname} to {subject}")
+                print(f"Published check request for {hostname}:{port} to {subject}")
                 
             except Exception as e:
                 print(f"Error publishing check request for {hostname}: {e}")

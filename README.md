@@ -23,6 +23,14 @@ Load http://localhost:8080 in your browser.
 
 ## Development
 
-Edit files, run ```docker compose up --build``` to see changes.
+
+To work in developer mode, create a symlink to `docker-compose-dev.yml`
+
+```sh
+ln -s docker-compose-dev.yml docker-compose.override.yml
+```
+
+This will build and run dev versions for all containers.
+
 
 होश में रहना ही समझदारी की पहली सीढ़ी है।
