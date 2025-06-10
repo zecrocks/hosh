@@ -2,22 +2,12 @@ use anyhow::{Context, Result};
 use publisher::{Config, Publisher};
 
 fn setup_logging() {
-    use tracing_subscriber::{EnvFilter, fmt};
-    use tracing_subscriber::filter::LevelFilter;
-
-    // Create a more restrictive filter
-    let env_filter = EnvFilter::builder()
-        .with_default_directive(LevelFilter::WARN.into())
-        .parse_lossy("warn,hyper=off,reqwest=off,h2=off,tower=off,tonic=off");
-
-    fmt()
-        .with_env_filter(env_filter)
-        .with_target(false)
-        .with_thread_ids(false)
-        .with_thread_names(false)
-        .with_file(false)
-        .with_line_number(false)
-        .init();
+    use tracing_subscriber::fmt;
+    
+    // Initialize tracing subscriber with environment filter
+    let subscriber = fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env());
+    subscriber.init();
 }
 
 #[tokio::main]

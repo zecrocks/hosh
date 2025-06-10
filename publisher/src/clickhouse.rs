@@ -18,6 +18,7 @@ pub struct Target {
     pub target_id: String,
     pub module: String,
     pub hostname: String,
+    pub port: u16,
     pub last_queued_at: DateTime<Utc>,
     pub last_checked_at: DateTime<Utc>,
     pub user_submitted: bool,
@@ -36,7 +37,7 @@ impl ClickHouseClient {
 
     pub async fn get_targets_for_module(&self, module: &str) -> Result<Vec<Target>> {
         let query = format!(
-            "SELECT target_id, hostname, module, last_queued_at, last_checked_at, user_submitted 
+            "SELECT target_id, hostname, module, port, last_queued_at, last_checked_at, user_submitted 
              FROM {}.targets 
              WHERE module = '{}'
              ORDER BY last_checked_at ASC
@@ -81,7 +82,7 @@ impl ClickHouseClient {
         
         for line in lines {
             let fields: Vec<&str> = line.split('\t').collect();
-            if fields.len() != 6 {
+            if fields.len() != 7 {
                 error!(
                     %module,
                     %line,
@@ -101,9 +102,10 @@ impl ClickHouseClient {
                     target_id: fields[0].to_string(),
                     hostname: fields[1].to_string(),
                     module: fields[2].to_string(),
-                    last_queued_at: parse_datetime(fields[3])?,
-                    last_checked_at: parse_datetime(fields[4])?,
-                    user_submitted: fields[5].parse()?,
+                    port: fields[3].parse()?,
+                    last_queued_at: parse_datetime(fields[4])?,
+                    last_checked_at: parse_datetime(fields[5])?,
+                    user_submitted: fields[6].parse()?,
                 })
             })() {
                 Ok(target) => targets.push(target),

@@ -152,7 +152,13 @@ impl Publisher {
                 let payload = match module {
                     "zec" => serde_json::json!({
                         "host": target.hostname,
-                        "port": 443,  // Default ZEC port
+                        "port": target.port,  // Use target's port directly
+                        "check_id": target.target_id,
+                        "user_submitted": false
+                    }),
+                    "btc" => serde_json::json!({
+                        "host": target.hostname,
+                        "port": target.port,  // Use target's port directly
                         "check_id": target.target_id,
                         "user_submitted": false
                     }),
