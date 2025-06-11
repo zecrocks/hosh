@@ -58,6 +58,8 @@ struct CheckResult {
     zcashd_build: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     zcashd_subversion: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    donation_address: Option<String>,
 }
 
 #[derive(Debug)]
@@ -76,6 +78,7 @@ struct ServerInfo {
     version: String,
     zcashd_build: String,
     zcashd_subversion: String,
+    donation_address: String,
 }
 
 struct ClickhouseConfig {
@@ -145,6 +148,7 @@ async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error>> {
         version: chain_info.version,
         zcashd_build: chain_info.zcashd_build,
         zcashd_subversion: chain_info.zcashd_subversion,
+        donation_address: chain_info.donation_address,
     };
 
     info!("Successfully gathered server info");
@@ -359,6 +363,7 @@ impl Worker {
             server_version: server_info.as_ref().map(|info| info.version.clone()),
             zcashd_build: server_info.as_ref().map(|info| info.zcashd_build.clone()),
             zcashd_subversion: server_info.as_ref().map(|info| info.zcashd_subversion.clone()),
+            donation_address: server_info.as_ref().map(|info| info.donation_address.clone()),
         };
 
         if let Err(e) = self.publish_to_clickhouse(&check_request, &result).await {
