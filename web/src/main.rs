@@ -10,7 +10,7 @@ use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
 use std::time::{SystemTime, UNIX_EPOCH};
 use tracing::{info, warn, error, Level, debug};
-use tracing_subscriber::FmtSubscriber;
+use tracing_subscriber;
 use reqwest;
 use async_nats;
 
@@ -346,22 +346,18 @@ impl ServerInfo {
     }
 
     fn formatted_version(&self) -> String {
-        let lwd_version = self.server_version
-            .as_ref()
-            .map(String::as_str)
-            .unwrap_or("-")
-            .to_string();
+        let lwd_version = self.server_version.as_deref().unwrap_or("-");
         
-        // Hacky check to see if the server is running Zaino (doesn't start with "v")
-        let lwd_display = if !lwd_version.is_empty() && lwd_version != "-" && !lwd_version.starts_with('v') {
-            // Only show Zaino indicator for ZEC currency
-            if self.extra.get("zcashd_subversion").is_some() {
-                format!("{} (Zaino 🚀)", lwd_version)
-            } else {
-                lwd_version
-            }
+        // Check if this is a Zaino server by looking at the vendor field
+        let is_zaino = self.extra.get("vendor")
+            .and_then(|v| v.as_str())
+            .map(|v| v.contains("Zaino"))
+            .unwrap_or(false);
+
+        let lwd_display = if is_zaino {
+            format!("{} (Zaino 🚀)", lwd_version)
         } else {
-            lwd_version
+            lwd_version.to_string()
         };
 
         // Display both LWD and Zebra versions for ZEC if available
@@ -734,9 +730,6 @@ async fn network_status(
         if line.trim().is_empty() {
             continue;
         }
-
-        // Log the raw response for debugging
-        debug!("Raw server response: {}", line);
         
         match serde_json::from_str::<serde_json::Value>(line) {
             Ok(result) => {
@@ -755,75 +748,20 @@ async fn network_status(
                     }
                 };
                 
-                // Create a new ServerInfo with basic fields first
-                let mut server_info = ServerInfo {
-                    host: result["hostname"].as_str().unwrap_or("").to_string(),
-                    status: result["status"].as_str().unwrap_or("").to_string(),
-                    ping: result["ping"].as_f64(),
-                    ..Default::default()
-                };
-
-                // Try to parse the response_data as JSON
-                match serde_json::from_str::<serde_json::Value>(response_data) {
-                    Ok(data) => {
-                        // Extract fields from the parsed JSON
-                        if let Some(height) = data.get("height").and_then(|h| h.as_u64()) {
-                            server_info.height = height;
-                        }
-                        if let Some(port) = data.get("port").and_then(|p| p.as_u64()) {
-                            server_info.port = Some(port as u16);
-                        }
-                        if let Some(version) = data.get("server_version").and_then(|v| v.as_str()) {
-                            server_info.server_version = Some(version.to_string());
-                        }
-                        if let Some(last_updated) = data.get("last_updated").and_then(|l| l.as_str()) {
-                            server_info.last_updated = Some(last_updated.to_string());
-                        }
-                        if let Some(error) = data.get("error").and_then(|e| e.as_bool()) {
-                            if error {
-                                server_info.error = Some("Server error".to_string());
-                            }
-                        }
-                        if let Some(error_type) = data.get("error_type").and_then(|e| e.as_str()) {
-                            server_info.error_type = Some(error_type.to_string());
-                        }
-                        if let Some(error_message) = data.get("error_message").and_then(|e| e.as_str()) {
-                            // Clean up the error message
-                            let cleaned = error_message
-                                .replace("\\n", " ")
-                                .replace("\\r", " ")
-                                .replace("\\t", " ")
-                                .replace("\\\"", "\"")
-                                .replace("\\\\", "\\")
-                                .trim()
-                                .to_string();
-                            
-                            // Extract status code if present
-                            if cleaned.contains("Status {") {
-                                if let Some(start) = cleaned.find("status: ") {
-                                    let status_end = cleaned[start..].find(",").unwrap_or(cleaned.len() - start);
-                                    let status = &cleaned[start + 8..start + status_end];
-                                    server_info.error_message = Some(format!("Server returned HTTP status {}", status));
-                                } else {
-                                    server_info.error_message = Some("Server query failed".to_string());
-                                }
-                            } else {
-                                server_info.error_message = Some(cleaned);
-                            }
-                        }
-                        if let Some(user_submitted) = data.get("user_submitted").and_then(|u| u.as_bool()) {
-                            server_info.user_submitted = user_submitted;
-                        }
-                        if let Some(check_id) = data.get("check_id").and_then(|c| c.as_str()) {
-                            server_info.check_id = Some(check_id.to_string());
-                        }
+                // Now parse that string into ServerInfo with better error reporting
+                match serde_json::from_str::<ServerInfo>(response_data) {
+                    Ok(server_info) => {
+                        servers.push(server_info);
                     }
                     Err(e) => {
-                        error!("Failed to parse response_data JSON: {} (raw data: {})", e, response_data);
+                        error!(
+                            "Failed to parse server info for host {}: {} (raw data: {})", 
+                            result["hostname"].as_str().unwrap_or("unknown"),
+                            e,
+                            response_data
+                        );
                     }
                 }
-                
-                servers.push(server_info);
             }
             Err(e) => {
                 error!("Failed to parse JSON line: {} (raw line: {})", e, line);
@@ -1703,17 +1641,17 @@ where
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Initialize tracing subscriber
-    let _subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::INFO)
+    // Initialize tracing subscriber with environment filter
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
         .with_file(false)
         .with_line_number(false)
         .with_ansi(true)
-        .pretty()
-        .init();
+        .pretty();
+    subscriber.init();
     
     let nats_url = format!("nats://{}:{}",
         env::var("NATS_HOST").unwrap_or_else(|_| "nats".to_string()),

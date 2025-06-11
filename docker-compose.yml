@@ -183,6 +183,7 @@ services:
     ports:
       - "8080:8080"
     environment:
+      - RUST_LOG=${RUST_LOG:-warn}
       - CLICKHOUSE_HOST=chronicler
       - CLICKHOUSE_PORT=8123
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
