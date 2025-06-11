@@ -1,0 +1,173 @@
+services:
+
+  hosh-dev:
+    # build this before building any of the -dev services
+    build:
+      context: .
+      dockerfile: dev.Dockerfile
+    image: hosh/dev
+    profiles:
+      - dev
+
+
+  web:
+    build:
+      context: ./web
+      dockerfile: dev.Dockerfile
+    image: hosh/web-dev
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./web:/usr/src/web
+      - ./web/target:/usr/src/web/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=info
+
+  discovery:
+    build:
+      context: ./discovery
+      dockerfile: dev.Dockerfile
+    image: hosh/discovery-dev
+    volumes:
+      - ./discovery:/usr/src/app
+      - ./discovery/target:/usr/src/app/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=info
+      - RUST_BACKTRACE=1
+      - TRACING_LEVEL=info
+
+  publisher:
+    build:
+      context: ./publisher
+      dockerfile: dev.Dockerfile
+    volumes:
+      - ./publisher:/usr/src/app
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=info
+
+  checker-zec:
+    build:
+      context: ./checkers/zec
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-zec-dev
+    volumes:
+      - ./checkers/zec:/usr/src/zec
+      - ./checkers/zec/target:/usr/src/zec/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      RUST_LOG: info
+
+  checker-btc:
+    build:
+      context: ./checkers/btc
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-btc-dev
+    volumes:
+      - ./checkers/btc:/usr/src/btc
+      - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      RUST_LOG: info
+
+  checker-btc-user:
+    build:
+      context: ./checkers/btc
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-btc-dev
+    volumes:
+      - ./checkers/btc:/usr/src/btc
+      - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      RUST_LOG: info
+
+  checker-http:
+    build:
+      context: ./checkers/http
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-http-dev
+    volumes:
+      - ./checkers/http:/usr/src/app
+      - ./checkers/http/target:/usr/src/app/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=info
+
+  dashboard:
+    build: contrib/dashboard
+    image: hosh/dashboard
+    container_name: data-dashboard
+    ports:
+      - "8050:8050"
+    profiles:
+      - dev
+    volumes:
+      - ./contrib/dashboard:/app
+    environment:
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=9000
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - NATS_HOST=nats
+      - NATS_PORT=4222
+      - NATS_PREFIX=hosh.
+    depends_on:
+      - chronicler
+      - nats
+
+
+  docs:
+    image: peaceiris/mdbook:latest
+    profiles:
+      - dev
+    ports:
+      - "3000:3000"
+      - "3001:3001"
+    volumes:
+      - .:/hosh
+    command: ["serve", "--hostname", "0.0.0.0", "--port", "3000"]
+    working_dir: /hosh/docs
+
+
+  architecture:
+    image: terrastruct/d2:v0.1.2
+    profiles:
+      - disabled
+      - dev
+    environment:
+      - D2_LAYOUT=dagre
+    volumes:
+      - ./docs/src:/home/debian/src
+    ports:
+      - "8000:8080"
+    command: ["--watch", "/home/debian/src/architecture.d2"]
+
+
+  redis:
+    image: redis:alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    # Uncomment for local development, or use "docker compose exec -ti redis redis-cli"
+    # ports:
+    #   - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    restart: always
+    profiles:
+      - dev
+
+
+volumes:
+  cargo-cache:
+  btc-data:
+  redis-data:

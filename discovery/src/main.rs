@@ -65,18 +65,18 @@ impl ClickHouseConfig {
         Ok(result.trim().parse::<i64>()? > 0)
     }
 
-    async fn insert_target(&self, module: &str, hostname: &str) -> Result<(), Box<dyn Error>> {
+    async fn insert_target(&self, module: &str, hostname: &str, port: u16) -> Result<(), Box<dyn Error>> {
         if self.target_exists(module, hostname).await? {
             info!("Target already exists: {} {}", module, hostname);
             return Ok(());
         }
 
         let query = format!(
-            "INSERT INTO TABLE {}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted) VALUES (generateUUIDv4(), '{}', '{}', now64(3, 'UTC'), now64(3, 'UTC'), false)",
-            self.database, module, hostname
+            "INSERT INTO TABLE {}.targets (target_id, module, hostname, port, last_queued_at, last_checked_at, user_submitted) VALUES (generateUUIDv4(), '{}', '{}', {}, now64(3, 'UTC'), now64(3, 'UTC'), false)",
+            self.database, module, hostname, port
         );
         self.execute_query(&query).await?;
-        info!("Successfully inserted target: {} {}", module, hostname);
+        info!("Successfully inserted target: {} {}:{}", module, hostname, port);
         Ok(())
     }
 }
@@ -224,7 +224,7 @@ async fn update_servers(
     for (host, port) in ZEC_SERVERS {
         info!("Processing ZEC server: {}:{}", host, port);
         if !clickhouse.target_exists("zec", host).await? {
-            if let Err(e) = clickhouse.insert_target("zec", host).await {
+            if let Err(e) = clickhouse.insert_target("zec", host, *port).await {
                 error!("Failed to insert ZEC server {}:{}: {}", host, port, e);
             }
         } else {
@@ -239,7 +239,7 @@ async fn update_servers(
         
         // Insert the main explorer target if it doesn't exist
         if !clickhouse.target_exists("http", url).await? {
-            if let Err(e) = clickhouse.insert_target("http", url).await {
+            if let Err(e) = clickhouse.insert_target("http", url, 80).await {
                 error!("Failed to insert HTTP explorer {}: {}", url, e);
                 continue;
             }
@@ -252,7 +252,7 @@ async fn update_servers(
             if let Some(onion_url) = get_blockchair_onion_url(client).await? {
                 info!("Found Blockchair onion URL: {}", onion_url);
                 if !clickhouse.target_exists("http", &onion_url).await? {
-                    if let Err(e) = clickhouse.insert_target("http", &onion_url).await {
+                    if let Err(e) = clickhouse.insert_target("http", &onion_url, 80).await {
                         error!("Failed to insert Blockchair onion URL {}: {}", onion_url, e);
                     }
                 } else {
@@ -278,14 +278,14 @@ async fn update_servers(
             let details = get_server_details(client, &host, port).await;
             match details {
                 Ok(_) => {
-                    if let Err(e) = clickhouse.insert_target("btc", &host).await {
+                    if let Err(e) = clickhouse.insert_target("btc", &host, port).await {
                         error!("Failed to insert BTC server {}:{}: {}", host, port, e);
                     }
                 }
                 Err(e) => {
                     // Still insert the target even if verification fails
                     info!("Could not verify BTC server {}:{}: {}, but inserting anyway", host, port, e);
-                    if let Err(e) = clickhouse.insert_target("btc", &host).await {
+                    if let Err(e) = clickhouse.insert_target("btc", &host, port).await {
                         error!("Failed to insert BTC server {}:{}: {}", host, port, e);
                     }
                 }
@@ -300,17 +300,10 @@ async fn update_servers(
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn Error>> {
-    // Initialize tracing subscriber with more verbose output
-    tracing_subscriber::fmt()
-        .with_max_level(Level::WARN)
-        .with_target(true)
-        .with_thread_ids(true)
-        .with_thread_names(true)
-        .with_file(true)
-        .with_line_number(true)
-        .with_ansi(true)
-        .with_env_filter("html5ever=warn,discovery=warn")
-        .init();
+    // Initialize tracing subscriber with environment filter
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env());
+    subscriber.init();
 
     info!("Starting discovery service...");
 

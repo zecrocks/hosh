@@ -54,6 +54,7 @@ def create_layout():
                     {'name': 'Target ID', 'id': 'target_id'},
                     {'name': 'Hostname', 'id': 'hostname'},
                     {'name': 'Module', 'id': 'module'},
+                    {'name': 'Port', 'id': 'port'},
                     {'name': 'Last Queued', 'id': 'last_queued_at'},
                     {'name': 'Last Checked', 'id': 'last_checked_at'},
                     {'name': 'User Submitted', 'id': 'user_submitted'},

@@ -8,6 +8,7 @@ use tracing::{debug, error, info};
 use uuid::Uuid;
 use reqwest;
 use uuid;
+use hyper;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CheckRequest {
@@ -66,11 +67,14 @@ impl Worker {
         let nats_subject = env::var("NATS_SUBJECT").unwrap_or_else(|_| "hosh.check.btc".to_string());
         
         info!("🚀 Initializing BTC Worker with NATS URL: {}", nats_url);
+        info!("📡 Subscribing to NATS subject: {}", nats_subject);
         
         let max_concurrent_checks = env::var("MAX_CONCURRENT_CHECKS")
             .unwrap_or_else(|_| "3".to_string())
             .parse()
             .unwrap_or(10);
+            
+        info!("⚙️ Setting max concurrent checks to: {}", max_concurrent_checks);
             
         // ClickHouse configuration
         let clickhouse_host = env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".to_string());
@@ -79,17 +83,27 @@ impl Worker {
         let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".to_string());
         let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set");
 
+        info!("📊 ClickHouse configuration:");
+        info!("   - Host: {}", clickhouse_host);
+        info!("   - Port: {}", clickhouse_port);
+        info!("   - Database: {}", clickhouse_db);
+        info!("   - User: {}", clickhouse_user);
+
         // Create ClickHouse URL
         let clickhouse_url = format!("http://{}:{}", clickhouse_host, clickhouse_port);
 
+        info!("🔌 Connecting to NATS server...");
         let nats = async_nats::connect(&nats_url).await?;
+        info!("✅ Successfully connected to NATS server");
         
         // Create a pooled HTTP client
+        info!("🌐 Creating HTTP client with connection pooling...");
         let http_client = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(300))
             .pool_max_idle_per_host(32)
             .tcp_keepalive(std::time::Duration::from_secs(60))
             .build()?;
+        info!("✅ HTTP client created successfully");
 
         Ok(Worker {
             nats,
@@ -104,6 +118,7 @@ impl Worker {
     }
 
     async fn query_server_data(&self, request: &CheckRequest) -> Option<ServerData> {
+        info!("🔍 Querying server data for {}:{}", request.host, request.port);
         let params = QueryParams {
             url: request.host.clone(),
             port: Some(request.port),
@@ -111,6 +126,7 @@ impl Worker {
 
         match electrum_query(Query(params)).await {
             Ok(response) => {
+                info!("✅ Successfully queried server {}:{}", request.host, request.port);
                 let data = response.0;
                 let filtered_data = serde_json::json!({
                     "bits": data["bits"],
@@ -128,10 +144,13 @@ impl Worker {
                     "version": data["version"]
                 });
 
+                let height = data["height"].as_u64().unwrap_or(0);
+                info!("📊 Server {}:{} - Block height: {}", request.host, request.port, height);
+
                 Some(ServerData {
                     host: request.host.clone(),
                     port: request.port,
-                    height: data["height"].as_u64().unwrap_or(0),
+                    height,
                     electrum_version: data.get("server_version")
                         .and_then(|v| v.as_str())
                         .unwrap_or(&request.version)
@@ -147,7 +166,11 @@ impl Worker {
                     additional_data: Some(filtered_data),
                 })
             }
-            Err(error_response) => {
+            Err(e) => {
+                // Extract error message in a serializable format
+                let error_message = format!("Failed to query server: {:?}", e);
+                error!("❌ Failed to query server {}:{} - {}", request.host, request.port, error_message);
+                
                 Some(ServerData {
                     host: request.host.clone(),
                     port: request.port,
@@ -157,7 +180,7 @@ impl Worker {
                     ping: None,
                     error: true,
                     error_type: Some("connection_error".to_string()),
-                    error_message: Some(format!("Failed to query server: {:?}", error_response)),
+                    error_message: Some(error_message),
                     user_submitted: request.user_submitted,
                     check_id: request.get_check_id(),
                     status: "error".to_string(),
@@ -168,6 +191,7 @@ impl Worker {
     }
 
     async fn store_check_data(&self, request: &CheckRequest, server_data: &ServerData) -> Result<(), Box<dyn std::error::Error>> {
+        info!("💾 Storing check data for {}:{}", request.host, request.port);
         let escaped_host = request.host.replace("'", "\\'");
         
         // Generate a deterministic UUID v5 using DNS namespace and hostname
@@ -175,8 +199,10 @@ impl Worker {
             &uuid::Uuid::NAMESPACE_DNS,
             format!("btc:{}", request.host).as_bytes()
         ).to_string();
+        info!("🆔 Generated target ID: {}", target_id);
 
         // Update existing target or create new one if doesn't exist
+        info!("📝 Upserting target record...");
         let upsert_query = format!(
             "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
              SELECT '{target_id}', 'btc', '{host}', now(), now(), {user_submitted}
@@ -198,10 +224,13 @@ impl Worker {
             .await?;
 
         if !response.status().is_success() {
-            return Err(format!("ClickHouse insert error: {}", response.text().await?).into());
+            error!("❌ ClickHouse insert error: {}", response.text().await?);
+            return Err("ClickHouse insert failed".into());
         }
+        info!("✅ Target record upserted successfully");
 
         // Then update the target's timestamps and ensure target_id is consistent
+        info!("🔄 Updating target timestamps...");
         let update_query = format!(
             "ALTER TABLE {db}.targets 
              UPDATE last_queued_at = now(),
@@ -214,17 +243,18 @@ impl Worker {
             host = escaped_host,
         );
 
-        // Execute update query
         let response = self.http_client.post(&self.clickhouse_url)
             .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
             .header("Content-Type", "text/plain")
             .body(update_query)
             .send()
             .await?;
-            
+
         if !response.status().is_success() {
-            return Err(format!("ClickHouse update error: {}", response.text().await?).into());
+            error!("❌ ClickHouse update error: {}", response.text().await?);
+            return Err("ClickHouse update failed".into());
         }
+        info!("✅ Target timestamps updated successfully");
 
         // Prepare resolved IP (if available)
         let resolved_ip = match &server_data.additional_data {
@@ -258,6 +288,7 @@ impl Worker {
         };
         
         // Insert the result
+        info!("📝 Inserting check result into results table...");
         let result_query = format!(
             "INSERT INTO {}.results 
              (target_id, checked_at, hostname, resolved_ip, ip_version, 
@@ -283,14 +314,11 @@ impl Worker {
             .await?;
             
         if !response.status().is_success() {
-            return Err(format!("ClickHouse error: {}", response.text().await?).into());
+            error!("❌ ClickHouse results insert error: {}", response.text().await?);
+            return Err("ClickHouse results insert failed".into());
         }
         
-        info!(
-            host = %request.host,
-            check_id = %request.get_check_id(),
-            "Successfully saved check data to ClickHouse"
-        );
+        info!("✅ Successfully saved check result to ClickHouse");
         
         Ok(())
     }
@@ -388,23 +416,28 @@ impl Worker {
         info!(
             subject = %self.nats_subject,
             max_concurrent = %self.max_concurrent_checks,
-            "Starting BTC checker worker"
+            "🚀 Starting BTC checker worker"
         );
 
+        info!("📡 Subscribing to NATS subject: {}", self.nats_subject);
         let mut subscriber = self.nats.subscribe(self.nats_subject.clone()).await?;
+        info!("✅ Successfully subscribed to NATS subject");
         
         // Create a channel with bounded capacity for concurrent processing
+        info!("🔧 Setting up message processing channel...");
         let (tx, mut rx) = tokio::sync::mpsc::channel(self.max_concurrent_checks);
         
         // Clone necessary data for the spawned task
         let worker = self.clone();
         
         // Spawn task to process messages from channel
+        info!("👥 Spawning message processing task...");
         let process_handle = tokio::spawn(async move {
             let mut handles = futures_util::stream::FuturesUnordered::new();
             
             while let Some(msg) = rx.recv().await {
                 if handles.len() >= worker.max_concurrent_checks {
+                    info!("⏳ Waiting for a slot to become available...");
                     handles.next().await;
                 }
                 
@@ -416,19 +449,23 @@ impl Worker {
             
             while let Some(result) = handles.next().await {
                 if let Err(e) = result {
-                    error!("Task error: {}", e);
+                    error!("❌ Task error: {}", e);
                 }
             }
         });
+        info!("✅ Message processing task spawned successfully");
 
+        info!("🔄 Starting main message processing loop...");
         while let Some(msg) = subscriber.next().await {
             if let Err(e) = tx.send(msg).await {
-                error!("Failed to queue message: {}", e);
+                error!("❌ Failed to queue message: {}", e);
             }
         }
 
+        info!("🛑 Shutting down worker...");
         drop(tx);
         process_handle.await?;
+        info!("✅ Worker shutdown complete");
 
         Ok(())
     }

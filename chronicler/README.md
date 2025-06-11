@@ -74,7 +74,13 @@ chronicler/
 To add new schema changes:
 1. Create a new numbered migration file (e.g., `002_add_new_feature.sql`)
 2. Add the SQL commands for your schema changes
-3. The changes will be applied on next service startup
+
+To apply the migrations with `chronicler` service activated:
+
+```sh
+docker compose exec chronicler /docker-entrypoint-initdb.d/init-db.sh
+```
+
 
 ## Integration Points
 

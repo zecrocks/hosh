@@ -252,6 +252,7 @@ def fetch_targets(time_range='24h'):
             target_id,
             hostname,
             module,
+            port,
             formatDateTime(last_queued_at, '%Y-%m-%d %H:%M:%S') as last_queued_at,
             formatDateTime(last_checked_at, '%Y-%m-%d %H:%M:%S') as last_checked_at,
             user_submitted
@@ -265,11 +266,12 @@ def fetch_targets(time_range='24h'):
         # Convert to list of dictionaries
         targets = []
         for row in result:
-            target_id, hostname, module, last_queued, last_checked, user_submitted = row
+            target_id, hostname, module, port, last_queued, last_checked, user_submitted = row
             target = {
                 'target_id': str(target_id),  # Convert UUID to string
                 'hostname': hostname,
                 'module': module,
+                'port': port,
                 'last_queued_at': last_queued,
                 'last_checked_at': last_checked,
                 'user_submitted': 'Yes' if user_submitted else 'No'

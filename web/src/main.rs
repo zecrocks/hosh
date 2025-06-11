@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use actix_web::{get, post, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
 use actix_files as fs;
 use askama::Template;
-use serde::{Deserialize, Serialize, de::Deserializer};
+use serde::{Deserialize, Serialize};
 use serde::de::Error;
 use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
@@ -61,7 +61,7 @@ struct ServerInfo {
     #[serde(default)]
     error_type: Option<String>,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_error_message")]
     error_message: Option<String>,
 
     #[serde(default)]
@@ -162,11 +162,84 @@ where
                 "Connection refused - server may be offline or not accepting connections".to_string()
             } else if error_msg.contains("InvalidContentType") {
                 "Invalid content type - server may not be a valid Zcash node".to_string()
+            } else if error_msg.contains("Failed to query server: Response") {
+                // Extract the status code from the error message
+                if let Some(status_start) = error_msg.find("status: ") {
+                    let status_end = error_msg[status_start..].find(",").unwrap_or(error_msg.len() - status_start);
+                    let status = &error_msg[status_start + 8..status_start + status_end];
+                    format!("Server returned HTTP status {}", status)
+                } else {
+                    "Server query failed".to_string()
+                }
             } else {
                 error_msg
             };
             
             Ok(Some(mapped))
+        },
+        
+        // Handle objects that might contain error messages
+        serde_json::Value::Object(obj) => {
+            // Try to extract error message from common fields
+            let error_msg = obj.get("error")
+                .or_else(|| obj.get("message"))
+                .or_else(|| obj.get("detail"))
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
+                
+            if let Some(msg) = error_msg {
+                Ok(Some(msg))
+            } else {
+                // If no error message found, return None
+                Ok(None)
+            }
+        },
+        
+        // Everything else is treated as None
+        _ => Ok(None),
+    }
+}
+
+fn deserialize_error_message<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    
+    match value {
+        // Handle null as None
+        serde_json::Value::Null => Ok(None),
+        
+        // Handle direct strings
+        serde_json::Value::String(s) => {
+            if s.is_empty() {
+                return Ok(None);
+            }
+            
+            // Clean up common error messages
+            let cleaned = s
+                .replace("\\n", " ")
+                .replace("\\r", " ")
+                .replace("\\t", " ")
+                .replace("\\\"", "\"")
+                .replace("\\\\", "\\")
+                .trim()
+                .to_string();
+                
+            // Extract error message from Status structure if present
+            let error_msg = if cleaned.contains("Status {") {
+                if let Some(start) = cleaned.find("status: ") {
+                    let status_end = cleaned[start..].find(",").unwrap_or(cleaned.len() - start);
+                    let status = &cleaned[start + 8..start + status_end];
+                    format!("Server returned HTTP status {}", status)
+                } else {
+                    "Server query failed".to_string()
+                }
+            } else {
+                cleaned
+            };
+            
+            Ok(Some(error_msg))
         },
         
         // Handle objects that might contain error messages
@@ -251,7 +324,7 @@ impl ServerInfo {
     }
 
     fn is_online(&self) -> bool {
-        self.status == "success" && self.height > 0
+        self.height > 0
     }
 
     fn is_height_behind(&self, percentile_height: &u64) -> bool {
@@ -682,26 +755,98 @@ async fn network_status(
                     }
                 };
                 
-                // Now parse that string into ServerInfo with better error reporting
-                match serde_json::from_str::<ServerInfo>(response_data) {
-                    Ok(server_info) => {
-                        servers.push(server_info);
+                // Create a new ServerInfo with basic fields first
+                let mut server_info = ServerInfo {
+                    host: result["hostname"].as_str().unwrap_or("").to_string(),
+                    status: result["status"].as_str().unwrap_or("").to_string(),
+                    ping: result["ping"].as_f64(),
+                    ..Default::default()
+                };
+
+                // Try to parse the response_data as JSON
+                match serde_json::from_str::<serde_json::Value>(response_data) {
+                    Ok(data) => {
+                        // Extract fields from the parsed JSON
+                        if let Some(height) = data.get("height").and_then(|h| h.as_u64()) {
+                            server_info.height = height;
+                        }
+                        if let Some(port) = data.get("port").and_then(|p| p.as_u64()) {
+                            server_info.port = Some(port as u16);
+                        }
+                        if let Some(version) = data.get("server_version").and_then(|v| v.as_str()) {
+                            server_info.server_version = Some(version.to_string());
+                        }
+                        if let Some(last_updated) = data.get("last_updated").and_then(|l| l.as_str()) {
+                            server_info.last_updated = Some(last_updated.to_string());
+                        }
+                        if let Some(error) = data.get("error").and_then(|e| e.as_bool()) {
+                            if error {
+                                server_info.error = Some("Server error".to_string());
+                            }
+                        }
+                        if let Some(error_type) = data.get("error_type").and_then(|e| e.as_str()) {
+                            server_info.error_type = Some(error_type.to_string());
+                        }
+                        if let Some(error_message) = data.get("error_message").and_then(|e| e.as_str()) {
+                            // Clean up the error message
+                            let cleaned = error_message
+                                .replace("\\n", " ")
+                                .replace("\\r", " ")
+                                .replace("\\t", " ")
+                                .replace("\\\"", "\"")
+                                .replace("\\\\", "\\")
+                                .trim()
+                                .to_string();
+                            
+                            // Extract status code if present
+                            if cleaned.contains("Status {") {
+                                if let Some(start) = cleaned.find("status: ") {
+                                    let status_end = cleaned[start..].find(",").unwrap_or(cleaned.len() - start);
+                                    let status = &cleaned[start + 8..start + status_end];
+                                    server_info.error_message = Some(format!("Server returned HTTP status {}", status));
+                                } else {
+                                    server_info.error_message = Some("Server query failed".to_string());
+                                }
+                            } else {
+                                server_info.error_message = Some(cleaned);
+                            }
+                        }
+                        if let Some(user_submitted) = data.get("user_submitted").and_then(|u| u.as_bool()) {
+                            server_info.user_submitted = user_submitted;
+                        }
+                        if let Some(check_id) = data.get("check_id").and_then(|c| c.as_str()) {
+                            server_info.check_id = Some(check_id.to_string());
+                        }
                     }
                     Err(e) => {
-                        error!(
-                            "Failed to parse server info for host {}: {} (raw data: {})", 
-                            result["hostname"].as_str().unwrap_or("unknown"),
-                            e,
-                            response_data
-                        );
+                        error!("Failed to parse response_data JSON: {} (raw data: {})", e, response_data);
                     }
                 }
+                
+                servers.push(server_info);
             }
             Err(e) => {
                 error!("Failed to parse JSON line: {} (raw line: {})", e, line);
             }
         }
     }
+
+    // Sort servers: online first, then by height (descending), then by hostname
+    servers.sort_by(|a, b| {
+        match (a.is_online(), b.is_online()) {
+            (true, true) => {
+                // Both online, sort by height (descending) then hostname
+                b.height.cmp(&a.height)
+                    .then(a.host.to_lowercase().cmp(&b.host.to_lowercase()))
+            },
+            (true, false) => std::cmp::Ordering::Less,  // a online, b offline
+            (false, true) => std::cmp::Ordering::Greater,  // b online, a offline
+            (false, false) => {
+                // Both offline, sort by hostname
+                a.host.to_lowercase().cmp(&b.host.to_lowercase())
+            }
+        }
+    });
 
     // Calculate percentile height
     let heights: Vec<u64> = servers.iter()
@@ -712,16 +857,6 @@ async fn network_status(
 
     let online_count = servers.iter().filter(|s| s.is_online()).count();
     let total_count = servers.len();
-
-    servers.sort_by(|a, b| {
-        match (a.height > 0, b.height > 0) {
-            (true, true) => b.height.cmp(&a.height)  // Both have heights > 0, sort by height desc
-                .then(a.host.to_lowercase().cmp(&b.host.to_lowercase())),  // Then by hostname (case insensitive)
-            (true, false) => std::cmp::Ordering::Less,  // a has height > 0, b doesn't, so a comes first
-            (false, true) => std::cmp::Ordering::Greater,  // b has height > 0, a doesn't, so b comes first
-            (false, false) => a.host.to_lowercase().cmp(&b.host.to_lowercase()),  // Neither has height > 0, sort by hostname
-        }
-    });
 
     let template = IndexTemplate {
         servers,
@@ -1570,7 +1705,7 @@ where
 async fn main() -> std::io::Result<()> {
     // Initialize tracing subscriber
     let _subscriber = FmtSubscriber::builder()
-        .with_max_level(Level::WARN)
+        .with_max_level(Level::INFO)
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
