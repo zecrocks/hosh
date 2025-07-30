@@ -18,6 +18,7 @@ docker compose up
 4. discovery (redis, btc-backend) - all servers will appear offline on web at first
 5. checker-btc (btc-backend, redis, nats) - listening for work from nats at hosh.check.btc
 6. publisher (redis, nats, checker-btc, checker-zec) - starts publishing check requests
+7. nostr-alert (nats) - monitors API health and sends alerts via Nostr DMs
 
 
 ## dev services
@@ -34,3 +35,4 @@ service | description| port
 redis | stores state of all known servers | 6379
 dashboard | displays content in redis db | 8050
 d2-visualizer | displays dependency graph of all services | 8000
+nostr-alert | monitors APIs and sends Nostr alerts (dev mode with hot-reload) | -

@@ -166,6 +166,38 @@ services:
     profiles:
       - dev
 
+  sms:
+    build:
+      context: ./contrib/sms
+      dockerfile: Dockerfile
+    image: hosh/sms
+    restart: "no"
+    environment:
+      - SMTP_USER=${SMTP_USER}
+      - SMTP_PASS=${SMTP_PASS}
+      - ALERT_NUMBER=${ALERT_NUMBER}
+
+  nostr-alert:
+    build:
+      context: ./contrib/nostr-alert
+      dockerfile: dev.Dockerfile
+    image: hosh/nostr-alert-dev
+    volumes:
+      - ./contrib/nostr-alert:/usr/src/nostr-alert
+      - ./contrib/nostr-alert/target:/usr/src/nostr-alert/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=info
+      - RUST_BACKTRACE=1
+      - ADMIN_PUB_KEY=${ADMIN_PUB_KEY}
+      - HOSH_PRIV_KEY=${HOSH_PRIV_KEY}
+      - ZEC_API_URL=${ZEC_API_URL:-https://hosh.zec.rocks/api/v0/zec.json}
+      - BTC_API_URL=${BTC_API_URL:-https://hosh.zec.rocks/api/v0/btc.json}
+      - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-300}
+      - GENERATE_KEYS=${GENERATE_KEYS:-false}
+    command: ["cargo", "watch", "-q", "-c", "-w", "src", "-x", "run"]
+    profiles:
+      - dev
 
 volumes:
   cargo-cache:

@@ -8,3 +8,4 @@
 - [BTC Checker](./checker-btc.md)
 - [Chronicler](./chronicler.md)
 - [ClickHouse Schema](./clickhouse-schema.md)
+- [Nostr Alert Service](./nostr-alert.md)
