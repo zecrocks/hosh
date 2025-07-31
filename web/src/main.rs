@@ -2368,7 +2368,7 @@ async fn calculate_uptime_stats(
         worker.clickhouse.database, host, worker.config.results_window_days
     );
 
-    info!("🔍 Stats query for host {}: {}", host, stats_query.replace("\n", " "));
+    // info!("🔍 Stats query for host {}: {}", host, stats_query.replace("\n", " "));
 
     // Also run a debug query to see what data exists for this host
     let debug_query = format!(
@@ -2387,8 +2387,6 @@ async fn calculate_uptime_stats(
         worker.clickhouse.database, host
     );
 
-    info!("🔍 Debug query for host {}: {}", host, debug_query.replace("\n", " "));
-
     let debug_response = worker.http_client.post(&worker.clickhouse.url)
         .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
         .header("Content-Type", "text/plain")
@@ -2397,8 +2395,8 @@ async fn calculate_uptime_stats(
         .await;
 
     if let Ok(debug_resp) = debug_response {
-        if let Ok(debug_body) = debug_resp.text().await {
-            info!("🔍 Debug response for host {}: {}", host, debug_body);
+        if let Ok(_debug_body) = debug_resp.text().await {
+            // Debug response logged but not used
         }
     }
 
@@ -2413,14 +2411,11 @@ async fn calculate_uptime_stats(
             actix_web::error::ErrorInternalServerError("Database query failed")
         })?;
 
-    let status = stats_response.status();
+    let _status = stats_response.status();
     let stats_body = stats_response.text().await.map_err(|e| {
         error!("Failed to read stats response body: {}", e);
         actix_web::error::ErrorInternalServerError("Failed to read database response")
     })?;
-
-    info!("📊 Stats response for host {}: status={}, body='{}'", 
-        host, status, stats_body);
 
     let mut total_checks = 0u64;
     let mut last_check = String::new();
@@ -2430,33 +2425,19 @@ async fn calculate_uptime_stats(
             continue;
         }
 
-        info!("🔍 Parsing stats line: {}", line);
         if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
-            info!("🔍 Parsed JSON: {:?}", result);
-            
             // Handle total_checks - it might be a string or number
             if let Some(checks) = result["total_checks"].as_u64() {
                 total_checks = checks;
-                info!("✅ Found total_checks (u64): {}", total_checks);
             } else if let Some(checks_str) = result["total_checks"].as_str() {
                 if let Ok(checks) = checks_str.parse::<u64>() {
                     total_checks = checks;
-                    info!("✅ Found total_checks (string): {}", total_checks);
-                } else {
-                    info!("❌ Could not parse total_checks string as u64: {}", checks_str);
                 }
-            } else {
-                info!("❌ Could not parse total_checks from: {:?}", result["total_checks"]);
             }
             
             if let Some(check_time) = result["last_check"].as_str() {
                 last_check = check_time.to_string();
-                info!("✅ Found last_check: {}", last_check);
-            } else {
-                info!("❌ Could not parse last_check as string from: {:?}", result["last_check"]);
             }
-        } else {
-            info!("❌ Failed to parse JSON line: {}", line);
         }
     }
 
