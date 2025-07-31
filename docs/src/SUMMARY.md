@@ -6,5 +6,7 @@
 - [Web Interface](./web.md)
 - [HTTP Checker](./checker-http.md)
 - [BTC Checker](./checker-btc.md)
+- [ZEC Checker](./checker-zec.md)
 - [Chronicler](./chronicler.md)
 - [ClickHouse Schema](./clickhouse-schema.md)
+- [Nostr Alert Service](./nostr-alert.md)
