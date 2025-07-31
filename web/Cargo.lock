@@ -931,6 +931,7 @@ dependencies = [
  "async-nats",
  "chrono",
  "redis",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",

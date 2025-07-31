@@ -5,18 +5,69 @@
 {% block content %}
 <a href="/{{ network }}" class="btn btn-secondary mb-3">Back to Dashboard</a>
 <h2>Server Details: {{ host }} ({{ network|upper }})</h2>
+
+<!-- Uptime Statistics Section -->
+<div class="card shadow-sm mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Uptime Statistics</h5>
+    </div>
+    <div class="card-body">
+        <div class="row">
+            <div class="col-md-3">
+                <div class="text-center">
+                    <h4 class="text-primary">{{ uptime_stats.last_day_formatted }}</h4>
+                    <small class="text-muted">Last 24 Hours</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="text-center">
+                    <h4 class="text-info">{{ uptime_stats.last_week_formatted }}</h4>
+                    <small class="text-muted">Last 7 Days</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="text-center">
+                    <h4 class="text-success">{{ uptime_stats.last_month_formatted }}</h4>
+                    <small class="text-muted">Last 30 Days</small>
+                </div>
+            </div>
+            <div class="col-md-3">
+                <div class="text-center">
+                    <h4 class="text-secondary">{{ uptime_stats.total_checks }}</h4>
+                    <small class="text-muted">Total Checks ({{ results_window_days }} days)</small>
+                </div>
+            </div>
+        </div>
+        {% if uptime_stats.last_check != "" %}
+        <div class="row mt-3">
+            <div class="col-12">
+                <small class="text-muted">
+                    <strong>Last Check:</strong> {{ uptime_stats.last_check }}
+                </small>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+<!-- Server Data Section -->
 <div class="card shadow-sm">
-    <div class="table-responsive">
-        <table class="table table-bordered table-striped mb-0">
-            <tbody>
-                {% for (key, value) in data.iter() %}
-                <tr>
-                    <td class="table-key">{{ key }}</td>
-                    <td class="table-value">{{ value|format_value }}</td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
+    <div class="card-header">
+        <h5 class="mb-0">Server Information</h5>
+    </div>
+    <div class="card-body">
+        <div class="table-responsive">
+            <table class="table table-bordered table-striped mb-0">
+                <tbody>
+                    {% for (key, value) in data.iter() %}
+                    <tr>
+                        <td class="table-key">{{ key }}</td>
+                        <td class="table-value">{{ value|format_value }}</td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
     </div>
 </div>
 {% endblock %} 
