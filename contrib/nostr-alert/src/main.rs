@@ -170,11 +170,11 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
             .display_name("Hosh Nostr Alert Monitor")
             .website(Url::parse("https://hosh.zec.rocks")?);
         client.set_metadata(&metadata).await?;
-        println!("✅ Set metadata for new keypair");
+        println!("[{}] ✅ Set metadata for new keypair", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
     }
 
-    println!("Connected to relays. Starting monitoring loop...");
-    println!("Press Ctrl+C to stop the monitoring service.");
+    println!("[{}] Connected to relays. Starting monitoring loop...", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
+    println!("[{}] Press Ctrl+C to stop the monitoring service.", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
 
     // Track previous states to avoid spam
     let mut zec_previous_state = ApiHealth::Healthy;
@@ -190,7 +190,7 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 if current_state != zec_previous_state {
                     match current_state {
                         ApiHealth::Empty => {
-                            println!("🚨 CRITICAL: ZEC servers list is EMPTY!");
+                            println!("[{}] 🚨 CRITICAL: ZEC servers list is EMPTY!", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                             
                             // Send critical alert to admin
                             let alert_message = format!(
@@ -200,14 +200,14 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             
                             match client.send_private_msg(admin_pubkey, alert_message, []).await {
-                                Ok(_) => println!("✅ ZEC critical alert DM sent to admin"),
-                                Err(e) => println!("❌ Failed to send ZEC DM: {}", e),
+                                Ok(_) => println!("[{}] ✅ ZEC critical alert DM sent to admin", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
+                                Err(e) => println!("[{}] ❌ Failed to send ZEC DM: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), e),
                             }
                         }
                         ApiHealth::Healthy => {
                             let online = zec_status.online_count();
                             let total = zec_status.total_count();
-                            println!("✅ ZEC API recovered - {}/{} servers online", online, total);
+                            println!("[{}] ✅ ZEC API recovered - {}/{} servers online", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), online, total);
                             
                             // Send recovery notification
                             let recovery_message = format!(
@@ -218,8 +218,8 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             
                             match client.send_private_msg(admin_pubkey, recovery_message, []).await {
-                                Ok(_) => println!("✅ ZEC recovery notification sent to admin"),
-                                Err(e) => println!("❌ Failed to send ZEC recovery DM: {}", e),
+                                Ok(_) => println!("[{}] ✅ ZEC recovery notification sent to admin", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
+                                Err(e) => println!("[{}] ❌ Failed to send ZEC recovery DM: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), e),
                             }
                         }
                         ApiHealth::Error => {
@@ -233,10 +233,10 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                         ApiHealth::Healthy => {
                             let online = zec_status.online_count();
                             let total = zec_status.total_count();
-                            println!("✅ ZEC API healthy - {}/{} servers online", online, total);
+                            println!("[{}] ✅ ZEC API healthy - {}/{} servers online", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), online, total);
                         }
                         ApiHealth::Empty => {
-                            println!("🚨 ZEC servers list still empty (no new alert sent)");
+                            println!("[{}] 🚨 ZEC servers list still empty (no new alert sent)", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                         }
                         ApiHealth::Error => {
                             // This shouldn't happen
@@ -248,7 +248,7 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 let current_state = ApiHealth::Error;
                 
                 if current_state != zec_previous_state {
-                    println!("🚨 ERROR CHECKING ZEC API: {}", e);
+                    println!("[{}] 🚨 ERROR CHECKING ZEC API: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), e);
                     
                     // Send error alert to admin
                     let error_message = format!(
@@ -259,12 +259,12 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     
                     match client.send_private_msg(admin_pubkey, error_message, []).await {
-                        Ok(_) => println!("✅ ZEC error alert DM sent to admin"),
-                        Err(e) => println!("❌ Failed to send ZEC error DM: {}", e),
+                        Ok(_) => println!("[{}] ✅ ZEC error alert DM sent to admin", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
+                        Err(e) => println!("[{}] ❌ Failed to send ZEC error DM: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), e),
                     }
                     zec_previous_state = current_state;
                 } else {
-                    println!("🚨 ZEC API still unreachable (no new alert sent)");
+                    println!("[{}] 🚨 ZEC API still unreachable (no new alert sent)", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                 }
             }
         }
@@ -277,7 +277,7 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 if current_state != btc_previous_state {
                     match current_state {
                         ApiHealth::Empty => {
-                            println!("🚨 CRITICAL: BTC servers list is EMPTY!");
+                            println!("[{}] 🚨 CRITICAL: BTC servers list is EMPTY!", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                             
                             // Send critical alert to admin
                             let alert_message = format!(
@@ -287,14 +287,14 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             
                             match client.send_private_msg(admin_pubkey, alert_message, []).await {
-                                Ok(_) => println!("✅ BTC critical alert DM sent to admin"),
-                                Err(e) => println!("❌ Failed to send BTC DM: {}", e),
+                                Ok(_) => println!("[{}] ✅ BTC critical alert DM sent to admin", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
+                                Err(e) => println!("[{}] ❌ Failed to send BTC DM: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), e),
                             }
                         }
                         ApiHealth::Healthy => {
                             let online = btc_status.online_count();
                             let total = btc_status.total_count();
-                            println!("✅ BTC API recovered - {}/{} servers online", online, total);
+                            println!("[{}] ✅ BTC API recovered - {}/{} servers online", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), online, total);
                             
                             // Send recovery notification
                             let recovery_message = format!(
@@ -305,8 +305,8 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                             );
                             
                             match client.send_private_msg(admin_pubkey, recovery_message, []).await {
-                                Ok(_) => println!("✅ BTC recovery notification sent to admin"),
-                                Err(e) => println!("❌ Failed to send BTC recovery DM: {}", e),
+                                Ok(_) => println!("[{}] ✅ BTC recovery notification sent to admin", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
+                                Err(e) => println!("[{}] ❌ Failed to send BTC recovery DM: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), e),
                             }
                         }
                         ApiHealth::Error => {
@@ -320,10 +320,10 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                         ApiHealth::Healthy => {
                             let online = btc_status.online_count();
                             let total = btc_status.total_count();
-                            println!("✅ BTC API healthy - {}/{} servers online", online, total);
+                            println!("[{}] ✅ BTC API healthy - {}/{} servers online", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), online, total);
                         }
                         ApiHealth::Empty => {
-                            println!("🚨 BTC servers list still empty (no new alert sent)");
+                            println!("[{}] 🚨 BTC servers list still empty (no new alert sent)", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                         }
                         ApiHealth::Error => {
                             // This shouldn't happen
@@ -335,7 +335,7 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                 let current_state = ApiHealth::Error;
                 
                 if current_state != btc_previous_state {
-                    println!("🚨 ERROR CHECKING BTC API: {}", e);
+                    println!("[{}] 🚨 ERROR CHECKING BTC API: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), e);
                     
                     // Send error alert to admin
                     let error_message = format!(
@@ -346,12 +346,12 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
                     );
                     
                     match client.send_private_msg(admin_pubkey, error_message, []).await {
-                        Ok(_) => println!("✅ BTC error alert DM sent to admin"),
-                        Err(e) => println!("❌ Failed to send BTC error DM: {}", e),
+                        Ok(_) => println!("[{}] ✅ BTC error alert DM sent to admin", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC")),
+                        Err(e) => println!("[{}] ❌ Failed to send BTC error DM: {}", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"), e),
                     }
                     btc_previous_state = current_state;
                 } else {
-                    println!("🚨 BTC API still unreachable (no new alert sent)");
+                    println!("[{}] 🚨 BTC API still unreachable (no new alert sent)", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                 }
             }
         }
@@ -359,19 +359,19 @@ async fn run_app() -> Result<(), Box<dyn std::error::Error>> {
         // Wait before next check with signal handling
         match tokio::time::timeout(Duration::from_secs(check_interval), signal::ctrl_c()).await {
             Ok(Ok(())) => {
-                println!("\n🛑 Shutdown signal received. Disconnecting from relays...");
+                println!("[{}] 🛑 Shutdown signal received. Disconnecting from relays...", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                 client.disconnect().await;
-                println!("✅ Disconnected from relays. Exiting gracefully.");
+                println!("[{}] ✅ Disconnected from relays. Exiting gracefully.", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                 std::process::exit(0);
             }
             Ok(Err(_)) => {
-                println!("\n🛑 Shutdown signal received. Disconnecting from relays...");
+                println!("[{}] 🛑 Shutdown signal received. Disconnecting from relays...", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                 client.disconnect().await;
-                println!("✅ Disconnected from relays. Exiting gracefully.");
+                println!("[{}] ✅ Disconnected from relays. Exiting gracefully.", chrono::Utc::now().format("%Y-%m-%d %H:%M:%S UTC"));
                 std::process::exit(0);
             }
             Err(_) => {
-                // Timeout occurred, continue with next iteration
+                // Timeout occurred, continue to next check
             }
         }
     }
