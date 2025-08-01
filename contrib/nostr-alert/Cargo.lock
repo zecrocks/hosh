@@ -1019,6 +1019,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "nostr-sdk",
+ "regex",
  "reqwest",
  "serde",
  "serde_json",
