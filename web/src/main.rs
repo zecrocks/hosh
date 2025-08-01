@@ -9,10 +9,11 @@ use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use uuid::Uuid;
 use std::time::{SystemTime, UNIX_EPOCH};
-use tracing::{info, warn, error, Level, debug};
+use tracing::{info, warn, error};
 use tracing_subscriber;
 use reqwest;
 use async_nats;
+use regex;
 
 mod filters {
     use askama::Result;
@@ -43,13 +44,13 @@ struct IndexTemplate<'a> {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 struct ServerInfo {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_host")]
     host: String,
 
     #[serde(default, deserialize_with = "deserialize_port")]
     port: Option<u16>,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_height")]
     height: u64,
 
     #[serde(default)]
@@ -64,16 +65,13 @@ struct ServerInfo {
     #[serde(default, deserialize_with = "deserialize_error_message")]
     error_message: Option<String>,
 
-    #[serde(default)]
-    last_updated: Option<String>,
-
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_ping")]
     ping: Option<f64>,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_server_version")]
     server_version: Option<String>,
 
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_user_submitted")]
     user_submitted: bool,
 
     #[serde(default)]
@@ -81,6 +79,9 @@ struct ServerInfo {
 
     #[serde(flatten)]
     extra: HashMap<String, serde_json::Value>,
+
+    #[serde(default)]
+    last_updated: Option<String>,
 }
 
 fn deserialize_port<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
@@ -111,6 +112,457 @@ where
     }
 }
 
+fn deserialize_host<'de, D>(deserializer: D) -> Result<String, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        Value::String(s) => {
+            // Remove surrounding quotes if present
+            let clean_host = s.trim_matches('\'');
+            Ok(clean_host.to_string())
+        },
+        Value::Null => Ok(String::new()),
+        _ => {
+            warn!("Unexpected host value format: {:?}", value);
+            Ok(String::new())
+        }
+    }
+}
+
+fn deserialize_height<'de, D>(deserializer: D) -> Result<u64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        Value::Number(n) => n.as_u64()
+            .ok_or_else(|| D::Error::custom("Invalid height number")),
+        Value::String(s) => {
+            if s.is_empty() {
+                Ok(0)
+            } else {
+                s.parse::<u64>()
+                    .map_err(|_| D::Error::custom("Failed to parse height string as number"))
+            }
+        },
+        Value::Null => Ok(0),
+        _ => {
+            warn!("Unexpected height value format: {:?}", value);
+            Ok(0)
+        }
+    }
+}
+
+fn deserialize_ping<'de, D>(deserializer: D) -> Result<Option<f64>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        Value::Number(n) => n.as_f64()
+            .map(Some)
+            .ok_or_else(|| D::Error::custom("Invalid ping number")),
+        Value::String(s) => {
+            if s.is_empty() {
+                Ok(None)
+            } else {
+                s.parse::<f64>()
+                    .map(Some)
+                    .map_err(|_| D::Error::custom("Failed to parse ping string as number"))
+            }
+        },
+        Value::Null => Ok(None),
+        _ => {
+            warn!("Unexpected ping value format: {:?}", value);
+            Ok(None)
+        }
+    }
+}
+
+fn deserialize_user_submitted<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        Value::Bool(b) => Ok(b),
+        Value::String(s) => {
+            match s.to_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Ok(true),
+                "false" | "0" | "no" | "off" => Ok(false),
+                _ => {
+                    warn!("Unexpected user_submitted string value: {:?}", s);
+                    Ok(false) // Default to false for unknown values
+                }
+            }
+        },
+        Value::Number(n) => {
+            if let Some(num) = n.as_u64() {
+                Ok(num != 0)
+            } else {
+                warn!("Unexpected user_submitted number value: {:?}", n);
+                Ok(false)
+            }
+        },
+        Value::Null => Ok(false),
+        _ => {
+            warn!("Unexpected user_submitted value format: {:?}", value);
+            Ok(false)
+        }
+    }
+}
+
+fn deserialize_server_version<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        Value::String(s) => {
+            // Remove surrounding quotes if present
+            let clean_version = s.trim_matches('\'');
+            if clean_version.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(clean_version.to_string()))
+            }
+        },
+        Value::Null => Ok(None),
+        _ => {
+            warn!("Unexpected server_version value format: {:?}", value);
+            Ok(None)
+        }
+    }
+}
+
+/// Clean and escape error messages to prevent JSON parsing issues
+fn clean_error_message(input: &str) -> String {
+    if input.is_empty() {
+        return String::new();
+    }
+    
+    let mut cleaned = input.to_string();
+    
+    // First, handle common escape sequences
+    cleaned = cleaned
+        .replace("\\n", " ")
+        .replace("\\r", " ")
+        .replace("\\t", " ")
+        .replace("\\\"", "\"")
+        .replace("\\\\", "\\");
+    
+    // Remove or replace problematic characters that break JSON
+    cleaned = cleaned
+        .replace("\"", "'")  // Replace unescaped quotes with single quotes
+        .replace("{", "(")   // Replace unescaped braces with parentheses
+        .replace("}", ")")
+        .replace("[", "(")   // Replace unescaped brackets with parentheses
+        .replace("]", ")");
+    
+    // Clean up multiple spaces
+    while cleaned.contains("  ") {
+        cleaned = cleaned.replace("  ", " ");
+    }
+    
+    // Trim whitespace
+    cleaned = cleaned.trim().to_string();
+    
+    // If the message is too long, truncate it
+    if cleaned.len() > 200 {
+        cleaned = cleaned.chars().take(197).collect::<String>() + "...";
+    }
+    
+    cleaned
+}
+
+/// Validate and attempt to fix malformed JSON strings
+fn validate_and_fix_json(input: &str) -> Option<String> {
+    if input.trim().is_empty() {
+        return None;
+    }
+    
+    // First, try to parse as-is
+    if serde_json::from_str::<serde_json::Value>(input).is_ok() {
+        return Some(input.to_string());
+    }
+    
+    // Pre-process specific problematic patterns
+    let fixed = handle_specific_error_patterns(input);
+    
+    // Strategy 1: Fix unescaped quotes in string values
+    let mut in_string = false;
+    let mut escaped = false;
+    let mut result = String::new();
+    
+    for ch in fixed.chars() {
+        match ch {
+            '"' if !escaped => {
+                in_string = !in_string;
+                result.push(ch);
+            }
+            '\\' if !escaped => {
+                escaped = true;
+                result.push(ch);
+            }
+            _ => {
+                if escaped {
+                    escaped = false;
+                }
+                
+                if in_string && ch == '"' && !escaped {
+                    // This is an unescaped quote inside a string, escape it
+                    result.push('\\');
+                }
+                result.push(ch);
+            }
+        }
+    }
+    
+    // Try parsing the fixed version
+    if serde_json::from_str::<serde_json::Value>(&result).is_ok() {
+        return Some(result);
+    }
+    
+    // Strategy 2: More aggressive fixes
+    let mut aggressive_fix = result.clone();
+    
+    // Remove any trailing commas before closing braces/brackets
+    aggressive_fix = aggressive_fix
+        .replace(",}", "}")
+        .replace(",]", "]")
+        .replace(",,", ",");
+    
+    // Fix common JSON syntax issues
+    aggressive_fix = aggressive_fix
+        .replace("}{", "},{")  // Fix missing comma between objects
+        .replace("][", "],[")  // Fix missing comma between arrays
+        .replace("}[", "},["); // Fix missing comma between object and array
+    
+    if serde_json::from_str::<serde_json::Value>(&aggressive_fix).is_ok() {
+        return Some(aggressive_fix);
+    }
+    
+    // Strategy 3: Try to extract valid JSON from the string
+    if let Some(extracted) = extract_valid_json_substring(input) {
+        return Some(extracted);
+    }
+    
+    // Strategy 4: Last resort - try to create a minimal valid JSON
+    if let Some(minimal) = create_minimal_json(input) {
+        return Some(minimal);
+    }
+    
+    // If all else fails, return None
+    None
+}
+
+/// Extract a valid JSON substring from a potentially malformed string
+fn extract_valid_json_substring(input: &str) -> Option<String> {
+    // Look for JSON object patterns
+    if let Some(start) = input.find('{') {
+        if let Some(end) = find_matching_brace(&input[start..]) {
+            let candidate = &input[start..start + end + 1];
+            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    
+    // Look for JSON array patterns
+    if let Some(start) = input.find('[') {
+        if let Some(end) = find_matching_bracket(&input[start..]) {
+            let candidate = &input[start..start + end + 1];
+            if serde_json::from_str::<serde_json::Value>(candidate).is_ok() {
+                return Some(candidate.to_string());
+            }
+        }
+    }
+    
+    None
+}
+
+/// Find the matching closing brace for an opening brace
+fn find_matching_brace(input: &str) -> Option<usize> {
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    
+    for (i, ch) in input.chars().enumerate() {
+        match ch {
+            '"' if !escaped => {
+                in_string = !in_string;
+            }
+            '\\' if !escaped => {
+                escaped = true;
+            }
+            '{' if !in_string => {
+                depth += 1;
+            }
+            '}' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {
+                if escaped {
+                    escaped = false;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Find the matching closing bracket for an opening bracket
+fn find_matching_bracket(input: &str) -> Option<usize> {
+    let mut depth = 0;
+    let mut in_string = false;
+    let mut escaped = false;
+    
+    for (i, ch) in input.chars().enumerate() {
+        match ch {
+            '"' if !escaped => {
+                in_string = !in_string;
+            }
+            '\\' if !escaped => {
+                escaped = true;
+            }
+            '[' if !in_string => {
+                depth += 1;
+            }
+            ']' if !in_string => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {
+                if escaped {
+                    escaped = false;
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Create a minimal valid JSON object from malformed input
+fn create_minimal_json(input: &str) -> Option<String> {
+    // Try to extract key-value pairs from the malformed JSON
+    let mut pairs = Vec::new();
+    
+    // Look for patterns like "key":"value" or "key":value
+    let re = regex::Regex::new(r#""([^"]+)"\s*:\s*("([^"]*)"|([^,}\]]+))"#).ok()?;
+    
+    for cap in re.captures_iter(input) {
+        let key = cap.get(1)?.as_str();
+        let value = if let Some(quoted_value) = cap.get(2) {
+            quoted_value.as_str()
+        } else if let Some(unquoted_value) = cap.get(3) {
+            unquoted_value.as_str()
+        } else {
+            continue;
+        };
+        
+        // Clean up the value
+        let clean_value = value.trim().replace("\"", "'");
+        pairs.push(format!("\"{}\":\"{}\"", key, clean_value));
+    }
+    
+    if pairs.is_empty() {
+        return None;
+    }
+    
+    Some(format!("{{{}}}", pairs.join(",")))
+}
+
+/// Enhanced JSON validation with detailed error reporting
+fn validate_json_with_details(input: &str) -> Result<serde_json::Value, String> {
+    match serde_json::from_str::<serde_json::Value>(input) {
+        Ok(value) => Ok(value),
+        Err(e) => {
+            let error_msg = format!("JSON parse error: {} at line {} column {}", 
+                e.to_string(), e.line(), e.column());
+            
+            // Try to provide more specific error information
+            let specific_error = if e.to_string().contains("expected `,` or `}`") {
+                "Missing comma or closing brace - likely malformed object structure"
+            } else if e.to_string().contains("expected `,` or `]`") {
+                "Missing comma or closing bracket - likely malformed array structure"
+            } else if e.to_string().contains("expected value") {
+                "Missing value - likely trailing comma or incomplete structure"
+            } else if e.to_string().contains("expected `\"`") {
+                "Missing quote - likely unescaped quote in string"
+            } else {
+                "Unknown JSON syntax error"
+            };
+            
+            Err(format!("{} - {}", error_msg, specific_error))
+        }
+    }
+}
+
+/// Extract meaningful error information from complex error messages
+fn extract_error_info(input: &str) -> String {
+    // First handle specific problematic patterns
+    let cleaned = handle_specific_error_patterns(input);
+    
+    // Then apply general cleaning
+    let cleaned = clean_error_message(&cleaned);
+    
+    // Handle specific error patterns
+    if cleaned.contains("Status {") || cleaned.contains("Status(") {
+        // Extract HTTP status from Status structure
+        if let Some(status_start) = cleaned.find("status: ") {
+            let status_end = cleaned[status_start..].find(",").unwrap_or(cleaned.len() - status_start);
+            let status = &cleaned[status_start + 8..status_start + status_end];
+            return format!("HTTP status {}", status);
+        }
+        return "HTTP error".to_string();
+    }
+    
+    if cleaned.contains("Response {") || cleaned.contains("Response(") {
+        // Extract status from Response structure
+        if let Some(status_start) = cleaned.find("status: ") {
+            let status_end = cleaned[status_start..].find(",").unwrap_or(cleaned.len() - status_start);
+            let status = &cleaned[status_start + 8..status_start + status_end];
+            return format!("Server returned HTTP status {}", status);
+        }
+        return "Server response error".to_string();
+    }
+    
+    // Map common error patterns to user-friendly messages
+    if cleaned.contains("tls handshake eof") {
+        return "TLS handshake failed - server may be offline".to_string();
+    }
+    
+    if cleaned.contains("connection refused") {
+        return "Connection refused - server may be offline".to_string();
+    }
+    
+    if cleaned.contains("InvalidContentType") {
+        return "Invalid content type - server may not be a valid node".to_string();
+    }
+    
+    if cleaned.contains("timeout") {
+        return "Connection timeout".to_string();
+    }
+    
+    if cleaned.contains("dns") {
+        return "DNS resolution failed".to_string();
+    }
+    
+    if cleaned.contains("Response body") {
+        return "Server returned invalid response".to_string();
+    }
+    
+    // If no specific pattern matches, return a cleaned version
+    cleaned
+}
+
 fn deserialize_error_field<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
 where
     D: serde::Deserializer<'de>,
@@ -121,61 +573,29 @@ where
         // Handle null as None
         serde_json::Value::Null => Ok(None),
         
+        // Handle boolean values
+        serde_json::Value::Bool(b) => {
+            if b {
+                Ok(Some("Server error occurred".to_string()))
+            } else {
+                Ok(None)
+            }
+        },
+        
         // Handle direct strings
         serde_json::Value::String(s) => {
             if s.is_empty() {
                 return Ok(None);
             }
             
-            // Clean up common error messages
-            let cleaned = s
-                .replace("\\n", " ")
-                .replace("\\r", " ")
-                .replace("\\t", " ")
-                .replace("\\\"", "\"")
-                .replace("\\\\", "\\")
-                .trim()
-                .to_string();
-                
-            // Extract error message from Status structure if present
-            let error_msg = if cleaned.contains("Status {") {
-                if let Some(start) = cleaned.find("message: \"") {
-                    let start = start + 10; // Skip "message: \""
-                    if let Some(end) = cleaned[start..].find("\", source:") {
-                        cleaned[start..start + end].to_string()
-                    } else if let Some(end) = cleaned[start..].find("\"") {
-                        cleaned[start..start + end].to_string()
-                    } else {
-                        cleaned
-                    }
-                } else {
-                    cleaned
-                }
-            } else {
-                cleaned
-            };
-                
-            // Map common error messages to more user-friendly versions
-            let mapped = if error_msg.contains("tls handshake eof") {
-                "TLS handshake failed - server may be offline or not accepting connections".to_string()
-            } else if error_msg.contains("connection refused") {
-                "Connection refused - server may be offline or not accepting connections".to_string()
-            } else if error_msg.contains("InvalidContentType") {
-                "Invalid content type - server may not be a valid Zcash node".to_string()
-            } else if error_msg.contains("Failed to query server: Response") {
-                // Extract the status code from the error message
-                if let Some(status_start) = error_msg.find("status: ") {
-                    let status_end = error_msg[status_start..].find(",").unwrap_or(error_msg.len() - status_start);
-                    let status = &error_msg[status_start + 8..status_start + status_end];
-                    format!("Server returned HTTP status {}", status)
-                } else {
-                    "Server query failed".to_string()
-                }
-            } else {
-                error_msg
-            };
+            // Use the improved error message cleaning
+            let error_msg = extract_error_info(&s);
             
-            Ok(Some(mapped))
+            if error_msg.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(error_msg))
+            }
         },
         
         // Handle objects that might contain error messages
@@ -185,10 +605,14 @@ where
                 .or_else(|| obj.get("message"))
                 .or_else(|| obj.get("detail"))
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .map(|s| extract_error_info(s));
                 
             if let Some(msg) = error_msg {
-                Ok(Some(msg))
+                if msg.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(msg))
+                }
             } else {
                 // If no error message found, return None
                 Ok(None)
@@ -216,30 +640,14 @@ where
                 return Ok(None);
             }
             
-            // Clean up common error messages
-            let cleaned = s
-                .replace("\\n", " ")
-                .replace("\\r", " ")
-                .replace("\\t", " ")
-                .replace("\\\"", "\"")
-                .replace("\\\\", "\\")
-                .trim()
-                .to_string();
-                
-            // Extract error message from Status structure if present
-            let error_msg = if cleaned.contains("Status {") {
-                if let Some(start) = cleaned.find("status: ") {
-                    let status_end = cleaned[start..].find(",").unwrap_or(cleaned.len() - start);
-                    let status = &cleaned[start + 8..start + status_end];
-                    format!("Server returned HTTP status {}", status)
-                } else {
-                    "Server query failed".to_string()
-                }
-            } else {
-                cleaned
-            };
+            // Use the improved error message cleaning
+            let error_msg = extract_error_info(&s);
             
-            Ok(Some(error_msg))
+            if error_msg.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(error_msg))
+            }
         },
         
         // Handle objects that might contain error messages
@@ -249,10 +657,14 @@ where
                 .or_else(|| obj.get("message"))
                 .or_else(|| obj.get("detail"))
                 .and_then(|v| v.as_str())
-                .map(|s| s.to_string());
+                .map(|s| extract_error_info(s));
                 
             if let Some(msg) = error_msg {
-                Ok(Some(msg))
+                if msg.is_empty() {
+                    Ok(None)
+                } else {
+                    Ok(Some(msg))
+                }
             } else {
                 // If no error message found, return None
                 Ok(None)
@@ -274,20 +686,63 @@ impl ServerInfo {
 
     fn formatted_last_updated(&self) -> String {
         if let Some(last_updated) = &self.last_updated {
-            // Try parsing with DateTime::parse_from_rfc3339 first
-            let parsed_time = DateTime::parse_from_rfc3339(last_updated)
-                // If that fails, try parsing as a naive datetime and assume UTC
-                .or_else(|_| {
-                    DateTime::parse_from_rfc3339(&format!("{}Z", last_updated))
-                })
-                .or_else(|_| {
-                    // Parse as naive datetime and convert to UTC
-                    chrono::NaiveDateTime::parse_from_str(last_updated, "%Y-%m-%dT%H:%M:%S%.f")
-                        .map(|dt| DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc))
-                        .map(|dt| dt.with_timezone(&FixedOffset::east_opt(0).unwrap()))
-                });
+            // Try to parse the timestamp with multiple strategies
+            let mut parsed_time = None;
+            
+            // Remove surrounding quotes if present
+            let clean_timestamp = last_updated.trim_matches('\'');
+            
+            // Strategy 0: Use custom parsing function for RFC3339 with nanoseconds
+            if let Some(time) = parse_rfc3339_with_nanos(last_updated) {
+                parsed_time = Some(time);
+            }
+            // Strategy 1: Direct RFC3339 parsing
+            else if let Ok(time) = DateTime::parse_from_rfc3339(clean_timestamp) {
+                parsed_time = Some(time);
+            }
+            // Strategy 2: Try with Z suffix if missing
+            else if let Ok(time) = DateTime::parse_from_rfc3339(&format!("{}Z", clean_timestamp)) {
+                parsed_time = Some(time);
+            }
+            // Strategy 3: Try parsing as naive datetime first (handles nanoseconds better)
+            else if clean_timestamp.ends_with('Z') {
+                // Remove the Z suffix and parse as naive datetime
+                let naive_str = &clean_timestamp[..clean_timestamp.len()-1];
+                
+                let formats = [
+                    "%Y-%m-%dT%H:%M:%S%.f",
+                    "%Y-%m-%dT%H:%M:%S%.9f",  // Support for 9-digit nanoseconds
+                    "%Y-%m-%dT%H:%M:%S",
+                ];
+                
+                for format in &formats {
+                    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(naive_str, format) {
+                        parsed_time = Some(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)
+                            .with_timezone(&FixedOffset::east_opt(0).unwrap()));
+                        break;
+                    }
+                }
+            }
+            // Strategy 4: Try naive datetime parsing with nanoseconds
+            else {
+                let formats = [
+                    "%Y-%m-%dT%H:%M:%S%.f",
+                    "%Y-%m-%dT%H:%M:%S%.9f",  // Support for 9-digit nanoseconds
+                    "%Y-%m-%dT%H:%M:%S",
+                    "%Y-%m-%d %H:%M:%S%.f",
+                    "%Y-%m-%d %H:%M:%S",
+                ];
+                
+                for format in &formats {
+                    if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(clean_timestamp, format) {
+                        parsed_time = Some(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)
+                            .with_timezone(&FixedOffset::east_opt(0).unwrap()));
+                        break;
+                    }
+                }
+            }
 
-            if let Ok(time) = parsed_time {
+            if let Some(time) = parsed_time {
                 let now = Utc::now().with_timezone(time.offset());
                 let duration = now.signed_duration_since(time);
 
@@ -316,7 +771,8 @@ impl ServerInfo {
                 let hrs = hours % 24;
                 format!("{}d {}h", days, hrs)
             } else {
-                format!("Invalid time: {}", last_updated)  // Include the timestamp for debugging
+                // Return a more user-friendly error message
+                format!("Invalid time format: {}", last_updated)
             }
         } else {
             "Never".to_string()
@@ -388,7 +844,7 @@ impl SafeNetwork {
 }
 
 #[derive(Template)]
-#[template(path = "server.html", escape = "none")]
+#[template(path = "server.html")]
 struct ServerTemplate {
     data: HashMap<String, Value>,
     host: String,
@@ -397,6 +853,20 @@ struct ServerTemplate {
     percentile_height: u64,
     online_count: usize,
     total_count: usize,
+    uptime_stats: UptimeStats,
+    results_window_days: u64,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct UptimeStats {
+    last_day: f64,
+    last_week: f64,
+    last_month: f64,
+    total_checks: u64,
+    last_check: String,
+    last_day_formatted: String,
+    last_week_formatted: String,
+    last_month_formatted: String,
 }
 
 #[derive(Serialize)]
@@ -731,6 +1201,7 @@ async fn network_status(
             continue;
         }
         
+        // First, try to parse the line as JSON
         match serde_json::from_str::<serde_json::Value>(line) {
             Ok(result) => {
                 // Get response_data, with better error handling
@@ -748,23 +1219,175 @@ async fn network_status(
                     }
                 };
                 
-                // Now parse that string into ServerInfo with better error reporting
-                match serde_json::from_str::<ServerInfo>(response_data) {
+                // Validate that response_data looks like valid JSON
+                if response_data.trim().is_empty() || response_data == "{}" {
+                    warn!("Empty or invalid response_data for host: {}", 
+                          result["hostname"].as_str().unwrap_or("unknown"));
+                    continue;
+                }
+                
+                // Try to validate and fix the JSON if needed
+                let cleaned_response_data = validate_and_fix_json(response_data)
+                    .unwrap_or_else(|| {
+                        let hostname = result["hostname"].as_str().unwrap_or("unknown");
+                        warn!("Could not fix malformed JSON for host: {}", hostname);
+                        
+                        // Log the problematic JSON for debugging
+                        log_problematic_json(hostname, response_data);
+                        
+                        // Try to get more detailed error information
+                        if let Err(detailed_error) = validate_json_with_details(response_data) {
+                            warn!("JSON validation details for host {}: {}", hostname, detailed_error);
+                        }
+                        
+                        "{}".to_string()
+                    });
+                
+                // Try to parse the response_data as ServerInfo
+                match serde_json::from_str::<ServerInfo>(&cleaned_response_data) {
                     Ok(server_info) => {
                         servers.push(server_info);
                     }
                     Err(e) => {
-                        error!(
+                        // If parsing fails, try to create a minimal ServerInfo with available data
+                        warn!(
                             "Failed to parse server info for host {}: {} (raw data: {})", 
                             result["hostname"].as_str().unwrap_or("unknown"),
                             e,
                             response_data
                         );
+                        
+                        // Log specific field type issues
+                        if e.to_string().contains("invalid type") {
+                            warn!("Field type mismatch detected. This usually means a field is stored as a string when it should be a number, or vice versa.");
+                            
+                            // Try to identify which field has the type issue
+                            if e.to_string().contains("expected u64") {
+                                warn!("Height field type issue detected - height should be a number, not a string");
+                            }
+                            if e.to_string().contains("expected f64") {
+                                warn!("Ping field type issue detected - ping should be a number, not a string");
+                            }
+                            if e.to_string().contains("expected u16") {
+                                warn!("Port field type issue detected - port should be a number, not a string");
+                            }
+                            if e.to_string().contains("expected a boolean") {
+                                warn!("Boolean field type issue detected - field should be a boolean, not a string");
+                            }
+                        }
+                        
+                        // Create a fallback ServerInfo with basic information
+                        if let Some(hostname) = result["hostname"].as_str() {
+                            let mut fallback_server = ServerInfo {
+                                host: hostname.to_string(),
+                                port: None,
+                                height: 0,
+                                status: "error".to_string(),
+                                error: Some("Failed to parse server response".to_string()),
+                                error_type: Some("parse_error".to_string()),
+                                error_message: Some("Server response could not be parsed".to_string()),
+                                last_updated: result["checked_at"].as_str().map(|s| s.to_string()),
+                                ping: result["ping"].as_f64(),
+                                server_version: None,
+                                user_submitted: false,
+                                check_id: None,
+                                extra: HashMap::new(),
+                            };
+                            
+                            // Try to extract basic information from the raw response_data
+                            if let Ok(raw_value) = serde_json::from_str::<serde_json::Value>(&cleaned_response_data) {
+                                if let Some(obj) = raw_value.as_object() {
+                                    // Extract height if available
+                                    if let Some(height_val) = obj.get("height") {
+                                        if let Some(height) = height_val.as_u64() {
+                                            fallback_server.height = height;
+                                        }
+                                    }
+                                    
+                                    // Extract status if available
+                                    if let Some(status_val) = obj.get("status") {
+                                        if let Some(status) = status_val.as_str() {
+                                            fallback_server.status = status.to_string();
+                                        }
+                                    }
+                                    
+                                    // Extract server_version if available
+                                    if let Some(version_val) = obj.get("server_version") {
+                                        if let Some(version) = version_val.as_str() {
+                                            fallback_server.server_version = Some(version.to_string());
+                                        }
+                                    }
+                                    
+                                    // Extract error information if available
+                                    if let Some(error_val) = obj.get("error") {
+                                        if let Some(error) = error_val.as_str() {
+                                            fallback_server.error = Some(extract_error_info(error));
+                                        }
+                                    }
+                                    
+                                    if let Some(error_type_val) = obj.get("error_type") {
+                                        if let Some(error_type) = error_type_val.as_str() {
+                                            fallback_server.error_type = Some(error_type.to_string());
+                                        }
+                                    }
+                                    
+                                    if let Some(error_msg_val) = obj.get("error_message") {
+                                        if let Some(error_msg) = error_msg_val.as_str() {
+                                            fallback_server.error_message = Some(extract_error_info(error_msg));
+                                        }
+                                    }
+                                    
+                                    // Extract port if available
+                                    if let Some(port_val) = obj.get("port") {
+                                        if let Some(port) = port_val.as_u64() {
+                                            fallback_server.port = u16::try_from(port).ok();
+                                        }
+                                    }
+                                    
+                                    // Store any additional fields in extra
+                                    for (key, value) in obj {
+                                        if !["host", "port", "height", "status", "error", "error_type", 
+                                             "error_message", "last_updated", "ping", "server_version", 
+                                             "user_submitted", "check_id"].contains(&key.as_str()) {
+                                            fallback_server.extra.insert(key.clone(), value.clone());
+                                        }
+                                    }
+                                }
+                            }
+                            
+                            servers.push(fallback_server);
+                        }
                     }
                 }
             }
             Err(e) => {
                 error!("Failed to parse JSON line: {} (raw line: {})", e, line);
+                
+                // Try to extract at least the hostname from the malformed line
+                if let Some(hostname_start) = line.find("\"hostname\":\"") {
+                    let start = hostname_start + 12; // Skip "hostname":"
+                    if let Some(hostname_end) = line[start..].find("\"") {
+                        let hostname = &line[start..start + hostname_end];
+                        
+                        let fallback_server = ServerInfo {
+                            host: hostname.to_string(),
+                            port: None,
+                            height: 0,
+                            status: "error".to_string(),
+                            error: Some("Malformed JSON response".to_string()),
+                            error_type: Some("parse_error".to_string()),
+                            error_message: Some("Server response contains invalid JSON".to_string()),
+                            last_updated: None,
+                            ping: None,
+                            server_version: None,
+                            user_submitted: false,
+                            check_id: None,
+                            extra: HashMap::new(),
+                        };
+                        
+                        servers.push(fallback_server);
+                    }
+                }
             }
         }
     }
@@ -950,6 +1573,9 @@ async fn server_detail(
     let online_count = heights.len();
     let percentile_height = calculate_percentile(&heights, 90);
 
+    // Calculate uptime statistics
+    let uptime_stats = calculate_uptime_stats(&worker, &host, &network).await?;
+
     let template = ServerTemplate {
         data,
         host,
@@ -958,6 +1584,8 @@ async fn server_detail(
         percentile_height,
         online_count,
         total_count,
+        uptime_stats,
+        results_window_days: worker.config.results_window_days,
     };
     
     let html = template.render().map_err(|e| {
@@ -1639,6 +2267,571 @@ where
     }
 }
 
+async fn calculate_uptime_stats(
+    worker: &Worker,
+    host: &str,
+    _network: &str,
+) -> Result<UptimeStats, actix_web::Error> {
+    // Query for uptime statistics using the uptime_stats materialized view
+    let uptime_query = format!(
+        r#"
+        SELECT 
+            'day' as period,
+            sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+        FROM {}.uptime_stats
+        WHERE hostname = '{}'
+        AND time_bucket >= now() - INTERVAL 1 DAY
+        
+        UNION ALL
+        
+        SELECT 
+            'week' as period,
+            sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+        FROM {}.uptime_stats
+        WHERE hostname = '{}'
+        AND time_bucket >= now() - INTERVAL 7 DAY
+        
+        UNION ALL
+        
+        SELECT 
+            'month' as period,
+            sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+        FROM {}.uptime_stats
+        WHERE hostname = '{}'
+        AND time_bucket >= now() - INTERVAL 30 DAY
+        
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database, host,
+        worker.clickhouse.database, host,
+        worker.clickhouse.database, host
+    );
+
+    let response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(uptime_query)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse uptime query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        error!("Failed to read uptime response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
+    })?;
+
+    if !status.is_success() {
+        error!("ClickHouse uptime query failed with status {}: {}", status, body);
+        return Err(actix_web::error::ErrorInternalServerError("Database query failed"));
+    }
+
+    // Parse the uptime statistics
+    let mut last_day = 0.0;
+    let mut last_week = 0.0;
+    let mut last_month = 0.0;
+
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
+            if let (Some(period), Some(uptime)) = (
+                result["period"].as_str(),
+                result["uptime_percentage"].as_f64()
+            ) {
+                match period {
+                    "day" => last_day = uptime,
+                    "week" => last_week = uptime,
+                    "month" => last_month = uptime,
+                    _ => {}
+                }
+            }
+        }
+    }
+
+    // Get total checks and last check time
+    let stats_query = format!(
+        r#"
+        SELECT 
+            count(*) as total_checks,
+            max(checked_at) as last_check
+        FROM {}.results
+        WHERE hostname = '{}'
+        AND checked_at >= now() - INTERVAL {} DAY
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database, host, worker.config.results_window_days
+    );
+
+    // info!("🔍 Stats query for host {}: {}", host, stats_query.replace("\n", " "));
+
+    // Also run a debug query to see what data exists for this host
+    let debug_query = format!(
+        r#"
+        SELECT 
+            hostname,
+            checker_module,
+            count(*) as check_count,
+            max(checked_at) as last_check
+        FROM {}.results
+        WHERE hostname = '{}'
+        GROUP BY hostname, checker_module
+        ORDER BY check_count DESC
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database, host
+    );
+
+    let debug_response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(debug_query)
+        .send()
+        .await;
+
+    if let Ok(debug_resp) = debug_response {
+        if let Ok(_debug_body) = debug_resp.text().await {
+            // Debug response logged but not used
+        }
+    }
+
+    let stats_response = worker.http_client.post(&worker.clickhouse.url)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(stats_query)
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse stats query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
+
+    let _status = stats_response.status();
+    let stats_body = stats_response.text().await.map_err(|e| {
+        error!("Failed to read stats response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
+    })?;
+
+    let mut total_checks = 0u64;
+    let mut last_check = String::new();
+
+    for line in stats_body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
+            // Handle total_checks - it might be a string or number
+            if let Some(checks) = result["total_checks"].as_u64() {
+                total_checks = checks;
+            } else if let Some(checks_str) = result["total_checks"].as_str() {
+                if let Ok(checks) = checks_str.parse::<u64>() {
+                    total_checks = checks;
+                }
+            }
+            
+            if let Some(check_time) = result["last_check"].as_str() {
+                last_check = check_time.to_string();
+            }
+        }
+    }
+
+    Ok(UptimeStats {
+        last_day,
+        last_week,
+        last_month,
+        total_checks,
+        last_check,
+        last_day_formatted: format!("{:.1}%", last_day),
+        last_week_formatted: format!("{:.1}%", last_week),
+        last_month_formatted: format!("{:.1}%", last_month),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[test]
+    fn test_clean_error_message() {
+        // Test basic cleaning
+        let input = "Failed to query server: Response { status: 400, version: HTTP/1.1, headers: {\"content-type\": \"application/json\"}, body: UnsyncBoxBody }";
+        let cleaned = clean_error_message(input);
+        assert!(!cleaned.contains("\""));
+        assert!(!cleaned.contains("{"));
+        assert!(!cleaned.contains("}"));
+        assert!(cleaned.contains("400"));
+    }
+    
+    #[test]
+    fn test_extract_error_info() {
+        // Test HTTP status extraction
+        let input = "Failed to query server: Response { status: 400, version: HTTP/1.1, headers: {\"content-type\": \"application/json\"}, body: UnsyncBoxBody }";
+        let result = extract_error_info(input);
+        assert_eq!(result, "Server returned HTTP status 400");
+        
+        // Test TLS error
+        let input = "tls handshake eof";
+        let result = extract_error_info(input);
+        assert_eq!(result, "TLS handshake failed - server may be offline");
+        
+        // Test connection refused
+        let input = "connection refused";
+        let result = extract_error_info(input);
+        assert_eq!(result, "Connection refused - server may be offline");
+    }
+    
+    #[test]
+    fn test_validate_and_fix_json() {
+        // Test valid JSON
+        let input = r#"{"host":"test.com","port":50002,"height":0}"#;
+        let result = validate_and_fix_json(input);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), input);
+        
+        // Test JSON with unescaped quotes
+        let input = r#"{"host":"test.com","error_message":"Failed to query server: Response { status: 400, headers: {"content-type": "application/json"} }"}"#;
+        let result = validate_and_fix_json(input);
+        assert!(result.is_some());
+        
+        // Test invalid JSON
+        let input = r#"{"host":"test.com","port":50002,}"#;
+        let result = validate_and_fix_json(input);
+        assert!(result.is_some()); // Should be fixed by removing trailing comma
+        
+        // Test JSON with missing commas
+        let input = r#"{"host":"test.com" "port":50002}"#;
+        let result = validate_and_fix_json(input);
+        assert!(result.is_some());
+        
+        // Test JSON with malformed structure
+        let input = r#"{"host":"test.com","error_message":"Response { status: 400, body: UnsyncBoxBody }"}"#;
+        let result = validate_and_fix_json(input);
+        assert!(result.is_some());
+    }
+    
+    #[test]
+    fn test_extract_valid_json_substring() {
+        // Test extracting valid JSON from malformed string
+        let input = r#"some text {"host":"test.com","port":50002} more text"#;
+        let result = extract_valid_json_substring(input);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), r#"{"host":"test.com","port":50002}"#);
+        
+        // Test with nested objects
+        let input = r#"{"outer":{"inner":"value"}}"#;
+        let result = extract_valid_json_substring(input);
+        assert!(result.is_some());
+        assert_eq!(result.unwrap(), input);
+    }
+    
+    #[test]
+    fn test_create_minimal_json() {
+        // Test creating minimal JSON from malformed input
+        let input = r#"{"host":"test.com" "port":50002 "error":"some error"}"#;
+        let result = create_minimal_json(input);
+        assert!(result.is_some());
+        
+        // Test with quoted values
+        let input = r#"{"host":"test.com","error_message":"Response { status: 400 }"}"#;
+        let result = create_minimal_json(input);
+        assert!(result.is_some());
+    }
+    
+    #[test]
+    fn test_validate_json_with_details() {
+        // Test valid JSON
+        let input = r#"{"host":"test.com","port":50002}"#;
+        let result = validate_json_with_details(input);
+        assert!(result.is_ok());
+        
+        // Test invalid JSON
+        let input = r#"{"host":"test.com","port":50002,}"#;
+        let result = validate_json_with_details(input);
+        assert!(result.is_err());
+        assert!(result.unwrap_err().contains("expected value"));
+        
+        // Test JSON with unescaped quotes
+        let input = r#"{"host":"test.com","error":"Response { status: 400 }"}"#;
+        let result = validate_json_with_details(input);
+        assert!(result.is_err());
+    }
+    
+    #[test]
+    fn test_handle_specific_error_patterns() {
+        // Test UnsyncBoxBody replacement
+        let input = r#"{"error_message":"Failed to query server: Response { status: 400, body: UnsyncBoxBody }"}"#;
+        let result = handle_specific_error_patterns(input);
+        assert!(result.contains("Response body"));
+        assert!(!result.contains("UnsyncBoxBody"));
+        
+        // Test Response structure handling
+        let input = r#"{"error_message":"Response { status: 400, headers: {"content-type": "application/json"} }"}"#;
+        let result = handle_specific_error_patterns(input);
+        assert!(result.contains("Response("));
+        assert!(result.contains("headers: ("));
+    }
+    
+    #[test]
+    fn test_deserialize_height() {
+        // Test number height
+        let json = r#"{"height":12345}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let height = deserialize_height(serde::Deserializer::from(serde_json::to_value(result["height"]).unwrap())).unwrap();
+        assert_eq!(height, 12345);
+        
+        // Test string height
+        let json = r#"{"height":"0"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let height = deserialize_height(serde::Deserializer::from(serde_json::to_value(result["height"]).unwrap())).unwrap();
+        assert_eq!(height, 0);
+        
+        // Test empty string height
+        let json = r#"{"height":""}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let height = deserialize_height(serde::Deserializer::from(serde_json::to_value(result["height"]).unwrap())).unwrap();
+        assert_eq!(height, 0);
+        
+        // Test null height
+        let json = r#"{"height":null}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let height = deserialize_height(serde::Deserializer::from(serde_json::to_value(result["height"]).unwrap())).unwrap();
+        assert_eq!(height, 0);
+    }
+    
+    #[test]
+    fn test_deserialize_ping() {
+        // Test number ping
+        let json = r#"{"ping":123.45}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let ping = deserialize_ping(serde::Deserializer::from(serde_json::to_value(result["ping"]).unwrap())).unwrap();
+        assert_eq!(ping, Some(123.45));
+        
+        // Test string ping
+        let json = r#"{"ping":"123.45"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let ping = deserialize_ping(serde::Deserializer::from(serde_json::to_value(result["ping"]).unwrap())).unwrap();
+        assert_eq!(ping, Some(123.45));
+        
+        // Test empty string ping
+        let json = r#"{"ping":""}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let ping = deserialize_ping(serde::Deserializer::from(serde_json::to_value(result["ping"]).unwrap())).unwrap();
+        assert_eq!(ping, None);
+        
+        // Test null ping
+        let json = r#"{"ping":null}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let ping = deserialize_ping(serde::Deserializer::from(serde_json::to_value(result["ping"]).unwrap())).unwrap();
+        assert_eq!(ping, None);
+    }
+    
+    #[test]
+    fn test_deserialize_user_submitted() {
+        // Test boolean true
+        let json = r#"{"user_submitted":true}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(serde_json::to_value(result["user_submitted"]).unwrap())).unwrap();
+        assert_eq!(user_submitted, true);
+        
+        // Test boolean false
+        let json = r#"{"user_submitted":false}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(serde_json::to_value(result["user_submitted"]).unwrap())).unwrap();
+        assert_eq!(user_submitted, false);
+        
+        // Test string "true"
+        let json = r#"{"user_submitted":"true"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(serde_json::to_value(result["user_submitted"]).unwrap())).unwrap();
+        assert_eq!(user_submitted, true);
+        
+        // Test string "false"
+        let json = r#"{"user_submitted":"false"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(serde_json::to_value(result["user_submitted"]).unwrap())).unwrap();
+        assert_eq!(user_submitted, false);
+        
+        // Test string "FALSE" (case insensitive)
+        let json = r#"{"user_submitted":"FALSE"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(serde_json::to_value(result["user_submitted"]).unwrap())).unwrap();
+        assert_eq!(user_submitted, false);
+        
+        // Test number 1 (true)
+        let json = r#"{"user_submitted":1}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(serde_json::to_value(result["user_submitted"]).unwrap())).unwrap();
+        assert_eq!(user_submitted, true);
+        
+        // Test number 0 (false)
+        let json = r#"{"user_submitted":0}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(serde_json::to_value(result["user_submitted"]).unwrap())).unwrap();
+        assert_eq!(user_submitted, false);
+        
+        // Test null (defaults to false)
+        let json = r#"{"user_submitted":null}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(serde_json::to_value(result["user_submitted"]).unwrap())).unwrap();
+        assert_eq!(user_submitted, false);
+    }
+    
+    #[test]
+    fn test_deserialize_error_field() {
+        // Test boolean true
+        let json = r#"{"error":true}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let error = deserialize_error_field(serde::Deserializer::from(serde_json::to_value(result["error"]).unwrap())).unwrap();
+        assert_eq!(error, Some("Server error occurred".to_string()));
+        
+        // Test boolean false
+        let json = r#"{"error":false}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let error = deserialize_error_field(serde::Deserializer::from(serde_json::to_value(result["error"]).unwrap())).unwrap();
+        assert_eq!(error, None);
+        
+        // Test string error
+        let json = r#"{"error":"Connection failed"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let error = deserialize_error_field(serde::Deserializer::from(serde_json::to_value(result["error"]).unwrap())).unwrap();
+        assert_eq!(error, Some("Connection failed"));
+        
+        // Test null
+        let json = r#"{"error":null}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let error = deserialize_error_field(serde::Deserializer::from(serde_json::to_value(result["error"]).unwrap())).unwrap();
+        assert_eq!(error, None);
+    }
+    
+    #[test]
+    fn test_server_info_with_problematic_json() {
+        // Test with the exact JSON format from the error logs
+        let json = r#"{"host":"128.0.190.26","port":50002,"height":"0","server_version":"unknown","last_updated":"2025-07-31T21:11:21.472525544Z","error":true,"error_type":"connection_error","error_message":"Failed to query server: Response { status: 400, version: HTTP/1.1, headers: {\"content-type\": \"application/json\"}, body: UnsyncBoxBody }","user_submitted":"false","check_id":"539cb1f6-1855-5045-bb27-215221a4be25","status":"error"}"#;
+        
+        let server_info: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(server_info.host, "128.0.190.26");
+        assert_eq!(server_info.port, Some(50002));
+        assert_eq!(server_info.height, 0);
+        assert_eq!(server_info.status, "error");
+        assert!(server_info.error.is_some());
+        assert_eq!(server_info.error_type, Some("connection_error".to_string()));
+        assert!(server_info.error_message.is_some());
+        assert_eq!(server_info.user_submitted, false);
+    }
+    
+    #[test]
+    fn test_timestamp_parsing() {
+        // Test RFC3339 timestamp parsing
+        let server_info = ServerInfo {
+            host: "test.com".to_string(),
+            port: Some(50002),
+            height: 0,
+            status: "error".to_string(),
+            error: Some("test error".to_string()),
+            error_type: Some("connection_error".to_string()),
+            error_message: Some("test message".to_string()),
+            ping: None,
+            server_version: Some("unknown".to_string()),
+            user_submitted: false,
+            check_id: Some("test-id".to_string()),
+            extra: HashMap::new(),
+            last_updated: Some("2025-07-31T21:11:21.472525544Z".to_string()),
+        };
+        
+        let formatted = server_info.formatted_last_updated();
+        // Should not contain "Invalid time format"
+        assert!(!formatted.contains("Invalid time format"));
+        // Should contain some time information
+        assert!(formatted.len() > 0);
+        
+        // Test with the exact timestamp from the logs
+        let server_info2 = ServerInfo {
+            host: "128.0.190.26".to_string(),
+            port: Some(50002),
+            height: 0,
+            status: "error".to_string(),
+            error: Some("test error".to_string()),
+            error_type: Some("connection_error".to_string()),
+            error_message: Some("test message".to_string()),
+            ping: None,
+            server_version: Some("unknown".to_string()),
+            user_submitted: false,
+            check_id: Some("test-id".to_string()),
+            extra: HashMap::new(),
+            last_updated: Some("2025-07-31T21:11:21.472525544Z".to_string()),
+        };
+        
+        let formatted2 = server_info2.formatted_last_updated();
+        assert!(!formatted2.contains("Invalid time format"));
+        assert!(formatted2.len() > 0);
+    }
+    
+    #[test]
+    fn test_parse_rfc3339_with_nanos() {
+        // Test the custom parsing function
+        let timestamp = "2025-07-31T21:11:21.472525544Z";
+        let parsed = parse_rfc3339_with_nanos(timestamp);
+        assert!(parsed.is_some());
+        
+        // Test with quoted timestamp
+        let timestamp_quoted = "'2025-07-31T21:11:21.472525544Z'";
+        let parsed_quoted = parse_rfc3339_with_nanos(timestamp_quoted);
+        assert!(parsed_quoted.is_some());
+        
+        // Test with different nanosecond formats
+        let timestamp2 = "2025-07-31T21:11:21.123456789Z";
+        let parsed2 = parse_rfc3339_with_nanos(timestamp2);
+        assert!(parsed2.is_some());
+        
+        // Test with standard RFC3339 format
+        let timestamp3 = "2025-07-31T21:11:21Z";
+        let parsed3 = parse_rfc3339_with_nanos(timestamp3);
+        assert!(parsed3.is_some());
+    }
+    
+    #[test]
+    fn test_deserialize_host() {
+        // Test quoted hostname
+        let json = r#"{"host":"'128.0.190.26'"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let host = deserialize_host(serde::Deserializer::from(serde_json::to_value(result["host"]).unwrap())).unwrap();
+        assert_eq!(host, "128.0.190.26");
+        
+        // Test unquoted hostname
+        let json = r#"{"host":"example.com"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let host = deserialize_host(serde::Deserializer::from(serde_json::to_value(result["host"]).unwrap())).unwrap();
+        assert_eq!(host, "example.com");
+    }
+    
+    #[test]
+    fn test_deserialize_server_version() {
+        // Test quoted server version
+        let json = r#"{"server_version":"'unknown'"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let version = deserialize_server_version(serde::Deserializer::from(serde_json::to_value(result["server_version"]).unwrap())).unwrap();
+        assert_eq!(version, Some("unknown".to_string()));
+        
+        // Test unquoted server version
+        let json = r#"{"server_version":"ElectrumX 1.16.0"}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let version = deserialize_server_version(serde::Deserializer::from(serde_json::to_value(result["server_version"]).unwrap())).unwrap();
+        assert_eq!(version, Some("ElectrumX 1.16.0".to_string()));
+        
+        // Test null server version
+        let json = r#"{"server_version":null}"#;
+        let result: serde_json::Value = serde_json::from_str(json).unwrap();
+        let version = deserialize_server_version(serde::Deserializer::from(serde_json::to_value(result["server_version"]).unwrap())).unwrap();
+        assert_eq!(version, None);
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize tracing subscriber with environment filter
@@ -1691,4 +2884,77 @@ async fn main() -> std::io::Result<()> {
     .bind("0.0.0.0:8080")?
     .run()
     .await
+}
+
+/// Log problematic JSON data for debugging
+fn log_problematic_json(hostname: &str, json_data: &str) {
+    // Truncate long JSON for logging
+    let truncated = if json_data.len() > 500 {
+        format!("{}...", &json_data[..500])
+    } else {
+        json_data.to_string()
+    };
+    
+    warn!("Problematic JSON for host {}: {}", hostname, truncated);
+    
+    // Try to identify the specific issue
+    if json_data.contains("expected `,` or `}`") {
+        warn!("Issue: Missing comma or closing brace in JSON structure");
+    } else if json_data.contains("expected `\"`") {
+        warn!("Issue: Unescaped quotes in JSON string");
+    } else if json_data.contains("expected value") {
+        warn!("Issue: Missing value or trailing comma");
+    } else if json_data.contains("UnsyncBoxBody") {
+        warn!("Issue: Contains unescaped response body text");
+    }
+}
+
+/// Handle specific problematic patterns in error messages
+fn handle_specific_error_patterns(input: &str) -> String {
+    let mut cleaned = input.to_string();
+    
+    // Handle UnsyncBoxBody pattern specifically
+    if cleaned.contains("UnsyncBoxBody") {
+        cleaned = cleaned.replace("UnsyncBoxBody", "Response body");
+    }
+    
+    // Handle other common problematic patterns
+    cleaned = cleaned
+        .replace("Response {", "Response(")
+        .replace("Status {", "Status(")
+        .replace("headers: {", "headers: (")
+        .replace("body: {", "body: (")
+        .replace("},", "),")
+        .replace("}", ")");
+    
+    cleaned
+}
+
+/// Custom function to parse RFC3339 timestamps with nanoseconds
+fn parse_rfc3339_with_nanos(timestamp: &str) -> Option<DateTime<FixedOffset>> {
+    // Remove surrounding quotes if present
+    let clean_timestamp = timestamp.trim_matches('\'');
+    
+    // Handle the specific format: 2025-07-31T21:11:21.472525544Z
+    if clean_timestamp.ends_with('Z') {
+        let naive_str = &clean_timestamp[..clean_timestamp.len()-1];
+        
+        // Try parsing with different nanosecond formats
+        let formats = [
+            "%Y-%m-%dT%H:%M:%S%.f",
+            "%Y-%m-%dT%H:%M:%S%.9f",
+            "%Y-%m-%dT%H:%M:%S%.6f",
+            "%Y-%m-%dT%H:%M:%S%.3f",
+        ];
+        
+        for format in &formats {
+            if let Ok(dt) = chrono::NaiveDateTime::parse_from_str(naive_str, format) {
+                return Some(DateTime::<Utc>::from_naive_utc_and_offset(dt, Utc)
+                    .with_timezone(&FixedOffset::east_opt(0).unwrap()));
+            }
+        }
+    }
+    
+    // Fallback to standard RFC3339 parsing
+    DateTime::parse_from_rfc3339(clean_timestamp).ok()
 }

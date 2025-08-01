@@ -166,17 +166,6 @@ services:
     profiles:
       - dev
 
-  sms:
-    build:
-      context: ./contrib/sms
-      dockerfile: Dockerfile
-    image: hosh/sms
-    restart: "no"
-    environment:
-      - SMTP_USER=${SMTP_USER}
-      - SMTP_PASS=${SMTP_PASS}
-      - ALERT_NUMBER=${ALERT_NUMBER}
-
   nostr-alert:
     build:
       context: ./contrib/nostr-alert
