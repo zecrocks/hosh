@@ -180,9 +180,12 @@ services:
       - RUST_BACKTRACE=1
       - ADMIN_PUB_KEY=${ADMIN_PUB_KEY}
       - HOSH_PRIV_KEY=${HOSH_PRIV_KEY}
+      - ZEC_HTML_URL=${ZEC_HTML_URL:-http://web:8080/zec}
+      - BTC_HTML_URL=${BTC_HTML_URL:-http://web:8080/btc}
       - ZEC_API_URL=${ZEC_API_URL:-http://web:8080/api/v0/zec.json}
       - BTC_API_URL=${BTC_API_URL:-http://web:8080/api/v0/btc.json}
       - CHECK_INTERVAL_SECONDS=${CHECK_INTERVAL_SECONDS:-300}
+      - MAX_CHECK_AGE_MINUTES=${MAX_CHECK_AGE_MINUTES:-30}
       - GENERATE_KEYS=${GENERATE_KEYS:-false}
     command: ["cargo", "watch", "-q", "-c", "-w", "src", "-x", "run"]
     profiles:
