@@ -82,6 +82,9 @@ struct ServerInfo {
 
     #[serde(default)]
     last_updated: Option<String>,
+
+    #[serde(default)]
+    uptime_30_day: Option<f64>,
 }
 
 fn deserialize_port<'de, D>(deserializer: D) -> Result<Option<u16>, D::Error>
@@ -801,6 +804,13 @@ impl ServerInfo {
         self.height > 0 && self.height > percentile_height + 3
     }
 
+    fn formatted_uptime_30_day(&self) -> String {
+        match self.uptime_30_day {
+            Some(uptime) => format!("{:.1}%", uptime),
+            None => "-".to_string(),
+        }
+    }
+
     fn formatted_version(&self) -> String {
         let lwd_version = self.server_version.as_deref().unwrap_or("-");
         
@@ -1117,7 +1127,7 @@ async fn network_status(
     let network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
 
-    // Update query to handle empty results and use FORMAT JSONEachRow
+    // Update query to handle empty results and use FORMAT JSONEachRow, including 30-day uptime
     let query = format!(
         r#"
         WITH latest_results AS (
@@ -1127,20 +1137,31 @@ async fn network_status(
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.checked_at >= now() - INTERVAL {} DAY
+        ),
+        uptime_30_day AS (
+            SELECT 
+                hostname,
+                sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+            FROM {}.uptime_stats
+            WHERE time_bucket >= now() - INTERVAL 30 DAY
+            GROUP BY hostname
         )
         SELECT 
-            hostname,
-            checked_at,
-            status,
-            ping_ms as ping,
-            response_data
-        FROM latest_results
-        WHERE rn = 1
+            lr.hostname,
+            lr.checked_at,
+            lr.status,
+            lr.ping_ms as ping,
+            lr.response_data,
+            u30.uptime_percentage as uptime_30_day
+        FROM latest_results lr
+        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname
+        WHERE lr.rn = 1
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database,
         network.0,
-        worker.config.results_window_days
+        worker.config.results_window_days,
+        worker.clickhouse.database
     );
 
     info!(
@@ -1245,7 +1266,10 @@ async fn network_status(
                 
                 // Try to parse the response_data as ServerInfo
                 match serde_json::from_str::<ServerInfo>(&cleaned_response_data) {
-                    Ok(server_info) => {
+                    Ok(mut server_info) => {
+                        // Add the uptime_30_day from the query result
+                        server_info.uptime_30_day = result.get("uptime_30_day")
+                            .and_then(|v| v.as_f64());
                         servers.push(server_info);
                     }
                     Err(e) => {
@@ -1292,6 +1316,7 @@ async fn network_status(
                                 user_submitted: false,
                                 check_id: None,
                                 extra: HashMap::new(),
+                                uptime_30_day: result.get("uptime_30_day").and_then(|v| v.as_f64()),
                             };
                             
                             // Try to extract basic information from the raw response_data
@@ -1383,6 +1408,7 @@ async fn network_status(
                             user_submitted: false,
                             check_id: None,
                             extra: HashMap::new(),
+                            uptime_30_day: None,
                         };
                         
                         servers.push(fallback_server);
