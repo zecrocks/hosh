@@ -856,7 +856,9 @@ impl SafeNetwork {
 #[derive(Template)]
 #[template(path = "server.html")]
 struct ServerTemplate {
-    data: HashMap<String, Value>,
+    sorted_data: Vec<(String, Value)>,
+    donation_address: String,
+    show_donation: bool,
     host: String,
     network: String,
     current_network: &'static str,
@@ -1602,8 +1604,22 @@ async fn server_detail(
     // Calculate uptime statistics
     let uptime_stats = calculate_uptime_stats(&worker, &host, &network).await?;
 
+    // Create sorted data for alphabetical display
+    let mut sorted_data: Vec<(String, Value)> = data.iter()
+        .map(|(k, v)| (k.clone(), v.clone()))
+        .collect();
+    sorted_data.sort_by(|a, b| a.0.cmp(&b.0));
+
+    // Extract donation_address if it exists
+    let donation_opt = data.get("donation_address")
+        .and_then(|v| v.as_str());
+    let show_donation = donation_opt.is_some();
+    let donation_address = donation_opt.unwrap_or("").to_string();
+
     let template = ServerTemplate {
-        data,
+        sorted_data,
+        donation_address,
+        show_donation,
         host,
         network,
         current_network: safe_network.0,

@@ -47,6 +47,20 @@
             </div>
         </div>
         {% endif %}
+        {% if show_donation %}
+        <div class="row mt-4">
+            <div class="col-12">
+                <div class="text-center">
+                    <div class="donation-address">
+                        <strong>Donation Address:</strong>
+                        <p>
+                            <code class="bg-light px-2 py-1 rounded">{{ donation_address }}</code>
+                        </p>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
 </div>
 
@@ -59,7 +73,7 @@
         <div class="table-responsive">
             <table class="table table-bordered table-striped mb-0">
                 <tbody>
-                    {% for (key, value) in data.iter() %}
+                    {% for (key, value) in sorted_data %}
                     <tr>
                         <td class="table-key">{{ key }}</td>
                         <td class="table-value">{{ value|format_value }}</td>
