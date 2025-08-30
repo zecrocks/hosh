@@ -1422,13 +1422,24 @@ async fn network_status(
         }
     }
 
-    // Sort servers: online first, then by height (descending), then by hostname
+    // Sort servers: online first, then by ping (descending), offline servers by hostname
     servers.sort_by(|a, b| {
         match (a.is_online(), b.is_online()) {
             (true, true) => {
-                // Both online, sort by height (descending) then hostname
-                b.height.cmp(&a.height)
-                    .then(a.host.to_lowercase().cmp(&b.host.to_lowercase()))
+                // Both online, sort by ping (ascending) then hostname
+                match (a.ping, b.ping) {
+                    (Some(ping_a), Some(ping_b)) => {
+                        // Both have ping values, sort by ping ascending (lowest first)
+                        ping_a.partial_cmp(&ping_b).unwrap_or(std::cmp::Ordering::Equal)
+                            .then(a.host.to_lowercase().cmp(&b.host.to_lowercase()))
+                    },
+                    (Some(_), None) => std::cmp::Ordering::Less,  // a has ping, b doesn't
+                    (None, Some(_)) => std::cmp::Ordering::Greater,  // b has ping, a doesn't
+                    (None, None) => {
+                        // Neither has ping, sort by hostname
+                        a.host.to_lowercase().cmp(&b.host.to_lowercase())
+                    }
+                }
             },
             (true, false) => std::cmp::Ordering::Less,  // a online, b offline
             (false, true) => std::cmp::Ordering::Greater,  // b online, a offline
@@ -1862,12 +1873,29 @@ async fn check_server(
         );
 
         servers.sort_by(|a, b| {
-            match (a.height > 0, b.height > 0) {
-                (true, true) => b.height.cmp(&a.height)  // Both have heights > 0, sort by height desc
-                    .then(a.host.to_lowercase().cmp(&b.host.to_lowercase())),  // Then by hostname (case insensitive)
-                (true, false) => std::cmp::Ordering::Less,  // a has height > 0, b doesn't, so a comes first
-                (false, true) => std::cmp::Ordering::Greater,  // b has height > 0, a doesn't, so b comes first
-                (false, false) => a.host.to_lowercase().cmp(&b.host.to_lowercase()),  // Neither has height > 0, sort by hostname
+            match (a.is_online(), b.is_online()) {
+                (true, true) => {
+                    // Both online, sort by ping (ascending) then hostname
+                    match (a.ping, b.ping) {
+                        (Some(ping_a), Some(ping_b)) => {
+                            // Both have ping values, sort by ping ascending (lowest first)
+                            ping_a.partial_cmp(&ping_b).unwrap_or(std::cmp::Ordering::Equal)
+                                .then(a.host.to_lowercase().cmp(&b.host.to_lowercase()))
+                        },
+                        (Some(_), None) => std::cmp::Ordering::Less,  // a has ping, b doesn't
+                        (None, Some(_)) => std::cmp::Ordering::Greater,  // b has ping, a doesn't
+                        (None, None) => {
+                            // Neither has ping, sort by hostname
+                            a.host.to_lowercase().cmp(&b.host.to_lowercase())
+                        }
+                    }
+                },
+                (true, false) => std::cmp::Ordering::Less,  // a online, b offline
+                (false, true) => std::cmp::Ordering::Greater,  // b online, a offline
+                (false, false) => {
+                    // Both offline, sort by hostname
+                    a.host.to_lowercase().cmp(&b.host.to_lowercase())
+                }
             }
         });
 
