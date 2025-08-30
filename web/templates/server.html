@@ -47,22 +47,29 @@
             </div>
         </div>
         {% endif %}
-        {% if show_donation %}
-        <div class="row mt-4">
-            <div class="col-12">
-                <div class="text-center">
-                    <div class="donation-address">
-                        <strong>Donation Address:</strong>
-                        <p>
-                            <code class="bg-light px-2 py-1 rounded">{{ donation_address }}</code>
-                        </p>
-                    </div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
+
     </div>
 </div>
+
+{% if show_donation %}
+<div class="card shadow-sm mb-4">
+    <div class="card-header">
+        <h5 class="mb-0">Donation Address</h5>
+    </div>
+    <div class="card-body">
+        <div class="text-center">
+            {% if donation_qr_code != "" %}
+            <div class="mb-3">
+                {{ donation_qr_code|safe }}
+            </div>
+            {% endif %}
+            <div>
+                <code class="bg-light px-2 py-1 rounded">{{ donation_address }}</code>
+            </div>
+        </div>
+    </div>
+</div>
+{% endif %}
 
 <!-- Server Data Section -->
 <div class="card shadow-sm">

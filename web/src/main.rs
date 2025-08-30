@@ -14,6 +14,7 @@ use tracing_subscriber;
 use reqwest;
 use async_nats;
 use regex;
+use qrcode::{QrCode, render::svg};
 
 mod filters {
     use askama::Result;
@@ -858,6 +859,7 @@ impl SafeNetwork {
 struct ServerTemplate {
     sorted_data: Vec<(String, Value)>,
     donation_address: String,
+    donation_qr_code: String,
     show_donation: bool,
     host: String,
     network: String,
@@ -1616,9 +1618,26 @@ async fn server_detail(
     let show_donation = donation_opt.is_some();
     let donation_address = donation_opt.unwrap_or("").to_string();
 
+    // Generate QR code SVG for donation address
+    let donation_qr_code = if show_donation && !donation_address.is_empty() {
+        match QrCode::new(&donation_address) {
+            Ok(code) => {
+                code.render()
+                    .min_dimensions(200, 200)
+                    .dark_color(svg::Color("#000000"))
+                    .light_color(svg::Color("#FFFFFF"))
+                    .build()
+            },
+            Err(_) => String::new()
+        }
+    } else {
+        String::new()
+    };
+
     let template = ServerTemplate {
         sorted_data,
         donation_address,
+        donation_qr_code,
         show_donation,
         host,
         network,
