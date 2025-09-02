@@ -38,15 +38,23 @@
                 </div>
             </div>
         </div>
-        {% if uptime_stats.last_check != "" %}
         <div class="row mt-3">
             <div class="col-12">
                 <small class="text-muted">
-                    <strong>Last Check:</strong> {{ uptime_stats.last_check }}
+                    {% if uptime_stats.is_currently_online %}
+                        {% if uptime_stats.last_check != "" %}
+                            <strong>Last Checked:</strong> {{ uptime_stats.last_check }}
+                        {% endif %}
+                    {% else %}
+                        {% if uptime_stats.last_online != "" %}
+                            <strong>Last Online:</strong> {{ uptime_stats.last_online }}
+                        {% else %}
+                            <strong>Last Online:</strong> <span class="text-warning">Never</span>
+                        {% endif %}
+                    {% endif %}
                 </small>
             </div>
         </div>
-        {% endif %}
     </div>
 </div>
 
@@ -59,7 +67,7 @@
         <div class="table-responsive">
             <table class="table table-bordered table-striped mb-0">
                 <tbody>
-                    {% for (key, value) in data.iter() %}
+                    {% for (key, value) in data %}
                     <tr>
                         <td class="table-key">{{ key }}</td>
                         <td class="table-value">{{ value|format_value }}</td>
