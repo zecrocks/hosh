@@ -1147,10 +1147,11 @@ async fn network_status(
         uptime_30_day AS (
             SELECT 
                 hostname,
+                port,
                 sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
-            FROM {}.uptime_stats
+            FROM {}.uptime_stats_by_port
             WHERE time_bucket >= now() - INTERVAL 30 DAY
-            GROUP BY hostname
+            GROUP BY hostname, port
         )
         SELECT 
             lr.hostname,
@@ -1160,7 +1161,7 @@ async fn network_status(
             lr.response_data,
             u30.uptime_percentage as uptime_30_day
         FROM latest_results lr
-        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname
+        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
         WHERE lr.rn = 1
         FORMAT JSONEachRow
         "#,
@@ -1578,10 +1579,12 @@ async fn server_detail(
         WITH latest_results AS (
             SELECT 
                 r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
+            AND r.hostname = '{}'
             AND r.checked_at >= now() - INTERVAL 1 DAY
+            {}
         )
         SELECT 
             hostname,
@@ -1591,7 +1594,13 @@ async fn server_detail(
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database,
-        safe_network.0
+        safe_network.0,
+        host,
+        if let Some(port_num) = port {
+            format!("AND JSONExtractString(r.response_data, 'port') = '{}'", port_num)
+        } else {
+            String::new()
+        }
     );
 
     let count_response = worker.http_client.post(&worker.clickhouse.url)
@@ -1636,7 +1645,7 @@ async fn server_detail(
     let percentile_height = calculate_percentile(&heights, 90);
 
     // Calculate uptime statistics
-    let uptime_stats = calculate_uptime_stats(&worker, &host, &network).await?;
+    let uptime_stats = calculate_uptime_stats(&worker, &host, &network, port).await?;
 
     // Create sorted data for alphabetical display
     let mut sorted_data: Vec<(String, Value)> = data.iter()
@@ -1709,20 +1718,32 @@ async fn network_api(
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.checked_at >= now() - INTERVAL {} DAY
+        ),
+        uptime_30_day AS (
+            SELECT 
+                hostname,
+                port,
+                sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+            FROM {}.uptime_stats_by_port
+            WHERE time_bucket >= now() - INTERVAL 30 DAY
+            GROUP BY hostname, port
         )
         SELECT 
-            hostname,
-            checked_at,
-            status,
-            ping_ms as ping,
-            response_data
-        FROM latest_results
-        WHERE rn = 1
+            lr.hostname,
+            lr.checked_at,
+            lr.status,
+            lr.ping_ms as ping,
+            lr.response_data,
+            u30.uptime_percentage as uptime_30_day
+        FROM latest_results lr
+        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
+        WHERE lr.rn = 1
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database,
         network.0,
-        worker.config.results_window_days
+        worker.config.results_window_days,
+        worker.clickhouse.database
     );
 
     let response = worker.http_client.post(&worker.clickhouse.url)
@@ -2381,40 +2402,50 @@ async fn calculate_uptime_stats(
     worker: &Worker,
     host: &str,
     _network: &str,
+    port: Option<u16>,
 ) -> Result<UptimeStats, actix_web::Error> {
-    // Query for uptime statistics using the uptime_stats materialized view
+    // Query for uptime statistics using the port-aware uptime_stats_by_port materialized view
+    let port_filter = if let Some(port_num) = port {
+        format!("AND port = '{}'", port_num)
+    } else {
+        String::new()
+    };
+    
     let uptime_query = format!(
         r#"
         SELECT 
             'day' as period,
             sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
-        FROM {}.uptime_stats
+        FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 1 DAY
+        {}
         
         UNION ALL
         
         SELECT 
             'week' as period,
             sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
-        FROM {}.uptime_stats
+        FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 7 DAY
+        {}
         
         UNION ALL
         
         SELECT 
             'month' as period,
             sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
-        FROM {}.uptime_stats
+        FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 30 DAY
+        {}
         
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database, host,
-        worker.clickhouse.database, host,
-        worker.clickhouse.database, host
+        worker.clickhouse.database, host, port_filter,
+        worker.clickhouse.database, host, port_filter,
+        worker.clickhouse.database, host, port_filter
     );
 
     let response = worker.http_client.post(&worker.clickhouse.url)
@@ -2465,12 +2496,19 @@ async fn calculate_uptime_stats(
     }
 
     // Get total checks, last check time, last online time, and current status
+    let port_filter = if let Some(port_num) = port {
+        format!("AND JSONExtractString(response_data, 'port') = '{}'", port_num)
+    } else {
+        String::new()
+    };
+    
     let stats_query = format!(
         r#"
         WITH latest_check AS (
             SELECT status, checked_at
             FROM {}.results
             WHERE hostname = '{}'
+            {}
             ORDER BY checked_at DESC
             LIMIT 1
         )
@@ -2482,9 +2520,10 @@ async fn calculate_uptime_stats(
         FROM {}.results
         WHERE hostname = '{}'
         AND checked_at >= now() - INTERVAL {} DAY
+        {}
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database, host, worker.clickhouse.database, host, worker.config.results_window_days
+        worker.clickhouse.database, host, port_filter, worker.clickhouse.database, host, worker.config.results_window_days, port_filter
     );
 
     // info!("🔍 Stats query for host {}: {}", host, stats_query.replace("\n", " "));
