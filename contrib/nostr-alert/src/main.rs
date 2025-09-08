@@ -121,7 +121,8 @@ fn parse_html_servers(html: &str) -> Result<Vec<HtmlServerInfo>, Box<dyn std::er
     let mut servers = Vec::new();
     
     // Regex to match table rows with server info
-    let row_regex = Regex::new(r#"<tr[^>]*>\s*<td><a[^>]*>([^<]+)</a></td>\s*<td[^>]*>[^<]*</td>\s*<td[^>]*>[^<]*</td>\s*<td[^>]*>[^<]*</td>\s*<td>([^<]+)</td>\s*<td[^>]*>[^<]*</td>\s*</tr>"#)?;
+    // Updated to match the actual HTML structure: Server, Block Height, Status, Uptime, Version, Last Checked, USA Ping
+    let row_regex = Regex::new(r#"<tr[^>]*>\s*<td><a[^>]*>([^<]+)</a></td>\s*<td[^>]*>[^<]*</td>\s*<td[^>]*>[^<]*</td>\s*<td[^>]*>[^<]*</td>\s*<td[^>]*>[^<]*</td>\s*<td>([^<]+)</td>\s*<td[^>]*>[^<]*</td>\s*</tr>"#)?;
     
     for cap in row_regex.captures_iter(html) {
         if cap.len() >= 3 {

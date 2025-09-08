@@ -26,7 +26,7 @@ A Rust-based nostr client for monitoring the Hosh ZEC and BTC systems using both
 - `ZEC_API_URL` - The ZEC JSON API URL to monitor for empty server lists (default: https://hosh.zec.rocks/api/v0/zec.json)
 - `BTC_API_URL` - The BTC JSON API URL to monitor for empty server lists (default: https://hosh.zec.rocks/api/v0/btc.json)
 - `CHECK_INTERVAL_SECONDS` - How often to check the endpoints in seconds (default: 60)
-- `MAX_CHECK_AGE_MINUTES` - Maximum age of "Last Checked" times before alerting (default: 10)
+- `MAX_CHECK_AGE_MINUTES` - Maximum age of "Last Checked" times before alerting (default: 10, docker-compose default: 30)
 - `HOSH_PRIV_KEY` - Your nostr private key (nsec format). If not provided, a new keypair will be generated
 
 ## Dependencies

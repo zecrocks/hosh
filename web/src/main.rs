@@ -878,6 +878,8 @@ struct UptimeStats {
     last_month: f64,
     total_checks: u64,
     last_check: String,
+    last_online: String,
+    is_currently_online: bool,
     last_day_formatted: String,
     last_week_formatted: String,
     last_month_formatted: String,
@@ -2443,18 +2445,27 @@ async fn calculate_uptime_stats(
         }
     }
 
-    // Get total checks and last check time
+    // Get total checks, last check time, last online time, and current status
     let stats_query = format!(
         r#"
+        WITH latest_check AS (
+            SELECT status, checked_at
+            FROM {}.results
+            WHERE hostname = '{}'
+            ORDER BY checked_at DESC
+            LIMIT 1
+        )
         SELECT 
             count(*) as total_checks,
-            max(checked_at) as last_check
+            max(checked_at) as last_check,
+            max(CASE WHEN status = 'online' THEN checked_at END) as last_online,
+            (SELECT status FROM latest_check) as current_status
         FROM {}.results
         WHERE hostname = '{}'
         AND checked_at >= now() - INTERVAL {} DAY
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database, host, worker.config.results_window_days
+        worker.clickhouse.database, host, worker.clickhouse.database, host, worker.config.results_window_days
     );
 
     // info!("🔍 Stats query for host {}: {}", host, stats_query.replace("\n", " "));
@@ -2508,6 +2519,8 @@ async fn calculate_uptime_stats(
 
     let mut total_checks = 0u64;
     let mut last_check = String::new();
+    let mut last_online = String::new();
+    let mut is_currently_online = false;
 
     for line in stats_body.lines() {
         if line.trim().is_empty() {
@@ -2527,6 +2540,24 @@ async fn calculate_uptime_stats(
             if let Some(check_time) = result["last_check"].as_str() {
                 last_check = check_time.to_string();
             }
+            
+            // Handle last_online - could be a string or NULL
+            if let Some(online_time) = result["last_online"].as_str() {
+                last_online = online_time.to_string();
+            } else {
+                // If last_online is NULL or missing, set to empty string
+                last_online = String::new();
+            }
+            
+            if let Some(current_status) = result["current_status"].as_str() {
+                is_currently_online = current_status == "online";
+            }
+            
+            // Debug logging for this specific server
+            if host == "lightwalletd.stakehold.rs" {
+                info!("🔍 Debug for {}: current_status={:?}, is_currently_online={}, last_online='{}'", 
+                      host, result["current_status"], is_currently_online, last_online);
+            }
         }
     }
 
@@ -2536,6 +2567,8 @@ async fn calculate_uptime_stats(
         last_month,
         total_checks,
         last_check,
+        last_online,
+        is_currently_online,
         last_day_formatted: format!("{:.1}%", last_day),
         last_week_formatted: format!("{:.1}%", last_week),
         last_month_formatted: format!("{:.1}%", last_month),
