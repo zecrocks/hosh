@@ -105,6 +105,7 @@ const ZEC_SERVERS: &[(&str, u16)] = &[
     // ("ti64zsaj6w66um42o4nyjtstzg4zryqkph2c45x4bwfqhydxeznrfgad.onion", 443),
     //// Community nodes
     ("zcash.mysideoftheweb.com", 9067), // eZcash
+    ("zcash.mysideoftheweb.com", 19067), // eZcash (Testnet)
     ("zaino.stakehold.rs", 443),
     ("lightwalletd.stakehold.rs", 443),
     // Ywallet nodes
