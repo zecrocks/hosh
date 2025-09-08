@@ -56,18 +56,18 @@ impl ClickHouseConfig {
         Ok(result)
     }
 
-    async fn target_exists(&self, module: &str, hostname: &str) -> Result<bool, Box<dyn Error>> {
+    async fn target_exists(&self, module: &str, hostname: &str, port: u16) -> Result<bool, Box<dyn Error>> {
         let query = format!(
-            "SELECT count() FROM {}.targets WHERE module = '{}' AND hostname = '{}'",
-            self.database, module, hostname
+            "SELECT count() FROM {}.targets WHERE module = '{}' AND hostname = '{}' AND port = {}",
+            self.database, module, hostname, port
         );
         let result = self.execute_query(&query).await?;
         Ok(result.trim().parse::<i64>()? > 0)
     }
 
     async fn insert_target(&self, module: &str, hostname: &str, port: u16) -> Result<(), Box<dyn Error>> {
-        if self.target_exists(module, hostname).await? {
-            info!("Target already exists: {} {}", module, hostname);
+        if self.target_exists(module, hostname, port).await? {
+            info!("Target already exists: {} {}:{}", module, hostname, port);
             return Ok(());
         }
 
@@ -224,7 +224,7 @@ async fn update_servers(
     info!("Processing {} ZEC servers...", ZEC_SERVERS.len());
     for (host, port) in ZEC_SERVERS {
         info!("Processing ZEC server: {}:{}", host, port);
-        if !clickhouse.target_exists("zec", host).await? {
+        if !clickhouse.target_exists("zec", host, *port).await? {
             if let Err(e) = clickhouse.insert_target("zec", host, *port).await {
                 error!("Failed to insert ZEC server {}:{}: {}", host, port, e);
             }
@@ -239,7 +239,7 @@ async fn update_servers(
         info!("Processing HTTP explorer: {} ({})", explorer, url);
         
         // Insert the main explorer target if it doesn't exist
-        if !clickhouse.target_exists("http", url).await? {
+        if !clickhouse.target_exists("http", url, 80).await? {
             if let Err(e) = clickhouse.insert_target("http", url, 80).await {
                 error!("Failed to insert HTTP explorer {}: {}", url, e);
                 continue;
@@ -252,7 +252,7 @@ async fn update_servers(
         if explorer == &"blockchair" {
             if let Some(onion_url) = get_blockchair_onion_url(client).await? {
                 info!("Found Blockchair onion URL: {}", onion_url);
-                if !clickhouse.target_exists("http", &onion_url).await? {
+                if !clickhouse.target_exists("http", &onion_url, 80).await? {
                     if let Err(e) = clickhouse.insert_target("http", &onion_url, 80).await {
                         error!("Failed to insert Blockchair onion URL {}: {}", onion_url, e);
                     }
@@ -274,7 +274,7 @@ async fn update_servers(
             .unwrap_or(50001);
         info!("Processing BTC server: {}:{}", host, port);
         
-        if !clickhouse.target_exists("btc", &host).await? {
+        if !clickhouse.target_exists("btc", &host, port).await? {
             // Try to get details but don't require success
             let details = get_server_details(client, &host, port).await;
             match details {

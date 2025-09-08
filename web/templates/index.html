@@ -20,7 +20,7 @@
                     <tbody>
                         {% for server in servers %}
                         <tr {% if server.is_height_behind(percentile_height) %}class="height-behind"{% else if server.is_height_ahead(percentile_height) %}class="height-ahead"{% endif %}>
-                            <td><a href="/{{ current_network }}/{{ server.host }}">{{ server.host_with_port() }}</a></td>
+                            <td><a href="/{{ current_network }}/{{ server.host_with_port() }}">{{ server.host_with_port() }}</a></td>
                             <td>
                                 {{ server.height }}
                                 {% if server.is_height_behind(percentile_height) %}

@@ -1139,7 +1139,7 @@ async fn network_status(
         WITH latest_results AS (
             SELECT 
                 r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.checked_at >= now() - INTERVAL {} DAY
@@ -1487,7 +1487,20 @@ async fn server_detail(
     worker: web::Data<Worker>,
     path: web::Path<(String, String)>,
 ) -> Result<HttpResponse> {
-    let (network, host) = path.into_inner();
+    let (network, host_with_port) = path.into_inner();
+    
+    // Parse hostname:port format
+    let (host, port) = if let Some(colon_pos) = host_with_port.rfind(':') {
+        let hostname = &host_with_port[..colon_pos];
+        let port_str = &host_with_port[colon_pos + 1..];
+        if let Ok(port_num) = port_str.parse::<u16>() {
+            (hostname.to_string(), Some(port_num))
+        } else {
+            (host_with_port.clone(), None)
+        }
+    } else {
+        (host_with_port.clone(), None)
+    };
     let safe_network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
     
@@ -1497,11 +1510,12 @@ async fn server_detail(
         WITH latest_results AS (
             SELECT 
                 r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.hostname = '{}'
             AND r.checked_at >= now() - INTERVAL {} DAY
+            {}
         )
         SELECT 
             hostname,
@@ -1516,7 +1530,12 @@ async fn server_detail(
         worker.clickhouse.database,
         safe_network.0,
         host,
-        worker.config.results_window_days
+        worker.config.results_window_days,
+        if let Some(port_num) = port {
+            format!("AND JSONExtractString(r.response_data, 'port') = '{}'", port_num)
+        } else {
+            String::new()
+        }
     );
 
     let response = worker.http_client.post(&worker.clickhouse.url)
@@ -1686,7 +1705,7 @@ async fn network_api(
         WITH latest_results AS (
             SELECT 
                 r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname ORDER BY r.checked_at DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.checked_at >= now() - INTERVAL {} DAY
