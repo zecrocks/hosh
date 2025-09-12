@@ -45,6 +45,7 @@
     </div>
 </div>
 
+<!-- Temporarily hide custom server checking
 <div class="check-server-form">
     <h3>Check Custom Server</h3>
     {% if let Some(error) = check_error %}
@@ -67,14 +68,12 @@
                    value="50002"
                    class="w-32 px-3 py-2 border rounded">
         </div>
-        <!-- Add verification field -->
         <div class="mt-2">
             <input type="text"
                    name="verification"
                    placeholder="What is {{ math_problem.0 }} + {{ math_problem.1 }}?"
                    class="px-3 py-2 border rounded"
                    required>
-            <!-- Add hidden field for expected answer -->
             <input type="hidden" 
                    name="expected_answer" 
                    value="{{ math_problem.0 + math_problem.1 }}">
@@ -84,6 +83,7 @@
         </div>
     </form>
 </div>
+-->
 
 <!-- Add back URL parsing -->
 <script>
