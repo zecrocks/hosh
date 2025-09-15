@@ -1,4 +1,4 @@
-FROM rust:1.85-slim-bullseye AS builder
+FROM rust:1.87-slim-bullseye AS builder
 
 RUN apt-get update && apt-get install -y \
     pkg-config \
