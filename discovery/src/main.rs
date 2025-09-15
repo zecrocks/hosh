@@ -88,7 +88,6 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zec.rocks", 443, false),
     ("ap.zec.rocks", 443, false),
     ("eu.zec.rocks", 443, false),
-    ("me.zec.rocks", 443, false),
     ("na.zec.rocks", 443, false),
     ("sa.zec.rocks", 443, false),
     ("zcashd.zec.rocks", 443, false),
@@ -132,6 +131,11 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zlw.nodemaster.link", 9067, true),
     ("light.myown.party", 443, true),
     ("znode.roamerx.win", 443, true),
+    ("zec.leoninedao.org", 8232, true),
+    ("zec.leoninedao.org", 8137, true),
+    ("zec.bitchat.channel", 8443, true),
+    ("zaino.netstable.stream", 443, true),
+    ("chmodas.org", 443, true),
 ];
 
 // Static HTTP block explorer configuration
