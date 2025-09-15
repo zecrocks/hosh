@@ -3,6 +3,28 @@
 {% block content %}
 <div class="row">
     <div class="col">
+        {% if current_network == "zec" %}
+        <!-- Filter buttons -->
+        <div class="mb-3">
+            <div class="btn-group" role="group" aria-label="Server type filter">
+                {% if hide_community %}
+                <a href="/{{ current_network }}" class="btn btn-outline-secondary">All Servers</a>
+                <a href="/{{ current_network }}?hide_community=true" class="btn btn-outline-primary active">Hide Community Servers</a>
+                {% else %}
+                <a href="/{{ current_network }}" class="btn btn-outline-secondary active">All Servers</a>
+                <a href="/{{ current_network }}?hide_community=true" class="btn btn-outline-primary">Hide Community Servers</a>
+                {% endif %}
+            </div>
+            <span class="ms-3 text-muted">
+                {% if hide_community %}
+                    Showing {{ total_count - community_count }} servers ({{ community_count }} community servers hidden)
+                {% else %}
+                    Showing all {{ total_count }} servers
+                {% endif %}
+            </span>
+        </div>
+        {% endif %}
+        
         <div class="card shadow-sm">
             <div class="table-responsive">
                 <table class="table table-hover table-striped mb-0">
@@ -20,7 +42,12 @@
                     <tbody>
                         {% for server in servers %}
                         <tr {% if server.is_height_behind(percentile_height) %}class="height-behind"{% else if server.is_height_ahead(percentile_height) %}class="height-ahead"{% endif %}>
-                            <td><a href="/{{ current_network }}/{{ server.host_with_port() }}">{{ server.host_with_port() }}</a></td>
+                            <td>
+                                <a href="/{{ current_network }}/{{ server.host_with_port() }}">{{ server.host_with_port() }}</a>
+                                {% if server.is_community() %}
+                                <span title="Community server">🏠</span>
+                                {% endif %}
+                            </td>
                             <td>
                                 {{ server.height }}
                                 {% if server.is_height_behind(percentile_height) %}
@@ -112,6 +139,7 @@ function handleSubmit(event) {
     }
     return true;
 }
+
 </script>
 
 <style>

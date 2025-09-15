@@ -39,6 +39,8 @@ struct IndexTemplate<'a> {
     current_network: &'static str,
     online_count: usize,
     total_count: usize,
+    community_count: usize,
+    hide_community: bool,
     check_error: Option<&'a str>,
     math_problem: (u8, u8, u8),
 }
@@ -74,6 +76,9 @@ struct ServerInfo {
 
     #[serde(default, deserialize_with = "deserialize_user_submitted")]
     user_submitted: bool,
+
+    #[serde(default, deserialize_with = "deserialize_community")]
+    community: bool,
 
     #[serde(default)]
     check_id: Option<String>,
@@ -213,6 +218,39 @@ where
         Value::Null => Ok(false),
         _ => {
             warn!("Unexpected user_submitted value format: {:?}", value);
+            Ok(false)
+        }
+    }
+}
+
+fn deserialize_community<'de, D>(deserializer: D) -> Result<bool, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match value {
+        Value::Bool(b) => Ok(b),
+        Value::String(s) => {
+            match s.to_lowercase().as_str() {
+                "true" | "1" | "yes" | "on" => Ok(true),
+                "false" | "0" | "no" | "off" => Ok(false),
+                _ => {
+                    warn!("Unexpected community string value: {:?}", s);
+                    Ok(false) // Default to false for unknown values
+                }
+            }
+        },
+        Value::Number(n) => {
+            if let Some(num) = n.as_u64() {
+                Ok(num != 0)
+            } else {
+                warn!("Unexpected community number value: {:?}", n);
+                Ok(false)
+            }
+        },
+        Value::Null => Ok(false),
+        _ => {
+            warn!("Unexpected community value format: {:?}", value);
             Ok(false)
         }
     }
@@ -838,6 +876,11 @@ impl ServerInfo {
         
         lwd_display
     }
+
+    fn is_community(&self) -> bool {
+        self.community
+    }
+
 }
 
 #[derive(Debug)]
@@ -935,6 +978,11 @@ impl CheckTemplate {
 struct CheckQuery {
     host: Option<String>,
     port: Option<u16>,
+}
+
+#[derive(Deserialize)]
+struct IndexQuery {
+    hide_community: Option<bool>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -1129,11 +1177,12 @@ async fn root() -> Result<Redirect> {
 async fn network_status(
     worker: web::Data<Worker>,
     network: web::Path<String>,
+    query_params: web::Query<IndexQuery>,
 ) -> Result<HttpResponse> {
     let network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
 
-    // Update query to handle empty results and use FORMAT JSONEachRow, including 30-day uptime
+    // Update query to handle empty results and use FORMAT JSONEachRow, including 30-day uptime and community flag
     let query = format!(
         r#"
         WITH latest_results AS (
@@ -1159,15 +1208,18 @@ async fn network_status(
             lr.status,
             lr.ping_ms as ping,
             lr.response_data,
-            u30.uptime_percentage as uptime_30_day
+            u30.uptime_percentage as uptime_30_day,
+            t.community
         FROM latest_results lr
         LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
+        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
         WHERE lr.rn = 1
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database,
         network.0,
         worker.config.results_window_days,
+        worker.clickhouse.database,
         worker.clickhouse.database
     );
 
@@ -1208,6 +1260,8 @@ async fn network_status(
             current_network: network.0,
             online_count: 0,
             total_count: 0,
+            community_count: 0,
+            hide_community: false,
             check_error: None,
             math_problem: generate_math_problem(),
         };
@@ -1277,6 +1331,10 @@ async fn network_status(
                         // Add the uptime_30_day from the query result
                         server_info.uptime_30_day = result.get("uptime_30_day")
                             .and_then(|v| v.as_f64());
+                        // Add the community flag from the query result
+                        server_info.community = result.get("community")
+                            .and_then(|v| v.as_bool())
+                            .unwrap_or(false);
                         servers.push(server_info);
                     }
                     Err(e) => {
@@ -1321,6 +1379,7 @@ async fn network_status(
                                 ping: result["ping"].as_f64(),
                                 server_version: None,
                                 user_submitted: false,
+                                community: result.get("community").and_then(|v| v.as_bool()).unwrap_or(false),
                                 check_id: None,
                                 extra: HashMap::new(),
                                 uptime_30_day: result.get("uptime_30_day").and_then(|v| v.as_f64()),
@@ -1413,6 +1472,7 @@ async fn network_status(
                             ping: None,
                             server_version: None,
                             user_submitted: false,
+                            community: false, // Default to false for error cases
                             check_id: None,
                             extra: HashMap::new(),
                             uptime_30_day: None,
@@ -1460,15 +1520,27 @@ async fn network_status(
         .collect();
     let percentile_height = calculate_percentile(&heights, 90);
 
-    let online_count = servers.iter().filter(|s| s.is_online()).count();
+    let hide_community = query_params.hide_community.unwrap_or(false);
+    let community_count = servers.iter().filter(|s| s.is_community()).count();
     let total_count = servers.len();
 
+    // Filter servers if hide_community is true
+    let filtered_servers = if hide_community {
+        servers.into_iter().filter(|s| !s.is_community()).collect()
+    } else {
+        servers
+    };
+
+    let online_count = filtered_servers.iter().filter(|s| s.is_online()).count();
+
     let template = IndexTemplate {
-        servers,
+        servers: filtered_servers,
         percentile_height,
         current_network: network.0,
         online_count,
         total_count,
+        community_count,
+        hide_community,
         check_error: None,
         math_problem: generate_math_problem(),
     };
@@ -1947,6 +2019,8 @@ async fn check_server(
             current_network: network.0,
             online_count,
             total_count,
+            community_count: 0, // Not relevant for error case
+            hide_community: false,
             check_error: Some("Incorrect answer, please try again"),
             math_problem: (num1, num2, 0),
         };

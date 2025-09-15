@@ -2,7 +2,7 @@ use std::{env, error::Error, time::Duration};
 use serde::{Deserialize, Serialize};
 use tokio::time;
 use chrono::{DateTime, Utc};
-use tracing::{info, error, Level};
+use tracing::{info, error};
 use reqwest::Client;
 use tracing_subscriber;
 use scraper::{Html, Selector};
@@ -65,58 +65,73 @@ impl ClickHouseConfig {
         Ok(result.trim().parse::<i64>()? > 0)
     }
 
-    async fn insert_target(&self, module: &str, hostname: &str, port: u16) -> Result<(), Box<dyn Error>> {
+    async fn insert_target(&self, module: &str, hostname: &str, port: u16, community: bool) -> Result<(), Box<dyn Error>> {
         if self.target_exists(module, hostname, port).await? {
             info!("Target already exists: {} {}:{}", module, hostname, port);
             return Ok(());
         }
 
         let query = format!(
-            "INSERT INTO TABLE {}.targets (target_id, module, hostname, port, last_queued_at, last_checked_at, user_submitted) VALUES (generateUUIDv4(), '{}', '{}', {}, now64(3, 'UTC'), now64(3, 'UTC'), false)",
-            self.database, module, hostname, port
+            "INSERT INTO TABLE {}.targets (target_id, module, hostname, port, last_queued_at, last_checked_at, user_submitted, community) VALUES (generateUUIDv4(), '{}', '{}', {}, now64(3, 'UTC'), now64(3, 'UTC'), false, {})",
+            self.database, module, hostname, port, community
         );
         self.execute_query(&query).await?;
-        info!("Successfully inserted target: {} {}:{}", module, hostname, port);
+        info!("Successfully inserted target: {} {}:{} (community: {})", module, hostname, port, community);
         Ok(())
     }
 }
 
 // Static ZEC server configuration
-const ZEC_SERVERS: &[(&str, u16)] = &[
-    ("zec.rocks", 443),
-    ("testnet.zec.rocks", 443),
-    ("ap.zec.rocks", 443),
-    ("eu.zec.rocks", 443),
-    ("me.zec.rocks", 443),
-    ("na.zec.rocks", 443),
-    ("sa.zec.rocks", 443),
-    ("zcashd.zec.rocks", 443),
-    ("zaino.unsafe.zec.rocks", 443),
-    ("zaino.testnet.unsafe.zec.rocks", 443),
+// (hostname, port, is_community)
+const ZEC_SERVERS: &[(&str, u16, bool)] = &[
+    // Official zec.rocks servers
+    ("zec.rocks", 443, false),
+    ("ap.zec.rocks", 443, false),
+    ("eu.zec.rocks", 443, false),
+    ("me.zec.rocks", 443, false),
+    ("na.zec.rocks", 443, false),
+    ("sa.zec.rocks", 443, false),
+    ("zcashd.zec.rocks", 443, false),
+    ("zaino.unsafe.zec.rocks", 443, false),
+    ("zaino.testnet.unsafe.zec.rocks", 443, false),
+    ("zcash.mysideoftheweb.com", 9067, false), // eZcash
+    // Ywallet nodes
+    ("lwd1.zcash-infra.com", 9067, false),
+    ("lwd2.zcash-infra.com", 9067, false),
+    ("lwd3.zcash-infra.com", 9067, false),
+    ("lwd4.zcash-infra.com", 9067, false),
+    ("lwd5.zcash-infra.com", 9067, false),
+    ("lwd6.zcash-infra.com", 9067, false),
+    ("lwd7.zcash-infra.com", 9067, false),
+    ("lwd8.zcash-infra.com", 9067, false),
+    //// Testnet servers
+    ("testnet.zec.rocks", 443, false),
+    ("lightwalletd.testnet.electriccoin.co", 9067, false),
+    ("zcash.mysideoftheweb.com", 19067, false), // eZcash (Testnet)
     //// Tor nodes
     // Zec.rocks Mainnet (Zebra + Zaino)
-    // ("6fiyttjv3awhv6afdqeeerfxckdqlt6vejjsadeiqawnt7e3hxdcaxqd.onion", 443),
-    // ("lzzfytqg24a7v6ejqh2q4ecaop6mf62gupvdimc4ryxeixtdtzxxjmad.onion", 443),
-    // ("vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion", 443),
+    // ("6fiyttjv3awhv6afdqeeerfxckdqlt6vejjsadeiqawnt7e3hxdcaxqd.onion", 443, false),
+    // ("lzzfytqg24a7v6ejqh2q4ecaop6mf62gupvdimc4ryxeixtdtzxxjmad.onion", 443, false),
+    // ("vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion", 443, false),
     // Zec.rocks Mainnet (Zcashd + Lightwalletd)
-    // ("ltefw7pqlslcst5n465kxwgqmb4wxwp7djvhzqlfwhh3wx53xzuwr2ad.onion", 443),
+    // ("ltefw7pqlslcst5n465kxwgqmb4wxwp7djvhzqlfwhh3wx53xzuwr2ad.onion", 443, false),
     // Zec.rocks Testnet (Zebra + Zaino)
-    // ("gnsujqzqaepdmxjq4ixm74kapd7grp3j5selm7nsejz6ctxa3yx4q3yd.onion", 443),
-    // ("ti64zsaj6w66um42o4nyjtstzg4zryqkph2c45x4bwfqhydxeznrfgad.onion", 443),
+    // ("gnsujqzqaepdmxjq4ixm74kapd7grp3j5selm7nsejz6ctxa3yx4q3yd.onion", 443, false),
+    // ("ti64zsaj6w66um42o4nyjtstzg4zryqkph2c45x4bwfqhydxeznrfgad.onion", 443, false),
     //// Community nodes
-    ("zcash.mysideoftheweb.com", 9067), // eZcash
-    ("zcash.mysideoftheweb.com", 19067), // eZcash (Testnet)
-    ("zaino.stakehold.rs", 443),
-    ("lightwalletd.stakehold.rs", 443),
-    // Ywallet nodes
-    ("lwd1.zcash-infra.com", 9067),
-    ("lwd2.zcash-infra.com", 9067),
-    ("lwd3.zcash-infra.com", 9067),
-    ("lwd4.zcash-infra.com", 9067),
-    ("lwd5.zcash-infra.com", 9067),
-    ("lwd6.zcash-infra.com", 9067),
-    ("lwd7.zcash-infra.com", 9067),
-    ("lwd8.zcash-infra.com", 9067),
+    ("zaino.stakehold.rs", 443, true),
+    ("lightwalletd.stakehold.rs", 443, true),
+    ("zeclwnode.mylabtest.vip", 9067, true),
+    ("z.arounder.co", 9067, true),
+    ("z.arounder.co", 443, true),
+    ("zec.alexxiy.top", 9067, true),
+    ("zec.alexxiy.top", 8137, true),
+    ("z.dptr.capital", 9067, true),
+    ("z.miscthings.casa", 9067, true),
+    ("z.miscthings.casa", 443, true),
+    ("zlw.nodemaster.link", 9067, true),
+    ("light.myown.party", 443, true),
+    ("znode.roamerx.win", 443, true),
 ];
 
 // Static HTTP block explorer configuration
@@ -222,10 +237,10 @@ async fn update_servers(
 ) -> Result<(), Box<dyn std::error::Error>> {
     // Process ZEC servers first
     info!("Processing {} ZEC servers...", ZEC_SERVERS.len());
-    for (host, port) in ZEC_SERVERS {
-        info!("Processing ZEC server: {}:{}", host, port);
+    for (host, port, community) in ZEC_SERVERS {
+        info!("Processing ZEC server: {}:{} (community: {})", host, port, community);
         if !clickhouse.target_exists("zec", host, *port).await? {
-            if let Err(e) = clickhouse.insert_target("zec", host, *port).await {
+            if let Err(e) = clickhouse.insert_target("zec", host, *port, *community).await {
                 error!("Failed to insert ZEC server {}:{}: {}", host, port, e);
             }
         } else {
@@ -240,7 +255,7 @@ async fn update_servers(
         
         // Insert the main explorer target if it doesn't exist
         if !clickhouse.target_exists("http", url, 80).await? {
-            if let Err(e) = clickhouse.insert_target("http", url, 80).await {
+            if let Err(e) = clickhouse.insert_target("http", url, 80, false).await {
                 error!("Failed to insert HTTP explorer {}: {}", url, e);
                 continue;
             }
@@ -253,7 +268,7 @@ async fn update_servers(
             if let Some(onion_url) = get_blockchair_onion_url(client).await? {
                 info!("Found Blockchair onion URL: {}", onion_url);
                 if !clickhouse.target_exists("http", &onion_url, 80).await? {
-                    if let Err(e) = clickhouse.insert_target("http", &onion_url, 80).await {
+                    if let Err(e) = clickhouse.insert_target("http", &onion_url, 80, false).await {
                         error!("Failed to insert Blockchair onion URL {}: {}", onion_url, e);
                     }
                 } else {
@@ -279,14 +294,14 @@ async fn update_servers(
             let details = get_server_details(client, &host, port).await;
             match details {
                 Ok(_) => {
-                    if let Err(e) = clickhouse.insert_target("btc", &host, port).await {
+                    if let Err(e) = clickhouse.insert_target("btc", &host, port, false).await {
                         error!("Failed to insert BTC server {}:{}: {}", host, port, e);
                     }
                 }
                 Err(e) => {
                     // Still insert the target even if verification fails
                     info!("Could not verify BTC server {}:{}: {}, but inserting anyway", host, port, e);
-                    if let Err(e) = clickhouse.insert_target("btc", &host, port).await {
+                    if let Err(e) = clickhouse.insert_target("btc", &host, port, false).await {
                         error!("Failed to insert BTC server {}:{}: {}", host, port, e);
                     }
                 }
