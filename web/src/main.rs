@@ -881,6 +881,13 @@ impl ServerInfo {
         self.community
     }
 
+    fn has_donation_address(&self) -> bool {
+        self.extra.get("donation_address")
+            .and_then(|v| v.as_str())
+            .map(|s| !s.trim().is_empty())
+            .unwrap_or(false)
+    }
+
 }
 
 #[derive(Debug)]
@@ -1522,7 +1529,6 @@ async fn network_status(
 
     let hide_community = query_params.hide_community.unwrap_or(false);
     let community_count = servers.iter().filter(|s| s.is_community()).count();
-    let total_count = servers.len();
 
     // Filter servers if hide_community is true
     let filtered_servers = if hide_community {
@@ -1531,6 +1537,7 @@ async fn network_status(
         servers
     };
 
+    let total_count = filtered_servers.len();
     let online_count = filtered_servers.iter().filter(|s| s.is_online()).count();
 
     let template = IndexTemplate {
@@ -1728,11 +1735,11 @@ async fn server_detail(
     // Extract donation_address if it exists
     let donation_opt = data.get("donation_address")
         .and_then(|v| v.as_str());
-    let show_donation = donation_opt.is_some();
     let donation_address = donation_opt.unwrap_or("").to_string();
+    let show_donation = !donation_address.trim().is_empty();
 
     // Generate QR code SVG for donation address
-    let donation_qr_code = if show_donation && !donation_address.is_empty() {
+    let donation_qr_code = if show_donation {
         match QrCode::new(&donation_address) {
             Ok(code) => {
                 code.render()

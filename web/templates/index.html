@@ -17,7 +17,7 @@
             </div>
             <span class="ms-3 text-muted">
                 {% if hide_community %}
-                    Showing {{ total_count - community_count }} servers ({{ community_count }} community servers hidden)
+                    Showing {{ total_count }} servers ({{ community_count }} community servers hidden)
                 {% else %}
                     Showing all {{ total_count }} servers
                 {% endif %}
@@ -46,6 +46,9 @@
                                 <a href="/{{ current_network }}/{{ server.host_with_port() }}">{{ server.host_with_port() }}</a>
                                 {% if server.is_community() %}
                                 <span title="Community server">🏠</span>
+                                {% endif %}
+                                {% if server.has_donation_address() %}
+                                <span title="Accepts donations">💝</span>
                                 {% endif %}
                             </td>
                             <td>
