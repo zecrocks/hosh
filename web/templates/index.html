@@ -41,22 +41,24 @@
                     </thead>
                     <tbody>
                         {% for server in servers %}
-                        <tr {% if server.is_height_behind(percentile_height) %}class="height-behind"{% else if server.is_height_ahead(percentile_height) %}class="height-ahead"{% endif %}>
+                        <tr {% if !server.is_testnet() && server.is_height_behind(percentile_height) %}class="height-behind"{% else if !server.is_testnet() && server.is_height_ahead(percentile_height) %}class="height-ahead"{% endif %}>
                             <td>
                                 <a href="/{{ current_network }}/{{ server.host_with_port() }}">{{ server.host_with_port() }}</a>
                                 {% if server.is_community() %}
-                                <span title="Community server">🏠</span>
+                                <span title="Community server">👥</span>
                                 {% endif %}
                                 {% if server.has_donation_address() %}
-                                <span title="Accepts donations">💝</span>
+                                <span title="Accepts donations">🙏</span>
                                 {% endif %}
                             </td>
                             <td>
                                 {{ server.height }}
-                                {% if server.is_height_behind(percentile_height) %}
-                                <!-- <span class="text-warning" title="Server is behind the majority">⚠️</span> -->
-                                {% else if server.is_height_ahead(percentile_height) %}
+                                {% if !server.is_testnet() && server.is_height_behind(percentile_height) %}
+                                {% else if !server.is_testnet() && server.is_height_ahead(percentile_height) %}
                                 <span class="text-primary" title="Server is ahead of the majority">ℹ️</span>
+                                {% endif %}
+                                {% if server.is_testnet() %}
+                                <br><small class="text-muted">Testnet</small>
                                 {% endif %}
                             </td>
                             <td class="status-{% if server.height > 0 %}online{% else %}offline{% endif %}">

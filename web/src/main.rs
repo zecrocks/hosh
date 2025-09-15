@@ -888,6 +888,13 @@ impl ServerInfo {
             .unwrap_or(false)
     }
 
+    fn is_testnet(&self) -> bool {
+        self.extra.get("chain_name")
+            .and_then(|v| v.as_str())
+            .map(|s| s == "test")
+            .unwrap_or(false)
+    }
+
 }
 
 #[derive(Debug)]
