@@ -949,6 +949,9 @@ struct ApiServerInfo {
     protocol: &'static str,
     ping: Option<f64>,
     online: bool,
+    community: bool,
+    height: u64,
+    uptime_30d: Option<f64>,
 }
 
 #[derive(Serialize)]
@@ -1820,15 +1823,18 @@ async fn network_api(
             lr.status,
             lr.ping_ms as ping,
             lr.response_data,
-            u30.uptime_percentage as uptime_30_day
+            u30.uptime_percentage as uptime_30_day,
+            t.community
         FROM latest_results lr
         LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
+        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
         WHERE lr.rn = 1
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database,
         network.0,
         worker.config.results_window_days,
+        worker.clickhouse.database,
         worker.clickhouse.database
     );
 
@@ -1862,7 +1868,14 @@ async fn network_api(
 
         if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
             if let Some(response_data) = result["response_data"].as_str() {
-                if let Ok(server_info) = serde_json::from_str::<ServerInfo>(response_data) {
+                if let Ok(mut server_info) = serde_json::from_str::<ServerInfo>(response_data) {
+                    // Add the uptime_30_day from the query result
+                    server_info.uptime_30_day = result.get("uptime_30_day")
+                        .and_then(|v| v.as_f64());
+                    // Add the community flag from the query result
+                    server_info.community = result.get("community")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     servers.push(server_info);
                 }
             }
@@ -1884,6 +1897,9 @@ async fn network_api(
                 protocol,
                 ping: server.ping,
                 online: server.is_online(),
+                community: server.community,
+                height: server.height,
+                uptime_30d: server.uptime_30_day.map(|p| (p / 100.0 * 10000.0).round() / 10000.0),
             }
         })
         .collect();
