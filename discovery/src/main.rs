@@ -136,8 +136,6 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zec.bitchat.channel", 8443, true),
     ("zaino.netstable.stream", 443, true),
     ("chmodas.org", 443, true),
-    ("light.myown.party", 9067, true),
-    ("znode.roamerx.win", 9067, true),
     ("lightwallet.netstable.stream", 9067, true),
     ("lwal.podev.name", 443, true),
     ("lwal.podev.name", 9067, true),
