@@ -94,15 +94,15 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zaino.unsafe.zec.rocks", 443, false),
     ("zaino.testnet.unsafe.zec.rocks", 443, false),
     ("zcash.mysideoftheweb.com", 9067, false), // eZcash
-    // Ywallet nodes
-    ("lwd1.zcash-infra.com", 9067, false),
-    ("lwd2.zcash-infra.com", 9067, false),
-    ("lwd3.zcash-infra.com", 9067, false),
-    ("lwd4.zcash-infra.com", 9067, false),
-    ("lwd5.zcash-infra.com", 9067, false),
-    ("lwd6.zcash-infra.com", 9067, false),
-    ("lwd7.zcash-infra.com", 9067, false),
-    ("lwd8.zcash-infra.com", 9067, false),
+    // // Ywallet nodes
+    // ("lwd1.zcash-infra.com", 9067, false),
+    // ("lwd2.zcash-infra.com", 9067, false),
+    // ("lwd3.zcash-infra.com", 9067, false),
+    // ("lwd4.zcash-infra.com", 9067, false),
+    // ("lwd5.zcash-infra.com", 9067, false),
+    // ("lwd6.zcash-infra.com", 9067, false),
+    // ("lwd7.zcash-infra.com", 9067, false),
+    // ("lwd8.zcash-infra.com", 9067, false),
     //// Testnet servers
     ("testnet.zec.rocks", 443, false),
     ("lightwalletd.testnet.electriccoin.co", 9067, false),
