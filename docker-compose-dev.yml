@@ -60,6 +60,18 @@ services:
     environment:
       RUST_LOG: info
 
+  checker-zec-1:
+    build:
+      context: ./checkers/zec
+      dockerfile: dev.Dockerfile
+    image: hosh/checker-zec-dev
+    volumes:
+      - ./checkers/zec:/usr/src/zec
+      - ./checkers/zec/target:/usr/src/zec/target  # Persist build artifacts
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      RUST_LOG: info
+
   checker-btc:
     build:
       context: ./checkers/btc
@@ -71,6 +83,7 @@ services:
       - cargo-cache:/usr/local/cargo/registry
     environment:
       RUST_LOG: info
+
 
   checker-btc-user:
     build:

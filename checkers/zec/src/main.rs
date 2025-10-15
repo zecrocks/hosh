@@ -113,7 +113,9 @@ async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error>> {
     info!("Connecting to lightwalletd server at {}", uri);
     
     let endpoint = Endpoint::from(uri.clone())
-        .tls_config(ClientTlsConfig::new().with_webpki_roots())?;
+        .tls_config(ClientTlsConfig::new().with_webpki_roots())?
+        .connect_timeout(Duration::from_secs(5))   // dial timeout
+        .timeout(Duration::from_secs(15));         // per-RPC client-side timeout
     
     info!("Establishing secure connection...");
     let channel = endpoint.connect().await?;
@@ -121,7 +123,10 @@ async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error>> {
     let mut client = CompactTxStreamerClient::with_origin(channel, uri);
     
     info!("Sending gRPC request for lightwalletd info...");
-    let chain_info = match client.get_lightd_info(Request::new(Empty {})).await {
+    let mut req = Request::new(Empty {});
+    req.set_timeout(Duration::from_secs(10));  // per-call deadline
+    
+    let chain_info = match client.get_lightd_info(req).await {
         Ok(response) => {
             info!("Received successful gRPC response");
             response.into_inner()

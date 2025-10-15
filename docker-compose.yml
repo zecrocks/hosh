@@ -133,7 +133,7 @@ services:
   checker-zec:
     build: checkers/zec
     image: hosh/checker-zec
-    container_name: checker-zec
+    # container_name: checker-zec
     environment:
       - RUST_LOG=warning
       - NATS_HOST=nats
@@ -153,6 +153,31 @@ services:
         condition: service_healthy
       chronicler:
         condition: service_healthy
+
+  checker-zec-1:
+    build: checkers/zec
+    image: hosh/checker-zec
+    # container_name: checker-zec
+    environment:
+      - RUST_LOG=warning
+      - NATS_HOST=nats
+      - NATS_PORT=4222
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "25m"
+        max-file: "5"
+    depends_on:
+      nats:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
+
 
   checker-http:
     build:
