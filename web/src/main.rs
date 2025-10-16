@@ -952,6 +952,8 @@ struct ApiServerInfo {
     community: bool,
     height: u64,
     uptime_30d: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    donation_address: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -1900,6 +1902,10 @@ async fn network_api(
                 community: server.community,
                 height: server.height,
                 uptime_30d: server.uptime_30_day.map(|p| (p / 100.0 * 10000.0).round() / 10000.0),
+                donation_address: server.extra.get("donation_address")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string()),
             }
         })
         .collect();
