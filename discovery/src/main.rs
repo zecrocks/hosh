@@ -118,8 +118,8 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     // ("gnsujqzqaepdmxjq4ixm74kapd7grp3j5selm7nsejz6ctxa3yx4q3yd.onion", 443, false),
     // ("ti64zsaj6w66um42o4nyjtstzg4zryqkph2c45x4bwfqhydxeznrfgad.onion", 443, false),
     //// Community nodes
-    ("zaino.stakehold.rs", 443, true),
-    ("lightwalletd.stakehold.rs", 443, true),
+    // ("zaino.stakehold.rs", 443, true), // disabled for now because it's not responding
+    // ("lightwalletd.stakehold.rs", 443, true), // disabled for now because it's not responding
     ("zeclwnode.mylabtest.vip", 9067, true),
     ("z.arounder.co", 9067, true),
     ("z.arounder.co", 443, true),
