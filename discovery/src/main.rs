@@ -147,6 +147,15 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zecrpc.dpdns.org", 443, true),
     ("carover0.xyz", 9067, true),
     ("lwd.z0n.jp", 443, true),
+    ("ltwallet.netter.top", 9067, true),
+    ("lzec.linked.sarl", 443, true),
+    ("stroopwafel.observer", 9067, true),
+    ("zcw.sererra.link", 9067, true),
+    ("lightzec.dinks.pw", 443, true),
+    ("zzz.stripest.online", 443, true),
+    ("lightapi.justneedto.click", 9067, true),
+    ("zecnode.sarl", 443, true),
+    ("zcash-chainmatter.tailb19703.ts.net", 443, true),
 ];
 
 // Static HTTP block explorer configuration
