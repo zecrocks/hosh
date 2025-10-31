@@ -156,6 +156,12 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("lightapi.justneedto.click", 9067, true),
     ("zecnode.sarl", 443, true),
     ("zcash-chainmatter.tailb19703.ts.net", 443, true),
+    ("zecwal.sandycat.cc", 443, true),
+    ("zec.visionx.bond", 9067, true),
+    ("zc.craftor.website", 9067, true),
+    ("light.tracier.space", 443, true),
+    ("zcash.monster", 443, true),
+    ("lwd.blackyniica", 443, true),
 ];
 
 // Static HTTP block explorer configuration
