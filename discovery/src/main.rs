@@ -161,7 +161,17 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zc.craftor.website", 9067, true),
     ("light.tracier.space", 443, true),
     ("zcash.monster", 443, true),
-    ("lwd.blackyniica", 443, true),
+    ("lwd.blakyniica.xyz", 443, true),
+    ("zazser.magpie-forel.ts.net", 443, true),
+    ("sn-hub.de", 9067, true),
+    ("zec.geeking.cyou", 443, true),
+    ("lwzec.formers.sbs", 443, true),
+    ("z.netgates.xyz", 443, true),
+    ("zprivacy.online", 443, true),
+    ("coral-zec.tail69868c.ts.net", 443, true),
+    ("znode.symptot.quest", 443, true),
+    ("zeclight.renfa.skin", 9067, true),
+    ("zcashrpc.work", 443, true),
 ];
 
 // Static HTTP block explorer configuration
