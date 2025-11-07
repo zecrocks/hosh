@@ -172,6 +172,7 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("znode.symptot.quest", 443, true),
     ("zeclight.renfa.skin", 9067, true),
     ("zcashrpc.work", 443, true),
+    ("yers.dragonfish-mamba.ts.net", 443, true),
 ];
 
 // Static HTTP block explorer configuration
