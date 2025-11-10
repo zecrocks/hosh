@@ -173,6 +173,12 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zeclight.renfa.skin", 9067, true),
     ("zcashrpc.work", 443, true),
     ("yers.dragonfish-mamba.ts.net", 443, true),
+    ("myzec.cryptover.site", 443, true),
+    ("w.optiontec.cfd", 443, true),
+    ("zeclight.lol", 443, true),
+    ("lwd.zcashexplorer.app", 9067, true),
+    ("donatemezecfor.beer", 443, true),
+    ("zc.verson.store", 443, true),
 ];
 
 // Static HTTP block explorer configuration
