@@ -176,9 +176,11 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("myzec.cryptover.site", 443, true),
     ("w.optiontec.cfd", 443, true),
     ("zeclight.lol", 443, true),
-    ("lwd.zcashexplorer.app", 9067, true),
     ("donatemezecfor.beer", 443, true),
     ("zc.verson.store", 443, true),
+    ("lwz.ourwork.shop", 443, true),
+    // this one below has no donation address. Is it community or official?
+    ("lwd.zcashexplorer.app", 9067, true),
 ];
 
 // Static HTTP block explorer configuration
