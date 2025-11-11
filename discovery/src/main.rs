@@ -161,7 +161,26 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zc.craftor.website", 9067, true),
     ("light.tracier.space", 443, true),
     ("zcash.monster", 443, true),
-    ("lwd.blackyniica", 443, true),
+    ("lwd.blakyniica.xyz", 443, true),
+    ("zazser.magpie-forel.ts.net", 443, true),
+    ("sn-hub.de", 9067, true),
+    ("zec.geeking.cyou", 443, true),
+    ("lwzec.formers.sbs", 443, true),
+    ("z.netgates.xyz", 443, true),
+    ("zprivacy.online", 443, true),
+    ("coral-zec.tail69868c.ts.net", 443, true),
+    ("znode.symptot.quest", 443, true),
+    ("zeclight.renfa.skin", 9067, true),
+    ("zcashrpc.work", 443, true),
+    ("yers.dragonfish-mamba.ts.net", 443, true),
+    ("myzec.cryptover.site", 443, true),
+    ("w.optiontec.cfd", 443, true),
+    ("zeclight.lol", 443, true),
+    ("donatemezecfor.beer", 443, true),
+    ("zc.verson.store", 443, true),
+    ("lwz.ourwork.shop", 443, true),
+    // this one below has no donation address. Is it community or official?
+    ("lwd.zcashexplorer.app", 9067, true),
 ];
 
 // Static HTTP block explorer configuration
