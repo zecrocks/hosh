@@ -131,8 +131,7 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zlw.nodemaster.link", 9067, true),
     ("light.myown.party", 443, true),
     ("znode.roamerx.win", 443, true),
-    ("zec.leoninedao.org", 8232, true),
-    ("zec.leoninedao.org", 8137, true),
+    ("zec.leoninedao.org", 443, true),
     ("zec.bitchat.channel", 8443, true),
     ("zaino.netstable.stream", 443, true),
     ("chmodas.org", 443, true),
@@ -179,6 +178,8 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("donatemezecfor.beer", 443, true),
     ("zc.verson.store", 443, true),
     ("lwz.ourwork.shop", 443, true),
+    ("zcash.dontpanic.biz", 9067, true),
+    ("z.networkx.icu", 443, true),
     // this one below has no donation address. Is it community or official?
     ("lwd.zcashexplorer.app", 9067, true),
 ];
