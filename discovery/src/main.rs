@@ -180,8 +180,8 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("lwz.ourwork.shop", 443, true),
     ("zcash.dontpanic.biz", 9067, true),
     ("z.networkx.icu", 443, true),
-    // this one below has no donation address. Is it community or official?
     ("lwd.zcashexplorer.app", 9067, true),
+    ("vmi2886543.tail8e3e39.ts.net", 443, true),
 ];
 
 // Static HTTP block explorer configuration
