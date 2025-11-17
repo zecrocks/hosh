@@ -845,7 +845,14 @@ impl ServerInfo {
 
     fn formatted_uptime_30_day(&self) -> String {
         match self.uptime_30_day {
-            Some(uptime) => format!("{:.1}%", uptime),
+            Some(uptime) => format!("{:.2}%", uptime),
+            None => "-".to_string(),
+        }
+    }
+
+    fn formatted_uptime_since_first_seen_30d(&self) -> String {
+        match self.extra.get("uptime_since_first_seen_30d").and_then(|v| v.as_f64()) {
+            Some(uptime) => format!("{:.2}%", uptime),
             None => "-".to_string(),
         }
     }
@@ -933,6 +940,8 @@ struct UptimeStats {
     last_day: f64,
     last_week: f64,
     last_month: f64,
+    uptime_since_launch: f64,
+    first_seen: String,
     total_checks: u64,
     last_check: String,
     last_online: String,
@@ -940,6 +949,7 @@ struct UptimeStats {
     last_day_formatted: String,
     last_week_formatted: String,
     last_month_formatted: String,
+    uptime_since_launch_formatted: String,
 }
 
 #[derive(Serialize)]
@@ -952,6 +962,10 @@ struct ApiServerInfo {
     community: bool,
     height: u64,
     uptime_30d: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uptime_since_first_seen_30d: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    first_seen: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     lightwallet_server_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1216,14 +1230,35 @@ async fn network_status(
             WHERE r.checker_module = '{}'
             AND r.checked_at >= now() - INTERVAL {} DAY
         ),
+        first_seen_dates AS (
+            SELECT 
+                hostname,
+                JSONExtractString(response_data, 'port') as port,
+                min(checked_at) as first_seen
+            FROM {}.results
+            WHERE checker_module = '{}'
+            AND checked_at >= now() - INTERVAL 30 DAY
+            GROUP BY hostname, port
+        ),
         uptime_30_day AS (
             SELECT 
                 hostname,
                 port,
-                sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+                countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 30 DAY, now()), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port
             WHERE time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
+        ),
+        uptime_since_first_seen AS (
+            SELECT 
+                u.hostname,
+                u.port,
+                countIf(u.online_count > 0) * 100.0 / greatest(least(dateDiff('hour', fs.first_seen, now()), dateDiff('hour', now() - INTERVAL 30 DAY, now())), 1) as uptime_percentage
+            FROM {}.uptime_stats_by_port u
+            INNER JOIN first_seen_dates fs ON u.hostname = fs.hostname AND u.port = fs.port
+            WHERE u.time_bucket >= fs.first_seen
+            AND u.time_bucket >= now() - INTERVAL 30 DAY
+            GROUP BY u.hostname, u.port, fs.first_seen
         )
         SELECT 
             lr.hostname,
@@ -1232,9 +1267,13 @@ async fn network_status(
             lr.ping_ms as ping,
             lr.response_data,
             u30.uptime_percentage as uptime_30_day,
+            ufs.uptime_percentage as uptime_since_first_seen_30d,
+            toString(fs.first_seen) as first_seen,
             t.community
         FROM latest_results lr
         LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
+        LEFT JOIN uptime_since_first_seen ufs ON lr.hostname = ufs.hostname AND JSONExtractString(lr.response_data, 'port') = ufs.port
+        LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
         LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
         WHERE lr.rn = 1
         FORMAT JSONEachRow
@@ -1242,6 +1281,9 @@ async fn network_status(
         worker.clickhouse.database,
         network.0,
         worker.config.results_window_days,
+        worker.clickhouse.database,
+        network.0,
+        worker.clickhouse.database,
         worker.clickhouse.database,
         worker.clickhouse.database
     );
@@ -1358,6 +1400,15 @@ async fn network_status(
                         server_info.community = result.get("community")
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
+                        
+                        // Store the new fields in the extra HashMap for later use
+                        if let Some(uptime_since_first_seen) = result.get("uptime_since_first_seen_30d").and_then(|v| v.as_f64()) {
+                            server_info.extra.insert("uptime_since_first_seen_30d".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(uptime_since_first_seen).unwrap_or(serde_json::Number::from(0))));
+                        }
+                        if let Some(first_seen_str) = result.get("first_seen").and_then(|v| v.as_str()) {
+                            server_info.extra.insert("first_seen".to_string(), serde_json::Value::String(first_seen_str.to_string()));
+                        }
+                        
                         servers.push(server_info);
                     }
                     Err(e) => {
@@ -1814,14 +1865,35 @@ async fn network_api(
             WHERE r.checker_module = '{}'
             AND r.checked_at >= now() - INTERVAL {} DAY
         ),
+        first_seen_dates AS (
+            SELECT 
+                hostname,
+                JSONExtractString(response_data, 'port') as port,
+                min(checked_at) as first_seen
+            FROM {}.results
+            WHERE checker_module = '{}'
+            AND checked_at >= now() - INTERVAL 30 DAY
+            GROUP BY hostname, port
+        ),
         uptime_30_day AS (
             SELECT 
                 hostname,
                 port,
-                sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+                countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 30 DAY, now()), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port
             WHERE time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
+        ),
+        uptime_since_first_seen AS (
+            SELECT 
+                u.hostname,
+                u.port,
+                countIf(u.online_count > 0) * 100.0 / greatest(least(dateDiff('hour', fs.first_seen, now()), dateDiff('hour', now() - INTERVAL 30 DAY, now())), 1) as uptime_percentage
+            FROM {}.uptime_stats_by_port u
+            INNER JOIN first_seen_dates fs ON u.hostname = fs.hostname AND u.port = fs.port
+            WHERE u.time_bucket >= fs.first_seen
+            AND u.time_bucket >= now() - INTERVAL 30 DAY
+            GROUP BY u.hostname, u.port, fs.first_seen
         )
         SELECT 
             lr.hostname,
@@ -1830,9 +1902,13 @@ async fn network_api(
             lr.ping_ms as ping,
             lr.response_data,
             u30.uptime_percentage as uptime_30_day,
+            ufs.uptime_percentage as uptime_since_first_seen_30d,
+            toString(fs.first_seen) as first_seen,
             t.community
         FROM latest_results lr
         LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
+        LEFT JOIN uptime_since_first_seen ufs ON lr.hostname = ufs.hostname AND JSONExtractString(lr.response_data, 'port') = ufs.port
+        LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
         LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
         WHERE lr.rn = 1
         FORMAT JSONEachRow
@@ -1840,6 +1916,9 @@ async fn network_api(
         worker.clickhouse.database,
         network.0,
         worker.config.results_window_days,
+        worker.clickhouse.database,
+        network.0,
+        worker.clickhouse.database,
         worker.clickhouse.database,
         worker.clickhouse.database
     );
@@ -1882,6 +1961,15 @@ async fn network_api(
                     server_info.community = result.get("community")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
+                    
+                    // Store the new fields in the extra HashMap for later use
+                    if let Some(uptime_since_first_seen) = result.get("uptime_since_first_seen_30d").and_then(|v| v.as_f64()) {
+                        server_info.extra.insert("uptime_since_first_seen_30d".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(uptime_since_first_seen).unwrap_or(serde_json::Number::from(0))));
+                    }
+                    if let Some(first_seen_str) = result.get("first_seen").and_then(|v| v.as_str()) {
+                        server_info.extra.insert("first_seen".to_string(), serde_json::Value::String(first_seen_str.to_string()));
+                    }
+                    
                     servers.push(server_info);
                 }
             }
@@ -1906,6 +1994,12 @@ async fn network_api(
                 community: server.community,
                 height: server.height,
                 uptime_30d: server.uptime_30_day.map(|p| p / 100.0),
+                uptime_since_first_seen_30d: server.extra.get("uptime_since_first_seen_30d")
+                    .and_then(|v| v.as_f64())
+                    .map(|p| p / 100.0),
+                first_seen: server.extra.get("first_seen")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string()),
                 lightwallet_server_version: server.server_version.clone(),
                 node_version: match network.0 {
                     "zec" => server.extra.get("zcashd_subversion")
@@ -2535,9 +2629,16 @@ async fn calculate_uptime_stats(
     
     let uptime_query = format!(
         r#"
+        WITH first_seen_date AS (
+            SELECT min(checked_at) as first_seen
+            FROM {}.results
+            WHERE hostname = '{}'
+            {}
+            AND checked_at >= now() - INTERVAL 30 DAY
+        )
         SELECT 
             'day' as period,
-            sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+            countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 1 DAY, now()), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 1 DAY
@@ -2547,7 +2648,7 @@ async fn calculate_uptime_stats(
         
         SELECT 
             'week' as period,
-            sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+            countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 7 DAY, now()), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 7 DAY
@@ -2557,14 +2658,29 @@ async fn calculate_uptime_stats(
         
         SELECT 
             'month' as period,
-            sum(online_count) * 100.0 / sum(total_checks) as uptime_percentage
+            countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 30 DAY, now()), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 30 DAY
         {}
         
+        UNION ALL
+        
+        SELECT 
+            'since_launch' as period,
+            countIf(u.online_count > 0) * 100.0 / greatest(least(dateDiff('hour', fs.first_seen, now()), dateDiff('hour', now() - INTERVAL 30 DAY, now())), 1) as uptime_percentage
+        FROM {}.uptime_stats_by_port u
+        CROSS JOIN first_seen_date fs
+        WHERE u.hostname = '{}'
+        AND u.time_bucket >= fs.first_seen
+        AND u.time_bucket >= now() - INTERVAL 30 DAY
+        {}
+        GROUP BY fs.first_seen
+        
         FORMAT JSONEachRow
         "#,
+        worker.clickhouse.database, host, port_filter.replace("AND port", "AND JSONExtractString(response_data, 'port')"),
+        worker.clickhouse.database, host, port_filter,
         worker.clickhouse.database, host, port_filter,
         worker.clickhouse.database, host, port_filter,
         worker.clickhouse.database, host, port_filter
@@ -2596,6 +2712,7 @@ async fn calculate_uptime_stats(
     let mut last_day = 0.0;
     let mut last_week = 0.0;
     let mut last_month = 0.0;
+    let mut uptime_since_launch = 0.0;
 
     for line in body.lines() {
         if line.trim().is_empty() {
@@ -2611,13 +2728,14 @@ async fn calculate_uptime_stats(
                     "day" => last_day = uptime,
                     "week" => last_week = uptime,
                     "month" => last_month = uptime,
+                    "since_launch" => uptime_since_launch = uptime,
                     _ => {}
                 }
             }
         }
     }
 
-    // Get total checks, last check time, last online time, and current status
+    // Get total checks, last check time, last online time, first_seen, and current status
     let port_filter = if let Some(port_num) = port {
         format!("AND JSONExtractString(response_data, 'port') = '{}'", port_num)
     } else {
@@ -2638,6 +2756,7 @@ async fn calculate_uptime_stats(
             count(*) as total_checks,
             max(checked_at) as last_check,
             max(CASE WHEN status = 'online' THEN checked_at END) as last_online,
+            min(checked_at) as first_seen,
             (SELECT status FROM latest_check) as current_status
         FROM {}.results
         WHERE hostname = '{}'
@@ -2700,6 +2819,7 @@ async fn calculate_uptime_stats(
     let mut total_checks = 0u64;
     let mut last_check = String::new();
     let mut last_online = String::new();
+    let mut first_seen = String::new();
     let mut is_currently_online = false;
 
     for line in stats_body.lines() {
@@ -2729,6 +2849,11 @@ async fn calculate_uptime_stats(
                 last_online = String::new();
             }
             
+            // Handle first_seen
+            if let Some(seen_time) = result["first_seen"].as_str() {
+                first_seen = seen_time.to_string();
+            }
+            
             if let Some(current_status) = result["current_status"].as_str() {
                 is_currently_online = current_status == "online";
             }
@@ -2741,17 +2866,93 @@ async fn calculate_uptime_stats(
         }
     }
 
+    // Format timestamps for better display (remove milliseconds and add relative time)
+    let format_timestamp = |timestamp: &str| -> (String, String) {
+        if timestamp.is_empty() {
+            return (String::new(), String::new());
+        }
+        
+        // Parse the timestamp
+        let parsed_time = if let Ok(time) = DateTime::parse_from_rfc3339(timestamp) {
+            Some(time)
+        } else if let Some(time) = parse_rfc3339_with_nanos(timestamp) {
+            Some(time)
+        } else {
+            None
+        };
+        
+        if let Some(time) = parsed_time {
+            // Format without milliseconds
+            let formatted = time.format("%Y-%m-%d %H:%M:%S").to_string();
+            
+            // Calculate relative time
+            let now = Utc::now().with_timezone(time.offset());
+            let duration = now.signed_duration_since(time);
+            let total_seconds = duration.num_seconds();
+            
+            let relative = if total_seconds < 0 {
+                "just now".to_string()
+            } else if total_seconds < 60 {
+                format!("{}s ago", total_seconds)
+            } else if total_seconds < 3600 {
+                let minutes = total_seconds / 60;
+                let seconds = total_seconds % 60;
+                format!("{}m {}s ago", minutes, seconds)
+            } else if total_seconds < 86400 {
+                let hours = total_seconds / 3600;
+                let mins = (total_seconds % 3600) / 60;
+                format!("{}h {}m ago", hours, mins)
+            } else {
+                let days = total_seconds / 86400;
+                let hrs = (total_seconds % 86400) / 3600;
+                format!("{}d {}h ago", days, hrs)
+            };
+            
+            (formatted, relative)
+        } else {
+            (timestamp.to_string(), String::new())
+        }
+    };
+    
+    let (last_check_formatted, last_check_relative) = format_timestamp(&last_check);
+    let (last_online_formatted, last_online_relative) = format_timestamp(&last_online);
+    let (first_seen_formatted, first_seen_relative) = format_timestamp(&first_seen);
+    
+    // Combine formatted timestamp with relative time
+    let last_check_display = if !last_check_relative.is_empty() {
+        format!("{} ({})", last_check_formatted, last_check_relative)
+    } else {
+        last_check_formatted
+    };
+    
+    let last_online_display = if !last_online_relative.is_empty() {
+        format!("{} ({})", last_online_formatted, last_online_relative)
+    } else {
+        last_online_formatted
+    };
+    
+    let first_seen_display = if !first_seen_relative.is_empty() {
+        format!("{} ({})", first_seen_formatted, first_seen_relative)
+    } else if !first_seen.is_empty() {
+        first_seen_formatted
+    } else {
+        String::new()
+    };
+
     Ok(UptimeStats {
         last_day,
         last_week,
         last_month,
+        uptime_since_launch,
+        first_seen: first_seen_display,
         total_checks,
-        last_check,
-        last_online,
+        last_check: last_check_display,
+        last_online: last_online_display,
         is_currently_online,
-        last_day_formatted: format!("{:.1}%", last_day),
-        last_week_formatted: format!("{:.1}%", last_week),
-        last_month_formatted: format!("{:.1}%", last_month),
+        last_day_formatted: format!("{:.5}%", last_day),
+        last_week_formatted: format!("{:.5}%", last_week),
+        last_month_formatted: format!("{:.5}%", last_month),
+        uptime_since_launch_formatted: format!("{:.5}%", uptime_since_launch),
     })
 }
 

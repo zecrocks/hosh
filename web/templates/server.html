@@ -33,11 +33,29 @@
             </div>
             <div class="col-md-3">
                 <div class="text-center">
-                    <h4 class="text-secondary">{{ uptime_stats.total_checks }}</h4>
-                    <small class="text-muted">Total Checks ({{ results_window_days }} days)</small>
+                    <h4 class="text-warning">{{ uptime_stats.uptime_since_launch_formatted }}</h4>
+                    <small class="text-muted">Uptime since first seen</small>
                 </div>
             </div>
         </div>
+        <div class="row mt-3">
+            <div class="col-md-12">
+                <div class="text-center">
+                    <small class="text-muted">Total Checks: {{ uptime_stats.total_checks }} ({{ results_window_days }} days)</small>
+                </div>
+            </div>
+        </div>
+        {% if uptime_stats.first_seen != "" %}
+        <div class="row mt-3">
+            <div class="col-12">
+                <div class="text-center">
+                    <small class="text-muted">
+                        <strong>First Seen:</strong> {{ uptime_stats.first_seen }}
+                    </small>
+                </div>
+            </div>
+        </div>
+        {% endif %}
         <div class="row mt-3">
             <div class="col-12">
                 <small class="text-muted">
