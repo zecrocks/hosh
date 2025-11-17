@@ -953,6 +953,10 @@ struct ApiServerInfo {
     height: u64,
     uptime_30d: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    lightwallet_server_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    node_version: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     donation_address: Option<String>,
 }
 
@@ -1901,7 +1905,15 @@ async fn network_api(
                 online: server.is_online(),
                 community: server.community,
                 height: server.height,
-                uptime_30d: server.uptime_30_day.map(|p| (p / 100.0 * 10000.0).round() / 10000.0),
+                uptime_30d: server.uptime_30_day.map(|p| p / 100.0),
+                lightwallet_server_version: server.server_version.clone(),
+                node_version: match network.0 {
+                    "zec" => server.extra.get("zcashd_subversion")
+                        .and_then(|v| v.as_str())
+                        .map(|s| s.replace('/', "")),
+                    "btc" => server.server_version.clone(),
+                    _ => None,
+                },
                 donation_address: server.extra.get("donation_address")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.trim().is_empty())
