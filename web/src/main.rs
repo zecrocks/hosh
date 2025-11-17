@@ -943,6 +943,8 @@ struct UptimeStats {
     uptime_since_launch: f64,
     first_seen: String,
     total_checks: u64,
+    checks_succeeded: u64,
+    checks_failed: u64,
     last_check: String,
     last_online: String,
     is_currently_online: bool,
@@ -1237,14 +1239,13 @@ async fn network_status(
                 min(checked_at) as first_seen
             FROM {}.results
             WHERE checker_module = '{}'
-            AND checked_at >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
         ),
         uptime_30_day AS (
             SELECT 
                 hostname,
                 port,
-                countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 30 DAY, now()), 1) as uptime_percentage
+                sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port
             WHERE time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
@@ -1253,7 +1254,7 @@ async fn network_status(
             SELECT 
                 u.hostname,
                 u.port,
-                countIf(u.online_count > 0) * 100.0 / greatest(least(dateDiff('hour', fs.first_seen, now()), dateDiff('hour', now() - INTERVAL 30 DAY, now())), 1) as uptime_percentage
+                sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port u
             INNER JOIN first_seen_dates fs ON u.hostname = fs.hostname AND u.port = fs.port
             WHERE u.time_bucket >= fs.first_seen
@@ -1872,14 +1873,13 @@ async fn network_api(
                 min(checked_at) as first_seen
             FROM {}.results
             WHERE checker_module = '{}'
-            AND checked_at >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
         ),
         uptime_30_day AS (
             SELECT 
                 hostname,
                 port,
-                countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 30 DAY, now()), 1) as uptime_percentage
+                sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port
             WHERE time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
@@ -1888,7 +1888,7 @@ async fn network_api(
             SELECT 
                 u.hostname,
                 u.port,
-                countIf(u.online_count > 0) * 100.0 / greatest(least(dateDiff('hour', fs.first_seen, now()), dateDiff('hour', now() - INTERVAL 30 DAY, now())), 1) as uptime_percentage
+                sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port u
             INNER JOIN first_seen_dates fs ON u.hostname = fs.hostname AND u.port = fs.port
             WHERE u.time_bucket >= fs.first_seen
@@ -2634,11 +2634,10 @@ async fn calculate_uptime_stats(
             FROM {}.results
             WHERE hostname = '{}'
             {}
-            AND checked_at >= now() - INTERVAL 30 DAY
         )
         SELECT 
             'day' as period,
-            countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 1 DAY, now()), 1) as uptime_percentage
+            sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 1 DAY
@@ -2648,7 +2647,7 @@ async fn calculate_uptime_stats(
         
         SELECT 
             'week' as period,
-            countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 7 DAY, now()), 1) as uptime_percentage
+            sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 7 DAY
@@ -2658,7 +2657,7 @@ async fn calculate_uptime_stats(
         
         SELECT 
             'month' as period,
-            countIf(online_count > 0) * 100.0 / greatest(dateDiff('hour', now() - INTERVAL 30 DAY, now()), 1) as uptime_percentage
+            sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 30 DAY
@@ -2668,12 +2667,11 @@ async fn calculate_uptime_stats(
         
         SELECT 
             'since_launch' as period,
-            countIf(u.online_count > 0) * 100.0 / greatest(least(dateDiff('hour', fs.first_seen, now()), dateDiff('hour', now() - INTERVAL 30 DAY, now())), 1) as uptime_percentage
+            sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port u
         CROSS JOIN first_seen_date fs
         WHERE u.hostname = '{}'
         AND u.time_bucket >= fs.first_seen
-        AND u.time_bucket >= now() - INTERVAL 30 DAY
         {}
         GROUP BY fs.first_seen
         
@@ -2751,20 +2749,30 @@ async fn calculate_uptime_stats(
             {}
             ORDER BY checked_at DESC
             LIMIT 1
+        ),
+        first_seen_ever AS (
+            SELECT min(checked_at) as first_seen
+            FROM {}.results
+            WHERE hostname = '{}'
+            {}
         )
         SELECT 
             count(*) as total_checks,
+            countIf(status = 'online') as checks_succeeded,
+            countIf(status != 'online') as checks_failed,
             max(checked_at) as last_check,
             max(CASE WHEN status = 'online' THEN checked_at END) as last_online,
-            min(checked_at) as first_seen,
+            (SELECT first_seen FROM first_seen_ever) as first_seen,
             (SELECT status FROM latest_check) as current_status
         FROM {}.results
         WHERE hostname = '{}'
-        AND checked_at >= now() - INTERVAL {} DAY
+        AND checked_at >= now() - INTERVAL 30 DAY
         {}
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database, host, port_filter, worker.clickhouse.database, host, worker.config.results_window_days, port_filter
+        worker.clickhouse.database, host, port_filter, 
+        worker.clickhouse.database, host, port_filter,
+        worker.clickhouse.database, host, port_filter
     );
 
     // info!("🔍 Stats query for host {}: {}", host, stats_query.replace("\n", " "));
@@ -2817,6 +2825,8 @@ async fn calculate_uptime_stats(
     })?;
 
     let mut total_checks = 0u64;
+    let mut checks_succeeded = 0u64;
+    let mut checks_failed = 0u64;
     let mut last_check = String::new();
     let mut last_online = String::new();
     let mut first_seen = String::new();
@@ -2834,6 +2844,24 @@ async fn calculate_uptime_stats(
             } else if let Some(checks_str) = result["total_checks"].as_str() {
                 if let Ok(checks) = checks_str.parse::<u64>() {
                     total_checks = checks;
+                }
+            }
+            
+            // Handle checks_succeeded
+            if let Some(succeeded) = result["checks_succeeded"].as_u64() {
+                checks_succeeded = succeeded;
+            } else if let Some(succeeded_str) = result["checks_succeeded"].as_str() {
+                if let Ok(succeeded) = succeeded_str.parse::<u64>() {
+                    checks_succeeded = succeeded;
+                }
+            }
+            
+            // Handle checks_failed
+            if let Some(failed) = result["checks_failed"].as_u64() {
+                checks_failed = failed;
+            } else if let Some(failed_str) = result["checks_failed"].as_str() {
+                if let Ok(failed) = failed_str.parse::<u64>() {
+                    checks_failed = failed;
                 }
             }
             
@@ -2946,6 +2974,8 @@ async fn calculate_uptime_stats(
         uptime_since_launch,
         first_seen: first_seen_display,
         total_checks,
+        checks_succeeded,
+        checks_failed,
         last_check: last_check_display,
         last_online: last_online_display,
         is_currently_online,
