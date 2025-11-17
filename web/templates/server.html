@@ -48,11 +48,9 @@
         {% if uptime_stats.first_seen != "" %}
         <div class="row mt-3">
             <div class="col-12">
-                <div class="text-center">
-                    <small class="text-muted">
-                        <strong>First Seen:</strong> {{ uptime_stats.first_seen }}
-                    </small>
-                </div>
+                <small class="text-muted">
+                    <strong>First Seen:</strong> {{ uptime_stats.first_seen }}
+                </small>
             </div>
         </div>
         {% endif %}

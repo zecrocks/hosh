@@ -1241,16 +1241,20 @@ async fn network_status(
             WHERE checker_module = '{}'
             GROUP BY hostname, port
         ),
-        monitoring_hours AS (
-            SELECT count(DISTINCT time_bucket) as total_monitored_hours
-            FROM {}.uptime_stats_by_port
-            WHERE time_bucket >= now() - INTERVAL 30 DAY
+        max_checks AS (
+            SELECT MAX(sum_checks) as max_total_checks
+            FROM (
+                SELECT sum(total_checks) as sum_checks
+                FROM {}.uptime_stats_by_port
+                WHERE time_bucket >= now() - INTERVAL 30 DAY
+                GROUP BY hostname, port
+            )
         ),
         uptime_30_day AS (
             SELECT 
                 hostname,
                 port,
-                countIf(online_count > 0) * 100.0 / greatest((SELECT total_monitored_hours FROM monitoring_hours), 1) as uptime_percentage
+                sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port
             WHERE time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
@@ -1880,16 +1884,20 @@ async fn network_api(
             WHERE checker_module = '{}'
             GROUP BY hostname, port
         ),
-        monitoring_hours AS (
-            SELECT count(DISTINCT time_bucket) as total_monitored_hours
-            FROM {}.uptime_stats_by_port
-            WHERE time_bucket >= now() - INTERVAL 30 DAY
+        max_checks AS (
+            SELECT MAX(sum_checks) as max_total_checks
+            FROM (
+                SELECT sum(total_checks) as sum_checks
+                FROM {}.uptime_stats_by_port
+                WHERE time_bucket >= now() - INTERVAL 30 DAY
+                GROUP BY hostname, port
+            )
         ),
         uptime_30_day AS (
             SELECT 
                 hostname,
                 port,
-                countIf(online_count > 0) * 100.0 / greatest((SELECT total_monitored_hours FROM monitoring_hours), 1) as uptime_percentage
+                sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port
             WHERE time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
