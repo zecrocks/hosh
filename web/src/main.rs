@@ -850,12 +850,6 @@ impl ServerInfo {
         }
     }
 
-    fn formatted_uptime_since_first_seen_30d(&self) -> String {
-        match self.extra.get("uptime_since_first_seen_30d").and_then(|v| v.as_f64()) {
-            Some(uptime) => format!("{:.2}%", uptime),
-            None => "-".to_string(),
-        }
-    }
 
     fn formatted_version(&self) -> String {
         let lwd_version = self.server_version.as_deref().unwrap_or("-");
@@ -964,8 +958,6 @@ struct ApiServerInfo {
     community: bool,
     height: u64,
     uptime_30d: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    uptime_since_first_seen_30d: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     first_seen: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1222,81 +1214,126 @@ async fn network_status(
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
 
     // Update query to handle empty results and use FORMAT JSONEachRow, including 30-day uptime and community flag
-    let query = format!(
-        r#"
-        WITH latest_results AS (
-            SELECT 
-                r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
-            FROM {}.results r
-            WHERE r.checker_module = '{}'
-            AND r.checked_at >= now() - INTERVAL {} DAY
-        ),
-        first_seen_dates AS (
-            SELECT 
-                hostname,
-                JSONExtractString(response_data, 'port') as port,
-                min(checked_at) as first_seen
-            FROM {}.results
-            WHERE checker_module = '{}'
-            GROUP BY hostname, port
-        ),
-        max_checks AS (
-            SELECT MAX(sum_checks) as max_total_checks
-            FROM (
-                SELECT sum(total_checks) as sum_checks
+    // For ZEC, use max-check-based calculation. For other networks, use simple check-based calculation.
+    let query = if network.0 == "zec" {
+        // ZEC: Max-check-based (calendar uptime)
+        format!(
+            r#"
+            WITH latest_results AS (
+                SELECT 
+                    r.*,
+                    ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
+                FROM {}.results r
+                WHERE r.checker_module = '{}'
+                AND r.checked_at >= now() - INTERVAL {} DAY
+            ),
+            first_seen_dates AS (
+                SELECT 
+                    hostname,
+                    JSONExtractString(response_data, 'port') as port,
+                    min(checked_at) as first_seen
+                FROM {}.results
+                WHERE checker_module = '{}'
+                GROUP BY hostname, port
+            ),
+            max_checks AS (
+                SELECT MAX(sum_checks) as max_total_checks
+                FROM (
+                    SELECT sum(total_checks) as sum_checks
+                    FROM {}.uptime_stats_by_port
+                    WHERE time_bucket >= now() - INTERVAL 30 DAY
+                    GROUP BY hostname, port
+                )
+            ),
+            uptime_30_day AS (
+                SELECT 
+                    hostname,
+                    port,
+                    sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks), 1) as uptime_percentage
                 FROM {}.uptime_stats_by_port
                 WHERE time_bucket >= now() - INTERVAL 30 DAY
                 GROUP BY hostname, port
             )
-        ),
-        uptime_30_day AS (
             SELECT 
-                hostname,
-                port,
-                sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks), 1) as uptime_percentage
-            FROM {}.uptime_stats_by_port
-            WHERE time_bucket >= now() - INTERVAL 30 DAY
-            GROUP BY hostname, port
-        ),
-        uptime_since_first_seen AS (
-            SELECT 
-                u.hostname,
-                u.port,
-                sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1) as uptime_percentage
-            FROM {}.uptime_stats_by_port u
-            INNER JOIN first_seen_dates fs ON u.hostname = fs.hostname AND u.port = fs.port
-            WHERE u.time_bucket >= fs.first_seen
-            GROUP BY u.hostname, u.port, fs.first_seen
+                lr.hostname,
+                lr.checked_at,
+                lr.status,
+                lr.ping_ms as ping,
+                lr.response_data,
+                u30.uptime_percentage as uptime_30_day,
+                toString(fs.first_seen) as first_seen,
+                t.community
+            FROM latest_results lr
+            LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
+            LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
+            LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
+            WHERE lr.rn = 1
+            FORMAT JSONEachRow
+            "#,
+            worker.clickhouse.database,
+            network.0,
+            worker.config.results_window_days,
+            worker.clickhouse.database,
+            network.0,
+            worker.clickhouse.database,
+            worker.clickhouse.database,
+            worker.clickhouse.database
         )
-        SELECT 
-            lr.hostname,
-            lr.checked_at,
-            lr.status,
-            lr.ping_ms as ping,
-            lr.response_data,
-            u30.uptime_percentage as uptime_30_day,
-            ufs.uptime_percentage as uptime_since_first_seen_30d,
-            toString(fs.first_seen) as first_seen,
-            t.community
-        FROM latest_results lr
-        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
-        LEFT JOIN uptime_since_first_seen ufs ON lr.hostname = ufs.hostname AND JSONExtractString(lr.response_data, 'port') = ufs.port
-        LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
-        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
-        WHERE lr.rn = 1
-        FORMAT JSONEachRow
-        "#,
-        worker.clickhouse.database,
-        network.0,
-        worker.config.results_window_days,
-        worker.clickhouse.database,
-        network.0,
-        worker.clickhouse.database,
-        worker.clickhouse.database,
-        worker.clickhouse.database,
-        worker.clickhouse.database
-    );
+    } else {
+        // BTC and others: Simple check-based calculation
+        format!(
+            r#"
+            WITH latest_results AS (
+                SELECT 
+                    r.*,
+                    ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
+                FROM {}.results r
+                WHERE r.checker_module = '{}'
+                AND r.checked_at >= now() - INTERVAL {} DAY
+            ),
+            first_seen_dates AS (
+                SELECT 
+                    hostname,
+                    JSONExtractString(response_data, 'port') as port,
+                    min(checked_at) as first_seen
+                FROM {}.results
+                WHERE checker_module = '{}'
+                GROUP BY hostname, port
+            ),
+            uptime_30_day AS (
+                SELECT 
+                    hostname,
+                    port,
+                    sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
+                FROM {}.uptime_stats_by_port
+                WHERE time_bucket >= now() - INTERVAL 30 DAY
+                GROUP BY hostname, port
+            )
+            SELECT 
+                lr.hostname,
+                lr.checked_at,
+                lr.status,
+                lr.ping_ms as ping,
+                lr.response_data,
+                u30.uptime_percentage as uptime_30_day,
+                toString(fs.first_seen) as first_seen,
+                t.community
+            FROM latest_results lr
+            LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
+            LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
+            LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
+            WHERE lr.rn = 1
+            FORMAT JSONEachRow
+            "#,
+            worker.clickhouse.database,
+            network.0,
+            worker.config.results_window_days,
+            worker.clickhouse.database,
+            network.0,
+            worker.clickhouse.database,
+            worker.clickhouse.database
+        )
+    };
 
     info!(
         "Executing ClickHouse query for network {} with window of {} days", 
@@ -1411,10 +1448,7 @@ async fn network_status(
                             .and_then(|v| v.as_bool())
                             .unwrap_or(false);
                         
-                        // Store the new fields in the extra HashMap for later use
-                        if let Some(uptime_since_first_seen) = result.get("uptime_since_first_seen_30d").and_then(|v| v.as_f64()) {
-                            server_info.extra.insert("uptime_since_first_seen_30d".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(uptime_since_first_seen).unwrap_or(serde_json::Number::from(0))));
-                        }
+                        // Store the first_seen field in the extra HashMap for later use
                         if let Some(first_seen_str) = result.get("first_seen").and_then(|v| v.as_str()) {
                             server_info.extra.insert("first_seen".to_string(), serde_json::Value::String(first_seen_str.to_string()));
                         }
@@ -1865,81 +1899,126 @@ async fn network_api(
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
     
     // Query the results table to get all servers for the network
-    let query = format!(
-        r#"
-        WITH latest_results AS (
-            SELECT 
-                r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
-            FROM {}.results r
-            WHERE r.checker_module = '{}'
-            AND r.checked_at >= now() - INTERVAL {} DAY
-        ),
-        first_seen_dates AS (
-            SELECT 
-                hostname,
-                JSONExtractString(response_data, 'port') as port,
-                min(checked_at) as first_seen
-            FROM {}.results
-            WHERE checker_module = '{}'
-            GROUP BY hostname, port
-        ),
-        max_checks AS (
-            SELECT MAX(sum_checks) as max_total_checks
-            FROM (
-                SELECT sum(total_checks) as sum_checks
+    // For ZEC, use max-check-based calculation. For other networks, use simple check-based calculation.
+    let query = if network.0 == "zec" {
+        // ZEC: Max-check-based (calendar uptime)
+        format!(
+            r#"
+            WITH latest_results AS (
+                SELECT 
+                    r.*,
+                    ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
+                FROM {}.results r
+                WHERE r.checker_module = '{}'
+                AND r.checked_at >= now() - INTERVAL {} DAY
+            ),
+            first_seen_dates AS (
+                SELECT 
+                    hostname,
+                    JSONExtractString(response_data, 'port') as port,
+                    min(checked_at) as first_seen
+                FROM {}.results
+                WHERE checker_module = '{}'
+                GROUP BY hostname, port
+            ),
+            max_checks AS (
+                SELECT MAX(sum_checks) as max_total_checks
+                FROM (
+                    SELECT sum(total_checks) as sum_checks
+                    FROM {}.uptime_stats_by_port
+                    WHERE time_bucket >= now() - INTERVAL 30 DAY
+                    GROUP BY hostname, port
+                )
+            ),
+            uptime_30_day AS (
+                SELECT 
+                    hostname,
+                    port,
+                    sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks), 1) as uptime_percentage
                 FROM {}.uptime_stats_by_port
                 WHERE time_bucket >= now() - INTERVAL 30 DAY
                 GROUP BY hostname, port
             )
-        ),
-        uptime_30_day AS (
             SELECT 
-                hostname,
-                port,
-                sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks), 1) as uptime_percentage
-            FROM {}.uptime_stats_by_port
-            WHERE time_bucket >= now() - INTERVAL 30 DAY
-            GROUP BY hostname, port
-        ),
-        uptime_since_first_seen AS (
-            SELECT 
-                u.hostname,
-                u.port,
-                sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1) as uptime_percentage
-            FROM {}.uptime_stats_by_port u
-            INNER JOIN first_seen_dates fs ON u.hostname = fs.hostname AND u.port = fs.port
-            WHERE u.time_bucket >= fs.first_seen
-            GROUP BY u.hostname, u.port, fs.first_seen
+                lr.hostname,
+                lr.checked_at,
+                lr.status,
+                lr.ping_ms as ping,
+                lr.response_data,
+                u30.uptime_percentage as uptime_30_day,
+                toString(fs.first_seen) as first_seen,
+                t.community
+            FROM latest_results lr
+            LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
+            LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
+            LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
+            WHERE lr.rn = 1
+            FORMAT JSONEachRow
+            "#,
+            worker.clickhouse.database,
+            network.0,
+            worker.config.results_window_days,
+            worker.clickhouse.database,
+            network.0,
+            worker.clickhouse.database,
+            worker.clickhouse.database,
+            worker.clickhouse.database
         )
-        SELECT 
-            lr.hostname,
-            lr.checked_at,
-            lr.status,
-            lr.ping_ms as ping,
-            lr.response_data,
-            u30.uptime_percentage as uptime_30_day,
-            ufs.uptime_percentage as uptime_since_first_seen_30d,
-            toString(fs.first_seen) as first_seen,
-            t.community
-        FROM latest_results lr
-        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
-        LEFT JOIN uptime_since_first_seen ufs ON lr.hostname = ufs.hostname AND JSONExtractString(lr.response_data, 'port') = ufs.port
-        LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
-        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
-        WHERE lr.rn = 1
-        FORMAT JSONEachRow
-        "#,
-        worker.clickhouse.database,
-        network.0,
-        worker.config.results_window_days,
-        worker.clickhouse.database,
-        network.0,
-        worker.clickhouse.database,
-        worker.clickhouse.database,
-        worker.clickhouse.database,
-        worker.clickhouse.database
-    );
+    } else {
+        // BTC and others: Simple check-based calculation
+        format!(
+            r#"
+            WITH latest_results AS (
+                SELECT 
+                    r.*,
+                    ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
+                FROM {}.results r
+                WHERE r.checker_module = '{}'
+                AND r.checked_at >= now() - INTERVAL {} DAY
+            ),
+            first_seen_dates AS (
+                SELECT 
+                    hostname,
+                    JSONExtractString(response_data, 'port') as port,
+                    min(checked_at) as first_seen
+                FROM {}.results
+                WHERE checker_module = '{}'
+                GROUP BY hostname, port
+            ),
+            uptime_30_day AS (
+                SELECT 
+                    hostname,
+                    port,
+                    sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
+                FROM {}.uptime_stats_by_port
+                WHERE time_bucket >= now() - INTERVAL 30 DAY
+                GROUP BY hostname, port
+            )
+            SELECT 
+                lr.hostname,
+                lr.checked_at,
+                lr.status,
+                lr.ping_ms as ping,
+                lr.response_data,
+                u30.uptime_percentage as uptime_30_day,
+                toString(fs.first_seen) as first_seen,
+                t.community
+            FROM latest_results lr
+            LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
+            LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
+            LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
+            WHERE lr.rn = 1
+            FORMAT JSONEachRow
+            "#,
+            worker.clickhouse.database,
+            network.0,
+            worker.config.results_window_days,
+            worker.clickhouse.database,
+            network.0,
+            worker.clickhouse.database,
+            worker.clickhouse.database
+        )
+    };
 
     let response = worker.http_client.post(&worker.clickhouse.url)
         .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
@@ -1980,10 +2059,7 @@ async fn network_api(
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
                     
-                    // Store the new fields in the extra HashMap for later use
-                    if let Some(uptime_since_first_seen) = result.get("uptime_since_first_seen_30d").and_then(|v| v.as_f64()) {
-                        server_info.extra.insert("uptime_since_first_seen_30d".to_string(), serde_json::Value::Number(serde_json::Number::from_f64(uptime_since_first_seen).unwrap_or(serde_json::Number::from(0))));
-                    }
+                    // Store the first_seen field in the extra HashMap for later use
                     if let Some(first_seen_str) = result.get("first_seen").and_then(|v| v.as_str()) {
                         server_info.extra.insert("first_seen".to_string(), serde_json::Value::String(first_seen_str.to_string()));
                     }
@@ -2012,9 +2088,6 @@ async fn network_api(
                 community: server.community,
                 height: server.height,
                 uptime_30d: server.uptime_30_day.map(|p| p / 100.0),
-                uptime_since_first_seen_30d: server.extra.get("uptime_since_first_seen_30d")
-                    .and_then(|v| v.as_f64())
-                    .map(|p| p / 100.0),
                 first_seen: server.extra.get("first_seen")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string()),
@@ -2652,10 +2725,37 @@ async fn calculate_uptime_stats(
             FROM {}.results
             WHERE hostname = '{}'
             {}
+        ),
+        max_checks_day AS (
+            SELECT MAX(sum_checks) as max_total_checks
+            FROM (
+                SELECT sum(total_checks) as sum_checks
+                FROM {}.uptime_stats_by_port
+                WHERE time_bucket >= now() - INTERVAL 1 DAY
+                GROUP BY hostname, port
+            )
+        ),
+        max_checks_week AS (
+            SELECT MAX(sum_checks) as max_total_checks
+            FROM (
+                SELECT sum(total_checks) as sum_checks
+                FROM {}.uptime_stats_by_port
+                WHERE time_bucket >= now() - INTERVAL 7 DAY
+                GROUP BY hostname, port
+            )
+        ),
+        max_checks_month AS (
+            SELECT MAX(sum_checks) as max_total_checks
+            FROM (
+                SELECT sum(total_checks) as sum_checks
+                FROM {}.uptime_stats_by_port
+                WHERE time_bucket >= now() - INTERVAL 30 DAY
+                GROUP BY hostname, port
+            )
         )
         SELECT 
             'day' as period,
-            sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
+            sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks_day), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 1 DAY
@@ -2665,7 +2765,7 @@ async fn calculate_uptime_stats(
         
         SELECT 
             'week' as period,
-            sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
+            sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks_week), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 7 DAY
@@ -2675,7 +2775,7 @@ async fn calculate_uptime_stats(
         
         SELECT 
             'month' as period,
-            sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
+            sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks_month), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 30 DAY
@@ -2696,6 +2796,9 @@ async fn calculate_uptime_stats(
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database, host, port_filter.replace("AND port", "AND JSONExtractString(response_data, 'port')"),
+        worker.clickhouse.database,
+        worker.clickhouse.database,
+        worker.clickhouse.database,
         worker.clickhouse.database, host, port_filter,
         worker.clickhouse.database, host, port_filter,
         worker.clickhouse.database, host, port_filter,

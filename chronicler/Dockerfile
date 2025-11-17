@@ -1,4 +1,4 @@
-FROM clickhouse/clickhouse-server:25.1
+FROM clickhouse/clickhouse-server:25.1-alpine
 
 # Copy migrations to a directory in the container
 COPY migrations/ /docker-entrypoint-initdb.d/migrations/

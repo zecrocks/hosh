@@ -45,15 +45,6 @@
                 </div>
             </div>
         </div>
-        {% if uptime_stats.first_seen != "" %}
-        <div class="row mt-3">
-            <div class="col-12">
-                <small class="text-muted">
-                    <strong>First Seen:</strong> {{ uptime_stats.first_seen }}
-                </small>
-            </div>
-        </div>
-        {% endif %}
         <div class="row mt-3">
             <div class="col-12">
                 <small class="text-muted">
@@ -67,6 +58,15 @@
                         {% else %}
                             <strong>Last Online:</strong> <span class="text-warning">Never</span>
                         {% endif %}
+                    {% endif %}
+                </small>
+            </div>
+        </div>
+        <div class="row mt-2">
+            <div class="col-12">
+                <small class="text-muted">
+                    {% if uptime_stats.first_seen != "" %}
+                        <strong>First Seen:</strong> {{ uptime_stats.first_seen }}
                     {% endif %}
                 </small>
             </div>
