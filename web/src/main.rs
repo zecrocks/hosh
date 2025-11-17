@@ -1241,11 +1241,16 @@ async fn network_status(
             WHERE checker_module = '{}'
             GROUP BY hostname, port
         ),
+        monitoring_hours AS (
+            SELECT count(DISTINCT time_bucket) as total_monitored_hours
+            FROM {}.uptime_stats_by_port
+            WHERE time_bucket >= now() - INTERVAL 30 DAY
+        ),
         uptime_30_day AS (
             SELECT 
                 hostname,
                 port,
-                sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
+                countIf(online_count > 0) * 100.0 / greatest((SELECT total_monitored_hours FROM monitoring_hours), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port
             WHERE time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
@@ -1258,7 +1263,6 @@ async fn network_status(
             FROM {}.uptime_stats_by_port u
             INNER JOIN first_seen_dates fs ON u.hostname = fs.hostname AND u.port = fs.port
             WHERE u.time_bucket >= fs.first_seen
-            AND u.time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY u.hostname, u.port, fs.first_seen
         )
         SELECT 
@@ -1284,6 +1288,7 @@ async fn network_status(
         worker.config.results_window_days,
         worker.clickhouse.database,
         network.0,
+        worker.clickhouse.database,
         worker.clickhouse.database,
         worker.clickhouse.database,
         worker.clickhouse.database
@@ -1875,11 +1880,16 @@ async fn network_api(
             WHERE checker_module = '{}'
             GROUP BY hostname, port
         ),
+        monitoring_hours AS (
+            SELECT count(DISTINCT time_bucket) as total_monitored_hours
+            FROM {}.uptime_stats_by_port
+            WHERE time_bucket >= now() - INTERVAL 30 DAY
+        ),
         uptime_30_day AS (
             SELECT 
                 hostname,
                 port,
-                sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
+                countIf(online_count > 0) * 100.0 / greatest((SELECT total_monitored_hours FROM monitoring_hours), 1) as uptime_percentage
             FROM {}.uptime_stats_by_port
             WHERE time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY hostname, port
@@ -1892,7 +1902,6 @@ async fn network_api(
             FROM {}.uptime_stats_by_port u
             INNER JOIN first_seen_dates fs ON u.hostname = fs.hostname AND u.port = fs.port
             WHERE u.time_bucket >= fs.first_seen
-            AND u.time_bucket >= now() - INTERVAL 30 DAY
             GROUP BY u.hostname, u.port, fs.first_seen
         )
         SELECT 
@@ -1918,6 +1927,7 @@ async fn network_api(
         worker.config.results_window_days,
         worker.clickhouse.database,
         network.0,
+        worker.clickhouse.database,
         worker.clickhouse.database,
         worker.clickhouse.database,
         worker.clickhouse.database

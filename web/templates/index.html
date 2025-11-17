@@ -33,8 +33,7 @@
                             <th>Server</th>
                             <th>Block Height</th>
                             <th>Status</th>
-                            <th>Uptime since launch (30D)</th>
-                            <th>Uptime (30D)</th>
+                            <th>Calendar Uptime (30D)</th>
                             <th>Version</th>
                             <th>Last Checked</th>
                             <th>USA Ping</th>
@@ -65,7 +64,6 @@
                             <td class="status-{% if server.height > 0 %}online{% else %}offline{% endif %}">
                                 {% if server.height > 0 %}Online{% else %}Offline{% endif %}
                             </td>
-                            <td>{{ server.formatted_uptime_since_first_seen_30d() }}</td>
                             <td>{{ server.formatted_uptime_30_day() }}</td>
                             <td style="white-space: pre-line">{{ server.formatted_version() }}</td>
                             <td>{{ server.formatted_last_updated() }}</td>
