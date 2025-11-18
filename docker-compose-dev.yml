@@ -23,6 +23,7 @@ services:
       - cargo-cache:/usr/local/cargo/registry
     environment:
       - RUST_LOG=info
+      - API_KEY=${API_KEY}
 
   discovery:
     build:
@@ -37,16 +38,6 @@ services:
       - RUST_LOG=info
       - RUST_BACKTRACE=1
       - TRACING_LEVEL=info
-
-  publisher:
-    build:
-      context: ./publisher
-      dockerfile: dev.Dockerfile
-    volumes:
-      - ./publisher:/usr/src/app
-      - cargo-cache:/usr/local/cargo/registry
-    environment:
-      - RUST_LOG=info
 
   checker-zec:
     build:
@@ -85,18 +76,6 @@ services:
       RUST_LOG: info
 
 
-  checker-btc-user:
-    build:
-      context: ./checkers/btc
-      dockerfile: dev.Dockerfile
-    image: hosh/checker-btc-dev
-    volumes:
-      - ./checkers/btc:/usr/src/btc
-      - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
-      - cargo-cache:/usr/local/cargo/registry
-    environment:
-      RUST_LOG: info
-
   checker-http:
     build:
       context: ./checkers/http
@@ -127,12 +106,8 @@ services:
       - CLICKHOUSE_DB=${CLICKHOUSE_DB}
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
-      - NATS_HOST=nats
-      - NATS_PORT=4222
-      - NATS_PREFIX=hosh.
     depends_on:
       - chronicler
-      - nats
 
 
   docs:

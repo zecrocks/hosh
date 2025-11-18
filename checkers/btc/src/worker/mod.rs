@@ -1,4 +1,3 @@
-use async_nats::Client as NatsClient;
 use serde::{Deserialize, Serialize};
 use std::env;
 use futures_util::stream::StreamExt;
@@ -29,6 +28,8 @@ fn default_version() -> String { "unknown".to_string() }
 
 #[derive(Debug, Serialize)]
 struct ServerData {
+    checker_module: String,
+    hostname: String,
     host: String,
     port: u16,
     height: u64,
@@ -37,6 +38,8 @@ struct ServerData {
     last_updated: chrono::DateTime<chrono::Utc>,
     #[serde(skip_serializing_if = "Option::is_none")]
     ping: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    ping_ms: Option<f64>,
     error: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     error_type: Option<String>,
@@ -51,23 +54,18 @@ struct ServerData {
 
 #[derive(Clone)]
 pub struct Worker {
-    nats: NatsClient,
-    clickhouse_url: String,
-    clickhouse_user: String,
-    clickhouse_password: String,
-    clickhouse_db: String,
-    nats_subject: String,
+    web_api_url: String,
+    api_key: String,
     max_concurrent_checks: usize,
     http_client: reqwest::Client,
 }
 
 impl Worker {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error>> {
-        let nats_url = env::var("NATS_URL").unwrap_or_else(|_| "nats://nats:4222".to_string());
-        let nats_subject = env::var("NATS_SUBJECT").unwrap_or_else(|_| "hosh.check.btc".to_string());
+        let web_api_url = env::var("WEB_API_URL").unwrap_or_else(|_| "http://web:8080".to_string());
+        let api_key = env::var("API_KEY").expect("API_KEY environment variable must be set");
         
-        info!("🚀 Initializing BTC Worker with NATS URL: {}", nats_url);
-        info!("📡 Subscribing to NATS subject: {}", nats_subject);
+        info!("🚀 Initializing BTC Worker with web API URL: {}", web_api_url);
         
         let max_concurrent_checks = env::var("MAX_CONCURRENT_CHECKS")
             .unwrap_or_else(|_| "3".to_string())
@@ -76,26 +74,6 @@ impl Worker {
             
         info!("⚙️ Setting max concurrent checks to: {}", max_concurrent_checks);
             
-        // ClickHouse configuration
-        let clickhouse_host = env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".to_string());
-        let clickhouse_port = env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".to_string()); // HTTP port
-        let clickhouse_db = env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".to_string());
-        let clickhouse_user = env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".to_string());
-        let clickhouse_password = env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set");
-
-        info!("📊 ClickHouse configuration:");
-        info!("   - Host: {}", clickhouse_host);
-        info!("   - Port: {}", clickhouse_port);
-        info!("   - Database: {}", clickhouse_db);
-        info!("   - User: {}", clickhouse_user);
-
-        // Create ClickHouse URL
-        let clickhouse_url = format!("http://{}:{}", clickhouse_host, clickhouse_port);
-
-        info!("🔌 Connecting to NATS server...");
-        let nats = async_nats::connect(&nats_url).await?;
-        info!("✅ Successfully connected to NATS server");
-        
         // Create a pooled HTTP client
         info!("🌐 Creating HTTP client with connection pooling...");
         let http_client = reqwest::Client::builder()
@@ -106,12 +84,8 @@ impl Worker {
         info!("✅ HTTP client created successfully");
 
         Ok(Worker {
-            nats,
-            clickhouse_url,
-            clickhouse_user,
-            clickhouse_password,
-            clickhouse_db,
-            nats_subject,
+            web_api_url,
+            api_key,
             max_concurrent_checks,
             http_client,
         })
@@ -148,6 +122,8 @@ impl Worker {
                 info!("📊 Server {}:{} - Block height: {}", request.host, request.port, height);
 
                 Some(ServerData {
+                    checker_module: "btc".to_string(),
+                    hostname: request.host.clone(),
                     host: request.host.clone(),
                     port: request.port,
                     height,
@@ -157,12 +133,13 @@ impl Worker {
                         .to_string(),
                     last_updated: chrono::Utc::now(),
                     ping: data.get("ping").and_then(|v| v.as_f64()),
+                    ping_ms: data.get("ping").and_then(|v| v.as_f64()),
                     error: false,
                     error_type: None,
                     error_message: None,
                     user_submitted: request.user_submitted,
                     check_id: request.get_check_id(),
-                    status: "success".to_string(),
+                    status: "online".to_string(),
                     additional_data: Some(filtered_data),
                 })
             }
@@ -172,270 +149,76 @@ impl Worker {
                 error!("❌ Failed to query server {}:{} - {}", request.host, request.port, error_message);
                 
                 Some(ServerData {
+                    checker_module: "btc".to_string(),
+                    hostname: request.host.clone(),
                     host: request.host.clone(),
                     port: request.port,
                     height: 0,
                     electrum_version: request.version.clone(),
                     last_updated: chrono::Utc::now(),
                     ping: None,
+                    ping_ms: None,
                     error: true,
                     error_type: Some("connection_error".to_string()),
                     error_message: Some(error_message),
                     user_submitted: request.user_submitted,
                     check_id: request.get_check_id(),
-                    status: "error".to_string(),
+                    status: "offline".to_string(),
                     additional_data: None,
                 })
             }
         }
     }
 
-    async fn store_check_data(&self, request: &CheckRequest, server_data: &ServerData) -> Result<(), Box<dyn std::error::Error>> {
-        info!("💾 Storing check data for {}:{}", request.host, request.port);
-        let escaped_host = request.host.replace("'", "\\'");
-        
-        // Generate a deterministic UUID v5 using DNS namespace and hostname
-        let target_id = uuid::Uuid::new_v5(
-            &uuid::Uuid::NAMESPACE_DNS,
-            format!("btc:{}", request.host).as_bytes()
-        ).to_string();
-        info!("🆔 Generated target ID: {}", target_id);
+    async fn submit_check_data(&self, server_data: &ServerData) -> Result<(), Box<dyn std::error::Error>> {
+        info!("💾 Submitting check data for {}:{}", server_data.host, server_data.port);
 
-        // Update existing target or create new one if doesn't exist
-        info!("📝 Upserting target record...");
-        let upsert_query = format!(
-            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
-             SELECT '{target_id}', 'btc', '{host}', now(), now(), {user_submitted}
-             WHERE NOT EXISTS (
-                 SELECT 1 FROM {db}.targets 
-                 WHERE module = 'btc' AND hostname = '{host}'
-             )",
-            db = self.clickhouse_db,
-            target_id = target_id,
-            host = escaped_host,
-            user_submitted = request.user_submitted
-        );
-
-        let response = self.http_client.post(&self.clickhouse_url)
-            .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
-            .header("Content-Type", "text/plain")
-            .body(upsert_query)
+        let response = self.http_client.post(&format!("{}/api/v1/results?api_key={}", self.web_api_url, self.api_key))
+            .json(server_data)
             .send()
             .await?;
 
         if !response.status().is_success() {
-            error!("❌ ClickHouse insert error: {}", response.text().await?);
-            return Err("ClickHouse insert failed".into());
-        }
-        info!("✅ Target record upserted successfully");
-
-        // Then update the target's timestamps and ensure target_id is consistent
-        info!("🔄 Updating target timestamps...");
-        let update_query = format!(
-            "ALTER TABLE {db}.targets 
-             UPDATE last_queued_at = now(),
-                    last_checked_at = now(),
-                    target_id = '{target_id}'
-             WHERE module = 'btc' AND hostname = '{host}'
-             SETTINGS mutations_sync = 1",
-            db = self.clickhouse_db,
-            target_id = target_id,
-            host = escaped_host,
-        );
-
-        let response = self.http_client.post(&self.clickhouse_url)
-            .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
-            .header("Content-Type", "text/plain")
-            .body(update_query)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            error!("❌ ClickHouse update error: {}", response.text().await?);
-            return Err("ClickHouse update failed".into());
-        }
-        info!("✅ Target timestamps updated successfully");
-
-        // Prepare resolved IP (if available)
-        let resolved_ip = match &server_data.additional_data {
-            Some(data) => {
-                if let Some(ips) = data.get("resolved_ips") {
-                    if let Some(ip_array) = ips.as_array() {
-                        if !ip_array.is_empty() {
-                            if let Some(first_ip) = ip_array[0].as_str() {
-                                first_ip.to_string()
-                            } else {
-                                "".to_string()
-                            }
-                        } else {
-                            "".to_string()
-                        }
-                    } else {
-                        "".to_string()
-                    }
-                } else {
-                    "".to_string()
-                }
-            },
-            None => "".to_string(),
-        };
-        
-        // Determine status
-        let status = if server_data.error {
-            "offline"
-        } else {
-            "online"
-        };
-        
-        // Insert the result
-        info!("📝 Inserting check result into results table...");
-        let result_query = format!(
-            "INSERT INTO {}.results 
-             (target_id, checked_at, hostname, resolved_ip, ip_version, 
-              checker_module, status, ping_ms, checker_location, checker_id, response_data, user_submitted) 
-             VALUES 
-             ('{}', now(), '{}', '{}', 4, 'btc', '{}', {}, 'default', '{}', '{}', {})",
-            self.clickhouse_db,
-            target_id,
-            server_data.host.replace("'", "\\'"),
-            resolved_ip.replace("'", "\\'"),
-            status,
-            server_data.ping.unwrap_or(0.0),
-            Uuid::new_v4(), // Generate a checker_id
-            serde_json::to_string(server_data)?.replace("'", "\\'"),
-            request.user_submitted
-        );
-        
-        let response = self.http_client.post(&format!("{}", self.clickhouse_url))
-            .basic_auth(&self.clickhouse_user, Some(&self.clickhouse_password))
-            .header("Content-Type", "text/plain")
-            .body(result_query)
-            .send()
-            .await?;
-            
-        if !response.status().is_success() {
-            error!("❌ ClickHouse results insert error: {}", response.text().await?);
-            return Err("ClickHouse results insert failed".into());
+            error!("❌ API submission error: {}", response.text().await?);
+            return Err("API submission failed".into());
         }
         
-        info!("✅ Successfully saved check result to ClickHouse");
+        info!("✅ Successfully submitted check result to web API");
         
         Ok(())
     }
 
-    async fn process_check_request(&self, msg: async_nats::Message) {
-        debug!("Raw message payload: {:?}", String::from_utf8_lossy(&msg.payload));
+    async fn process_check_request(&self, request: CheckRequest) {
+        debug!("Processing check request: {:?}", request);
+        
+        info!(
+            host = %request.host,
+            check_id = %request.get_check_id(),
+            user_submitted = %request.user_submitted,
+            "Processing check request"
+        );
 
-        let data = match String::from_utf8(msg.payload.to_vec()) {
-            Ok(data) => {
-                debug!("Parsed UTF-8 string: {}", data);
-                data
-            }
-            Err(e) => {
-                error!("Failed to parse message payload as UTF-8: {}", e);
-                return;
-            }
-        };
-
-        // Try to parse the JSON directly, in case there are formatting issues
-        match serde_json::from_str::<serde_json::Value>(&data) {
-            Ok(value) => {
-                debug!("Parsed as generic JSON value: {:?}", value);
-                
-                // Extract fields manually
-                let host = value.get("host")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                    
-                let hostname = value.get("hostname")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("")
-                    .trim()
-                    .to_string();
-                    
-                // Use hostname as fallback if host is empty
-                let final_host = if host.is_empty() { hostname } else { host };
-                
-                if final_host.is_empty() {
-                    error!("Both host and hostname are empty in message: {}", data);
-                    return;
-                }
-                
-                let port = value.get("port")
-                    .and_then(|v| v.as_u64())
-                    .unwrap_or(50002) as u16;
-                    
-                let version = value.get("version")
-                    .and_then(|v| v.as_str())
-                    .unwrap_or("unknown")
-                    .to_string();
-                    
-                let check_id = value.get("check_id")
-                    .and_then(|v| v.as_str())
-                    .or_else(|| value.get("target_id").and_then(|v| v.as_str()))
-                    .map(|s| s.to_string());
-                    
-                let user_submitted = value.get("user_submitted")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-                    
-                let request = CheckRequest {
-                    host: final_host,
-                    port,
-                    version,
-                    check_id,
-                    user_submitted,
-                };
-                
-                debug!("Manually constructed CheckRequest: {:?}", request);
-                
-                info!(
-                    host = %request.host,
-                    check_id = %request.get_check_id(),
-                    user_submitted = %request.user_submitted,
-                    "Processing check request"
-                );
-
-                if let Some(server_data) = self.query_server_data(&request).await {
-                    // Store data in ClickHouse
-                    if let Err(e) = self.store_check_data(&request, &server_data).await {
-                        error!(%e, "Failed to publish data to ClickHouse");
-                    }
-                }
-            },
-            Err(e) => {
-                error!("Failed to parse JSON: {} - Data: {}", e, data);
-                return;
+        if let Some(server_data) = self.query_server_data(&request).await {
+            // Store data in ClickHouse
+            if let Err(e) = self.submit_check_data(&server_data).await {
+                error!(%e, "Failed to submit data to web API");
             }
         }
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn std::error::Error>> {
         info!(
-            subject = %self.nats_subject,
             max_concurrent = %self.max_concurrent_checks,
             "🚀 Starting BTC checker worker"
         );
-
-        info!("📡 Subscribing to NATS subject: {}", self.nats_subject);
-        let mut subscriber = self.nats.subscribe(self.nats_subject.clone()).await?;
-        info!("✅ Successfully subscribed to NATS subject");
         
-        // Create a channel with bounded capacity for concurrent processing
-        info!("🔧 Setting up message processing channel...");
         let (tx, mut rx) = tokio::sync::mpsc::channel(self.max_concurrent_checks);
-        
-        // Clone necessary data for the spawned task
         let worker = self.clone();
         
-        // Spawn task to process messages from channel
-        info!("👥 Spawning message processing task...");
         let process_handle = tokio::spawn(async move {
             let mut handles = futures_util::stream::FuturesUnordered::new();
             
-            while let Some(msg) = rx.recv().await {
+            while let Some(req) = rx.recv().await {
                 if handles.len() >= worker.max_concurrent_checks {
                     info!("⏳ Waiting for a slot to become available...");
                     handles.next().await;
@@ -443,7 +226,7 @@ impl Worker {
                 
                 let worker = worker.clone();
                 handles.push(tokio::spawn(async move {
-                    worker.process_check_request(msg).await;
+                    worker.process_check_request(req).await;
                 }));
             }
             
@@ -453,21 +236,38 @@ impl Worker {
                 }
             }
         });
-        info!("✅ Message processing task spawned successfully");
 
-        info!("🔄 Starting main message processing loop...");
-        while let Some(msg) = subscriber.next().await {
-            if let Err(e) = tx.send(msg).await {
-                error!("❌ Failed to queue message: {}", e);
+        loop {
+            info!("📡 Fetching jobs from web API...");
+            let jobs_url = format!("{}/api/v1/jobs?api_key={}&checker_module=btc&limit={}", self.web_api_url, self.api_key, self.max_concurrent_checks);
+            match self.http_client.get(&jobs_url).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        match response.json::<Vec<CheckRequest>>().await {
+                            Ok(jobs) => {
+                                info!("✅ Found {} jobs", jobs.len());
+                                for job in jobs {
+                                    if let Err(e) = tx.send(job).await {
+                                        error!("❌ Failed to queue message: {}", e);
+                                    }
+                                }
+                            }
+                            Err(e) => {
+                                error!("❌ Failed to parse jobs from web API: {}", e);
+                            }
+                        }
+                    } else {
+                        error!("❌ Web API returned non-success status: {}", response.status());
+                    }
+                }
+                Err(e) => {
+                    error!("❌ Failed to fetch jobs from web API: {}", e);
+                }
             }
+            
+            // Wait for 10 seconds before polling again
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
-
-        info!("🛑 Shutting down worker...");
-        drop(tx);
-        process_handle.await?;
-        info!("✅ Worker shutdown complete");
-
-        Ok(())
     }
 }
 

@@ -20,26 +20,6 @@ mod zecrocks;
 mod zcashexplorer;
 mod types;
 
-#[derive(Debug)]
-enum CheckerError {
-    Nats(async_nats::Error),
-}
-
-impl fmt::Display for CheckerError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            CheckerError::Nats(e) => write!(f, "NATS error: {}", e),
-        }
-    }
-}
-
-impl Error for CheckerError {}
-
-impl From<async_nats::Error> for CheckerError {
-    fn from(err: async_nats::Error) -> CheckerError {
-        CheckerError::Nats(err)
-    }
-}
 
 #[derive(Debug, Deserialize)]
 struct CheckRequest {
@@ -60,6 +40,8 @@ fn default_port() -> u16 { 80 }
 #[allow(dead_code)]
 #[derive(Debug, Serialize)]
 struct CheckResult {
+    checker_module: String,
+    hostname: String,
     host: String,
     port: u16,
     height: u64,
@@ -68,6 +50,7 @@ struct CheckResult {
     #[serde(rename = "LastUpdated")]
     last_updated: DateTime<Utc>,
     ping: f64,
+    ping_ms: f64,
     check_id: Option<String>,
     user_submitted: Option<bool>,
 }
@@ -96,20 +79,17 @@ impl ClickhouseConfig {
 
 #[derive(Clone)]
 struct Worker {
-    nats: async_nats::Client,
-    clickhouse: ClickhouseConfig,
+    web_api_url: String,
+    api_key: String,
     http_client: reqwest::Client,
 }
 
 impl Worker {
     async fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
-        let nats_url = format!(
-            "nats://{}:{}",
-            std::env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
-            std::env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
-        );
+        let web_api_url = env::var("WEB_API_URL").unwrap_or_else(|_| "http://web:8080".to_string());
+        let api_key = env::var("API_KEY").expect("API_KEY environment variable must be set");
 
-        let nats = async_nats::connect(&nats_url).await?;
+        info!("🚀 Initializing HTTP Worker with web API URL: {}", web_api_url);
 
         let http_client = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(300))
@@ -119,21 +99,13 @@ impl Worker {
             .build()?;
 
         Ok(Worker { 
-            nats, 
-            clickhouse: ClickhouseConfig::from_env(), 
+            web_api_url,
+            api_key,
             http_client 
         })
     }
 
-    async fn process_check(&self, msg: async_nats::Message) {
-        let check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
-            Ok(req) => req,
-            Err(e) => {
-                error!("Failed to parse check request: {e}");
-                return;
-            }
-        };
-
+    async fn process_check(&self, check_request: CheckRequest) {
         // Check if dry run mode is enabled
         if check_request.dry_run {
             info!(
@@ -173,6 +145,8 @@ impl Worker {
                 for (chain_id, info) in data.iter() {
                     if let Some(height) = info.height {
                         let result = CheckResult {
+                            checker_module: "http".to_string(),
+                            hostname: format!("{}.{}", chain_id, chain_id),
                             host: format!("{}.{}", chain_id, chain_id),
                             port: check_request.port,
                             height,
@@ -180,12 +154,13 @@ impl Worker {
                             error: None,
                             last_updated: Utc::now(),
                             ping: info.response_time_ms as f64,
+                            ping_ms: info.response_time_ms as f64,
                             check_id: check_request.check_id.clone(),
                             user_submitted: check_request.user_submitted,
                         };
                         
-                        if let Err(e) = self.publish_to_clickhouse(&explorer_name, chain_id, &result).await {
-                            error!("Failed to publish to ClickHouse for {}.{}: {}", explorer_name, chain_id, e);
+                        if let Err(e) = self.submit_to_api(&explorer_name, chain_id, &result).await {
+                            error!("Failed to publish to API for {}.{}: {}", explorer_name, chain_id, e);
                         }
                     }
                 }
@@ -197,49 +172,55 @@ impl Worker {
     }
 
     pub async fn run(&self) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let nats_prefix = std::env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
-        let mut sub = self.nats.subscribe(format!("{}check.http", nats_prefix)).await?;
-        println!("Subscribed to {}check.http", nats_prefix);
-
-        while let Some(msg) = sub.next().await {
-            self.process_check(msg).await;
+        loop {
+            info!("📡 Fetching jobs from web API...");
+            let jobs_url = format!("{}/api/v1/jobs?api_key={}&checker_module=http&limit=10", self.web_api_url, self.api_key);
+            match self.http_client.get(&jobs_url).send().await {
+                Ok(response) => {
+                    if response.status().is_success() {
+                        match response.json::<Vec<CheckRequest>>().await {
+                            Ok(jobs) => {
+                                info!("✅ Found {} jobs", jobs.len());
+                                let mut handles = Vec::new();
+                                for job in jobs {
+                                    let worker_clone = self.clone();
+                                    handles.push(tokio::spawn(async move {
+                                        worker_clone.process_check(job).await;
+                                    }));
+                                }
+                                futures_util::future::join_all(handles).await;
+                            }
+                            Err(e) => {
+                                error!("❌ Failed to parse jobs from web API: {}", e);
+                            }
+                        }
+                    } else {
+                        error!("❌ Web API returned non-success status: {}", response.status());
+                    }
+                }
+                Err(e) => {
+                    error!("❌ Failed to fetch jobs from web API: {}", e);
+                }
+            }
+            
+            tokio::time::sleep(std::time::Duration::from_secs(10)).await;
         }
-
-        Ok(())
     }
 
-    async fn publish_to_clickhouse(&self, source: &str, chain_id: &str, result: &CheckResult) -> Result<(), Box<dyn Error + Send + Sync>> {
-        info!("📊 Publishing to ClickHouse for {}.{}", source, chain_id);
+    async fn submit_to_api(&self, source: &str, chain_id: &str, result: &CheckResult) -> Result<(), Box<dyn Error + Send + Sync>> {
+        info!("📊 Publishing to API for {}.{}", source, chain_id);
 
-        // Insert the block height data
-        info!("Inserting block height data for {}.{} (height: {})", source, chain_id, result.height);
-        let height_query = format!(
-            "INSERT INTO {}.block_explorer_heights 
-             (checked_at, explorer, chain, block_height, response_time_ms, error, dry_run) 
-             VALUES 
-             (now(), '{}', '{}', {}, {}, '{}', {})",
-            self.clickhouse.database,
-            source,
-            chain_id,
-            result.height,
-            result.ping,
-            result.error.as_deref().unwrap_or("").replace("'", "\\'"),
-            result.user_submitted.unwrap_or(false)
-        );
-
-        let response = self.http_client.post(&self.clickhouse.url)
-            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
-            .header("Content-Type", "text/plain")
-            .body(height_query)
+        let response = self.http_client.post(&format!("{}/api/v1/results?api_key={}", self.web_api_url, self.api_key))
+            .json(result)
             .send()
             .await?;
 
         if !response.status().is_success() {
             let error_text = response.text().await?;
-            error!("❌ ClickHouse block height insert failed: {}", error_text);
-            return Err(format!("ClickHouse block height insert error: {}", error_text).into());
+            error!("❌ API submission failed: {}", error_text);
+            return Err(format!("API submission error: {}", error_text).into());
         }
-        info!("✅ Block height data insert successful");
+        info!("✅ API submission successful");
 
         Ok(())
     }
@@ -283,28 +264,5 @@ async fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Add ClickHouse connection test
     let worker = Worker::new().await?;
     
-    // Test ClickHouse connection
-    info!("Testing ClickHouse connection...");
-    let test_query = "SELECT 1";
-    let response = worker.http_client.post(&worker.clickhouse.url)
-        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
-        .header("Content-Type", "text/plain")
-        .body(test_query)
-        .send()
-        .await?;
-
-    if response.status().is_success() {
-        info!("✅ Successfully connected to ClickHouse at {}", worker.clickhouse.url);
-    } else {
-        error!("❌ Failed to connect to ClickHouse: {}", response.status());
-        error!("Response: {}", response.text().await?);
-    }
-
-    // Log ClickHouse configuration
-    info!("ClickHouse configuration:");
-    info!("  URL: {}", worker.clickhouse.url);
-    info!("  Database: {}", worker.clickhouse.database);
-    info!("  User: {}", worker.clickhouse.user);
-
     worker.run().await
 }

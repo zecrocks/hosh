@@ -16,14 +16,16 @@ pub async fn get_blockchain_info() -> Result<HashMap<String, BlockchainInfo>, Bo
     let btc_response = client.get(btc_url).send().await?;
     let btc_response_time = start_time.elapsed().as_secs_f32() * 1000.0; // Convert to milliseconds
     let btc_html = btc_response.text().await?;
-    let btc_document = Html::parse_document(&btc_html);
-
+    
     // Fetch Liquid height
     let liquid_url = "https://blockstream.info/liquid/nojs/";
     let start_time = Instant::now();
     let liquid_response = client.get(liquid_url).send().await?;
     let liquid_response_time = start_time.elapsed().as_secs_f32() * 1000.0; // Convert to milliseconds
     let liquid_html = liquid_response.text().await?;
+    
+    // Parse documents after all network calls to avoid holding non-Send types across awaits
+    let btc_document = Html::parse_document(&btc_html);
     let liquid_document = Html::parse_document(&liquid_html);
 
     // Selector for both networks (they use the same HTML structure)

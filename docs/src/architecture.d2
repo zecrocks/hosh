@@ -1,11 +1,9 @@
 
-nats: { label: "NATS (Message Broker)" }
 redis: { label: "Redis (Cache/Queue)" }
 tor: { label: "Tor (Privacy Network)" }
 web: { label: "Web Frontend" }
 dashboard: { label: "Dashboard" }
 discovery: { label: "Discovery Service" }
-publisher: { label: "Publisher" }
 checker_btc: { label: BTC Checker}
 checker_btc.shape: circle
 checker_zec: { label: "ZEC Checker" }
@@ -14,19 +12,18 @@ btc_backend: { label: "BTC Backend" }
 
 // Set ranks
 { rank = same; checker_btc; checker_zec; }
-{ rank = same; redis; nats; tor; }
-{ rank = same; btc_backend; publisher; }
+{ rank = same; redis; tor; }
+{ rank = same; btc_backend; }
 
-checker_zec -> nats { label: "Receives ZEC check request" }
+checker_zec -> web { label: "Fetches ZEC check jobs" }
 checker_zec -> redis { label: "Stores ZEC check results" }
 
 checker_btc -> btc_backend { label: "Fetches BTC worker data" }
 checker_btc -> redis { label: "Stores BTC check results" }
-checker_btc -> nats { label: "Receives BTC check request" }
+checker_btc -> web { label: "Fetches BTC check jobs" }
 checker_btc -> tor { label: "Connects to Tor servers" }
 
 
 checker_btc -> btc_backend
 btc_backend -> checker_btc
-publisher -> redis { label: "Reads stale check requests" }
-publisher -> nats { label: "Publishes check requests" }
+web -> redis { label: "Reads stale check requests" }

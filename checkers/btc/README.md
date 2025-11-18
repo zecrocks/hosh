@@ -16,12 +16,12 @@ Provides HTTP endpoints for querying Electrum servers:
 - `GET /electrum/peers` - Get peer information
 
 ### Worker Mode
-Subscribes to NATS messages and performs Electrum server health checks:
+Polls the web service for Electrum servers to check:
 
-- Listens on `hosh.check.btc` subject (configurable)
-- Processes check requests concurrently
-- Stores results in Redis
-- Supports both regular and user-submitted checks
+- Polls `GET /api/v1/jobs` endpoint every 10 seconds
+- Checks servers every 5 minutes
+- Processes check requests concurrently (default: 3 concurrent)
+- Submits results to `POST /api/v1/results` endpoint
 
 ## Configuration
 
@@ -31,13 +31,16 @@ Environment variables:
 RUN_MODE=worker|server  # defaults to server if not set
 
 # Worker Configuration
-NATS_URL=nats://nats:4222
-NATS_SUBJECT=hosh.check.btc
+WEB_API_URL=http://web:8080
+API_KEY=your_api_key_here
 MAX_CONCURRENT_CHECKS=3  # default
 
-# Redis Configuration
-REDIS_HOST=redis
-REDIS_PORT=6379
+# ClickHouse Configuration
+CLICKHOUSE_HOST=chronicler
+CLICKHOUSE_PORT=8123
+CLICKHOUSE_DB=hosh
+CLICKHOUSE_USER=hosh
+CLICKHOUSE_PASSWORD=your_password
 
 # Tor Configuration
 TOR_PROXY_HOST=tor
@@ -73,8 +76,8 @@ This mounts the source code directory and uses cargo for live reloading.
 
 - `axum` - Web framework
 - `tokio` - Async runtime
-- `async-nats` - NATS client
-- `redis` - Redis client
+- `reqwest` - HTTP client for web API
+- `clickhouse` - ClickHouse database client
 - `electrum-client` - Electrum protocol
 - `serde` - Serialization
 - `tracing` - Logging
@@ -88,7 +91,7 @@ The service implements comprehensive error handling:
 
 ## Integration Points
 
-- NATS for receiving check requests
-- Redis for storing check results
+- Web service HTTP API for job distribution and result submission
+- ClickHouse for storing check results
 - Tor for accessing .onion addresses
-- HTTP API for external queries
+- HTTP API for external Electrum queries (API server mode)

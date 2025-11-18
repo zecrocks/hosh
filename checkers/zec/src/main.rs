@@ -21,6 +21,8 @@ struct CheckRequest {
 
 #[derive(Debug, Serialize)]
 struct CheckResult {
+    checker_module: String,
+    hostname: String,
     host: String,
     port: u16,
     height: u64,
@@ -28,6 +30,7 @@ struct CheckResult {
     error: Option<String>,
     last_updated: DateTime<Utc>,
     ping: f64,
+    ping_ms: f64,
     #[serde(skip_serializing_if = "Option::is_none")]
     check_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -102,9 +105,10 @@ impl ClickhouseConfig {
     }
 }
 
+#[derive(Clone)]
 struct Worker {
-    nats: async_nats::Client,
-    clickhouse: ClickhouseConfig,
+    web_api_url: String,
+    api_key: String,
     http_client: reqwest::Client,
 }
 
@@ -166,15 +170,10 @@ impl Worker {
             .install_default()
             .expect("Failed to install rustls crypto provider");
 
-        let _nats_prefix = env::var("NATS_PREFIX").unwrap_or_else(|_| "hosh.".into());
-        let nats_url = format!(
-            "nats://{}:{}",
-            env::var("NATS_HOST").unwrap_or_else(|_| "nats".into()),
-            env::var("NATS_PORT").unwrap_or_else(|_| "4222".into())
-        );
+        let web_api_url = env::var("WEB_API_URL").unwrap_or_else(|_| "http://web:8080".to_string());
+        let api_key = env::var("API_KEY").expect("API_KEY environment variable must be set");
 
-        let nats = async_nats::connect(&nats_url).await?;
-        info!("Connected to NATS at {}", nats_url);
+        info!("🚀 Initializing ZEC Worker with web API URL: {}", web_api_url);
         
         let http_client = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(300))
@@ -183,115 +182,32 @@ impl Worker {
             .build()?;
 
         Ok(Worker {
-            nats,
-            clickhouse: ClickhouseConfig::from_env(),
+            web_api_url,
+            api_key,
             http_client,
         })
     }
 
-    async fn publish_to_clickhouse(&self, check_request: &CheckRequest, result: &CheckResult) -> Result<(), Box<dyn Error>> {
-        let target_id = uuid::Uuid::new_v5(
-            &uuid::Uuid::NAMESPACE_DNS,
-            format!("zec:{}", check_request.host).as_bytes()
-        ).to_string();
-
-        let escaped_host = check_request.host.replace("'", "\\'");
-        
-        // First update existing target
-        let update_query = format!(
-            "ALTER TABLE {db}.targets 
-             UPDATE last_queued_at = now(),
-                    last_checked_at = now(),
-                    target_id = '{target_id}'
-             WHERE module = 'zec' AND hostname = '{host}'
-             SETTINGS mutations_sync = 1",
-            db = self.clickhouse.database,
-            target_id = target_id,
-            host = escaped_host,
-        );
-
-        let response = self.http_client.post(&self.clickhouse.url)
-            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
-            .header("Content-Type", "text/plain")
-            .body(update_query)
+    async fn submit_to_api(&self, result: &CheckResult) -> Result<(), Box<dyn Error>> {
+        let response = self.http_client.post(&format!("{}/api/v1/results?api_key={}", self.web_api_url, self.api_key))
+            .json(result)
             .send()
             .await?;
 
         if !response.status().is_success() {
-            return Err(format!("ClickHouse update error: {}", response.text().await?).into());
-        }
-
-        // Then insert new target if it doesn't exist
-        let insert_query = format!(
-            "INSERT INTO {db}.targets (target_id, module, hostname, last_queued_at, last_checked_at, user_submitted)
-             SELECT '{target_id}', 'zec', '{host}', now(), now(), {user_submitted}
-             WHERE NOT EXISTS (
-                 SELECT 1 FROM {db}.targets 
-                 WHERE module = 'zec' AND hostname = '{host}'
-             )",
-            db = self.clickhouse.database,
-            target_id = target_id,
-            host = escaped_host,
-            user_submitted = check_request.user_submitted.unwrap_or(false)
-        );
-
-        let response = self.http_client.post(&self.clickhouse.url)
-            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
-            .header("Content-Type", "text/plain")
-            .body(insert_query)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(format!("ClickHouse insert error: {}", response.text().await?).into());
-        }
-
-        // Finally insert the result
-        let result_query = format!(
-            "INSERT INTO {}.results 
-             (target_id, checked_at, hostname, resolved_ip, ip_version, 
-              checker_module, status, ping_ms, checker_location, checker_id, response_data, user_submitted) 
-             VALUES 
-             ('{}', now(), '{}', '', 4, 'zec', '{}', {}, 'default', '{}', '{}', {})",
-            self.clickhouse.database,
-            target_id,
-            escaped_host,
-            if result.error.is_some() { "offline" } else { "online" },
-            result.ping,
-            Uuid::new_v4(),
-            serde_json::to_string(&result)?.replace("'", "\\'"),
-            check_request.user_submitted.unwrap_or(false)
-        );
-
-        let response = self.http_client.post(&self.clickhouse.url)
-            .basic_auth(&self.clickhouse.user, Some(&self.clickhouse.password))
-            .header("Content-Type", "text/plain")
-            .body(result_query)
-            .send()
-            .await?;
-
-        if !response.status().is_success() {
-            return Err(format!("ClickHouse error: {}", response.text().await?).into());
+            return Err(format!("API submission error: {}", response.text().await?).into());
         }
 
         info!(
-            host = %check_request.host,
-            check_id = %check_request.check_id.as_deref().unwrap_or("none"),
-            "Successfully saved check data to ClickHouse"
+            host = %result.host,
+            check_id = %result.check_id.as_deref().unwrap_or("none"),
+            "Successfully submitted check data to API"
         );
 
         Ok(())
     }
 
-    async fn process_check(&self, msg: async_nats::Message) -> Result<(), Box<dyn Error>> {
-        let check_request: CheckRequest = match serde_json::from_slice(&msg.payload) {
-            Ok(req) => req,
-            Err(e) => {
-                error!("Failed to parse check request: {}", e);
-                return Ok(());
-            }
-        };
-
+    async fn process_check(&self, check_request: CheckRequest) -> Result<(), Box<dyn Error>> {
         let uri: Uri = match format!("https://{}:{}", check_request.host, check_request.port).parse() {
             Ok(u) => u,
             Err(e) => {
@@ -346,13 +262,16 @@ impl Worker {
         }
 
         let result = CheckResult {
+            checker_module: "zec".to_string(),
+            hostname: check_request.host.clone(),
             host: check_request.host.clone(),
             port: check_request.port,
             height,
-            status: status.into(),
+            status: if error.is_none() { "online".to_string() } else { "offline".to_string() },
             error,
             last_updated: Utc::now(),
             ping,
+            ping_ms: ping,
             check_id: check_request.check_id.clone(),
             user_submitted: check_request.user_submitted,
             vendor: server_info.as_ref().map(|info| info.vendor.clone()),
@@ -371,8 +290,8 @@ impl Worker {
             donation_address: server_info.as_ref().map(|info| info.donation_address.clone()),
         };
 
-        if let Err(e) = self.publish_to_clickhouse(&check_request, &result).await {
-            error!(%e, "Failed to publish data to ClickHouse");
+        if let Err(e) = self.submit_to_api(&result).await {
+            error!(%e, "Failed to publish data to API");
         }
 
         Ok(())
@@ -456,14 +375,39 @@ async fn main() -> Result<(), Box<dyn Error>> {
     info!("Starting ZEC checker in normal mode");
     let worker = Worker::new().await?;
     
-    let mut subscription = worker.nats.subscribe(format!("{}check.zec", "hosh.")).await?;
-    info!("Subscribed to hosh.check.zec");
-
-    while let Some(msg) = subscription.next().await {
-        if let Err(e) = worker.process_check(msg).await {
-            error!("Error processing check: {}", e);
+    loop {
+        info!("📡 Fetching jobs from web API...");
+        let jobs_url = format!("{}/api/v1/jobs?api_key={}&checker_module=zec&limit=10", worker.web_api_url, worker.api_key);
+        match worker.http_client.get(&jobs_url).send().await {
+            Ok(response) => {
+                if response.status().is_success() {
+                    match response.json::<Vec<CheckRequest>>().await {
+                        Ok(jobs) => {
+                            info!("✅ Found {} jobs", jobs.len());
+                            let mut handles = Vec::new();
+                            for job in jobs {
+                                let worker_clone = worker.clone();
+                                handles.push(tokio::spawn(async move {
+                                    if let Err(e) = worker_clone.process_check(job).await {
+                                        error!("Error processing check: {}", e);
+                                    }
+                                }));
+                            }
+                            futures_util::future::join_all(handles).await;
+                        }
+                        Err(e) => {
+                            error!("❌ Failed to parse jobs from web API: {}", e);
+                        }
+                    }
+                } else {
+                    error!("❌ Web API returned non-success status: {}", response.status());
+                }
+            }
+            Err(e) => {
+                error!("❌ Failed to fetch jobs from web API: {}", e);
+            }
         }
+        
+        tokio::time::sleep(Duration::from_secs(10)).await;
     }
-
-    Ok(())
 }

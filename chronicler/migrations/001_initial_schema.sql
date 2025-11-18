@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS hosh.targets (
     target_id UUID,
     module String,
     hostname String,
+    port UInt16 DEFAULT 0,
     last_queued_at DateTime64(3, 'UTC'),
     last_checked_at DateTime64(3, 'UTC'),
     user_submitted Boolean DEFAULT false,

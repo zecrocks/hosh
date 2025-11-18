@@ -9,8 +9,8 @@ RUN apt-get update && apt-get install -y \
     make \
     && rm -rf /var/lib/apt/lists/*
 
-# Install cargo-watch for hot reloading
-RUN cargo install cargo-watch
+# Install cargo-watch for hot reloading (with --locked to use exact version)
+RUN cargo install cargo-watch --locked --version 8.4.0
 
 # Set environment variable for incremental compilation
 ENV RUST_INCREMENTAL=1

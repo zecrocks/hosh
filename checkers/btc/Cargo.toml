@@ -34,7 +34,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Messaging & Storage
-async-nats = "0.33"
 futures = "0.3"
 futures-util = { version = "0.3", features = ["std"] }
 
