@@ -9,8 +9,6 @@ from layouts.main_layout import create_layout
 
 # Import callbacks
 from callbacks.navigation import register_callbacks as register_navigation_callbacks
-from callbacks.server_status import register_callbacks as register_server_status_callbacks
-from callbacks.blockchain_heights import register_callbacks as register_blockchain_heights_callbacks
 from callbacks.clickhouse_data import register_callbacks as register_clickhouse_data_callbacks
 
 # Initialize the Diskcache for long callbacks
@@ -31,8 +29,6 @@ app.layout = create_layout()
 
 # Register callbacks
 register_navigation_callbacks(app)
-register_server_status_callbacks(app, long_callback_manager)
-register_blockchain_heights_callbacks(app)
 register_clickhouse_data_callbacks(app)
 
 # Run the app

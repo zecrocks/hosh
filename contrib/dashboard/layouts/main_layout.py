@@ -1,6 +1,6 @@
 from dash import html, dcc
 import dash_bootstrap_components as dbc
-from layouts.server_status import create_layout as create_server_status_layout
+from layouts.clickhouse_data import create_layout as create_clickhouse_data_layout
 
 def create_navbar():
     """
@@ -8,8 +8,6 @@ def create_navbar():
     """
     return dbc.NavbarSimple(
         children=[
-            dbc.NavItem(dbc.NavLink("Nodes Status", href="/", id="server-status-link")),
-            dbc.NavItem(dbc.NavLink("Explorer Heights", href="/blockchain-heights", id="blockchain-heights-link")),
             dbc.NavItem(dbc.NavLink("Clickhouse Data", href="/clickhouse-data", id="clickhouse-data-link")),
         ],
         brand="Lightwallet Servers Dashboard",
@@ -48,9 +46,9 @@ def create_layout():
             ),
             
             # Store the current page
-            dcc.Store(id='current-page', data='server-status'),
+            dcc.Store(id='current-page', data='clickhouse-data'),
             
             # Main content area
-            html.Div(id='page-content', children=create_server_status_layout())
+            html.Div(id='page-content', children=create_clickhouse_data_layout())
         ], className="container mt-4")
     ]) 

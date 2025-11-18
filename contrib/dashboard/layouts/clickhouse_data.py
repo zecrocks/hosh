@@ -203,24 +203,6 @@ def create_layout():
                         )
                     ], className='mb-3')
                 ]),
-                # Add user_submitted radio toggle
-                dbc.RadioItems(
-                    id="user-submitted-toggle",
-                    options=[
-                        {"label": "Regular Check", "value": "false"},
-                        {"label": "User-Submitted Check", "value": "true"}
-                    ],
-                    value="false",
-                    inline=True,
-                    className="me-2 mb-3"
-                ),
-                # Add trigger check button
-                html.Button(
-                    'Trigger Check',
-                    id='trigger-check-button',
-                    className='btn btn-secondary ms-2',
-                    disabled=True  # Initially disabled until server is selected
-                ),
             ]),
             
             # Performance graph

@@ -20,8 +20,6 @@ RUN pip install --no-cache-dir \
     "dash==2.18.2" \
     dash-bootstrap-components \
     requests \
-    redis \
-    nats-py>=2.6.0 \
     clickhouse-driver \
     plotly \
     "diskcache>=5.2.1" \

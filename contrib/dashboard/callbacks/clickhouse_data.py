@@ -1,14 +1,12 @@
 from dash.dependencies import Input, Output, State
-from dash.long_callback import DiskcacheLongCallbackManager
 import dash
 import plotly.express as px
-import plotly.graph_objects as go
 import pandas as pd
 from data.clickhouse_client import fetch_server_stats, fetch_server_performance, get_server_list, fetch_targets, fetch_check_results
-from data.nats_client import publish_http_check_trigger, publish_chain_check_trigger
 import logging
-import asyncio
 from datetime import datetime, timezone
+
+logger = logging.getLogger(__name__)
 
 def register_callbacks(app):
     """
@@ -99,11 +97,11 @@ def register_callbacks(app):
         """
         Update the server performance graph and results table based on selected server and time range.
         """
-        print(f"Callback triggered with: server={selected_server}, time_range={time_range}, page={current_page}")
+        logger.info(f"Callback triggered with: server={selected_server}, time_range={time_range}, page={current_page}")
         
         # Only update if we're on the Clickhouse data page
         if current_page != 'clickhouse-data' or not selected_server:
-            print("Skipping update - not on clickhouse page or no server selected")
+            logger.debug("Skipping update - not on clickhouse page or no server selected")
             return {
                 'data': [],
                 'layout': {
@@ -115,21 +113,18 @@ def register_callbacks(app):
         
         try:
             host, protocol = selected_server.split('::')
-            print(f"Fetching data for host={host}, protocol={protocol}")
+            logger.info(f"Fetching data for host={host}, protocol={protocol}")
             
             # Fetch check results for the table
             check_results = fetch_check_results(host, protocol, time_range)
-            print(f"Fetched {len(check_results)} check results")
-            if check_results:
-                print("Check results keys:", list(check_results[0].keys()))
-                print("First row:", check_results[0])
+            logger.info(f"Fetched {len(check_results)} check results")
             
             # Fetch performance data for the graph
             performance_data = fetch_server_performance(host, protocol, time_range)
-            print(f"Fetched {len(performance_data)} performance records")
+            logger.info(f"Fetched {len(performance_data)} performance records")
             
             if not performance_data:
-                print("No performance data available")
+                logger.info("No performance data available")
                 return {
                     'data': [],
                     'layout': {
@@ -139,7 +134,7 @@ def register_callbacks(app):
                     }
                 }, check_results
             
-            # Create the performance graph (existing code)
+            # Create the performance graph
             df = pd.DataFrame(performance_data)
             
             fig = px.scatter(
@@ -152,6 +147,7 @@ def register_callbacks(app):
                 labels={'checked_at': 'Time', 'ping_ms': 'Response Time (ms)', 'status': 'Status'}
             )
             
+            # Add average response time line for online servers
             if 'online' in df['status'].values:
                 avg_ping = df[df['status'] == 'online']['ping_ms'].mean()
                 fig.add_hline(
@@ -196,9 +192,7 @@ def register_callbacks(app):
             return fig, check_results
             
         except Exception as e:
-            print(f"Error in callback: {e}")
-            import traceback
-            print(traceback.format_exc())
+            logger.error(f"Error in callback: {e}", exc_info=True)
             return {
                 'data': [],
                 'layout': {
@@ -208,81 +202,6 @@ def register_callbacks(app):
                 }
             }, []
 
-    # Update the trigger check callback to use long_callback
-    @app.long_callback(
-        Output('trigger-check-button', 'children'),
-        Input('trigger-check-button', 'n_clicks'),
-        [State('server-selector', 'value'),
-         State('manual-server-input', 'value'),
-         State('protocol-selector', 'value'),
-         State('user-submitted-toggle', 'value')],
-        prevent_initial_call=True,
-        running=[
-            (Output('trigger-check-button', 'disabled'), True, False),
-        ],
-    )
-    def trigger_server_check(n_clicks, selected_server, manual_server, protocol_selection, user_submitted):
-        """Handle trigger check button click"""
-        if not n_clicks:
-            return 'Trigger Check'
-            
-        try:
-            # Prioritize dropdown selection if available
-            if selected_server:
-                host, protocol = selected_server.split('::')
-            # Fall back to manual input if dropdown not used but manual input provided
-            elif manual_server and protocol_selection:
-                host = manual_server
-                protocol = protocol_selection
-            else:
-                return 'No Server Selected'
-            
-            # Convert string value to boolean
-            is_user_submitted = user_submitted == "true"
-            
-            # Create event loop to run async functions
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            
-            # Use appropriate trigger function based on protocol
-            if protocol == 'http':
-                success = loop.run_until_complete(publish_http_check_trigger(host))
-            elif protocol in ['btc', 'zec']:
-                success = loop.run_until_complete(publish_chain_check_trigger(
-                    protocol, 
-                    specific_host=host, 
-                    user_submitted=is_user_submitted
-                ))
-            else:
-                raise ValueError(f"Unsupported protocol: {protocol}")
-            
-            loop.close()
-            
-            msg = 'Check Triggered!'
-            if protocol == 'btc':
-                msg += f" ({('User-submitted' if is_user_submitted else 'Regular')} queue)"
-            
-            return msg if success else 'Failed to trigger check'
-        except Exception as e:
-            print(f"Error triggering check: {e}")
-            return 'Error!'
-
-    # Update trigger button callback to work with either dropdown or manual input
-    @app.callback(
-        Output('trigger-check-button', 'disabled'),
-        [Input('server-selector', 'value'),
-         Input('manual-server-input', 'value'),
-         Input('protocol-selector', 'value')]
-    )
-    def update_trigger_button_state(selected_server, manual_input, protocol):
-        """Enable trigger button when either dropdown selection or valid manual input is available"""
-        if selected_server:
-            return False
-        elif manual_input and protocol:
-            # Both hostname and protocol are provided
-            return False
-        return True
-        
     # Add callback to reset the manual input fields
     @app.callback(
         [Output('manual-server-input', 'value'),
@@ -294,4 +213,5 @@ def register_callbacks(app):
         """Reset the manual input fields to their default/empty values"""
         if not n_clicks:
             return dash.no_update, dash.no_update
-        return "", "btc" 
+        return "", "btc"
+
