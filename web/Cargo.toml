@@ -19,4 +19,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 regex = "1.0"
 qrcode = { version = "0.14", features = ["svg"] }
 rand = "0.8"
+tokio = { version = "1", features = ["sync", "time"] }
  

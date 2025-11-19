@@ -1,5 +1,6 @@
 use std::env;
 use std::collections::HashMap;
+use std::sync::Arc;
 use actix_web::{get, post, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
 use actix_files as fs;
 use askama::Template;
@@ -12,6 +13,8 @@ use tracing_subscriber;
 use reqwest;
 use regex;
 use qrcode::{QrCode, render::svg};
+use tokio::sync::RwLock;
+use tokio::time::{interval, Duration};
 
 mod filters {
     use askama::Result;
@@ -1156,10 +1159,19 @@ impl Config {
 }
 
 #[derive(Clone)]
+struct CacheEntry {
+    html: String,
+    timestamp: std::time::Instant,
+}
+
+type PageCache = Arc<RwLock<HashMap<String, CacheEntry>>>;
+
+#[derive(Clone)]
 struct Worker {
     clickhouse: ClickhouseConfig,
     http_client: reqwest::Client,
     config: Config,
+    cache: PageCache,
 }
 
 #[get("/")]
@@ -1167,14 +1179,12 @@ async fn root() -> Result<Redirect> {
     Ok(Redirect::to("/zec"))
 }
 
-#[get("/{network}")]
-async fn network_status(
-    worker: web::Data<Worker>,
-    network: web::Path<String>,
-    query_params: web::Query<IndexQuery>,
-) -> Result<HttpResponse> {
-    let network = SafeNetwork::from_str(&network)
-        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+/// Helper function to fetch and render the network status page
+async fn fetch_and_render_network_status(
+    worker: &Worker,
+    network: &SafeNetwork,
+    hide_community: bool,
+) -> Result<String> {
 
     // Update query to handle empty results and use FORMAT JSONEachRow, including 30-day uptime and community flag
     // For ZEC, use max-check-based calculation. For other networks, use simple check-based calculation.
@@ -1336,7 +1346,7 @@ async fn network_status(
             online_count: 0,
             total_count: 0,
             community_count: 0,
-            hide_community: false,
+            hide_community,
         };
 
         let html = template.render().map_err(|e| {
@@ -1344,9 +1354,7 @@ async fn network_status(
             actix_web::error::ErrorInternalServerError("Template rendering failed")
         })?;
 
-        return Ok(HttpResponse::Ok()
-            .content_type("text/html; charset=utf-8")
-            .body(html));
+        return Ok(html);
     }
 
     // Parse results line by line (JSONEachRow format)
@@ -1599,7 +1607,6 @@ async fn network_status(
         .collect();
     let percentile_height = calculate_percentile(&heights, 90);
 
-    let hide_community = query_params.hide_community.unwrap_or(false);
     let community_count = servers.iter().filter(|s| s.is_community()).count();
 
     // Filter servers if hide_community is true
@@ -1627,6 +1634,47 @@ async fn network_status(
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
 
+    Ok(html)
+}
+
+#[get("/{network}")]
+async fn network_status(
+    worker: web::Data<Worker>,
+    network: web::Path<String>,
+    query_params: web::Query<IndexQuery>,
+) -> Result<HttpResponse> {
+    let network = SafeNetwork::from_str(&network)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+    
+    let hide_community = query_params.hide_community.unwrap_or(false);
+    
+    // Check if we should use cached version
+    let cache_key = format!("{}-{}", network.0, hide_community);
+    
+    {  // Cache for all variations
+        let cache = worker.cache.read().await;
+        if let Some(entry) = cache.get(&cache_key) {
+            // Check if cache is still valid (less than 10 seconds old)
+            if entry.timestamp.elapsed() < Duration::from_secs(10) {
+                info!("Serving {} from cache (age: {:?})", cache_key, entry.timestamp.elapsed());
+                return Ok(HttpResponse::Ok()
+                    .content_type("text/html; charset=utf-8")
+                    .body(entry.html.clone()));
+            }
+        }
+    }
+    
+    // Cache miss or expired, fetch fresh data
+    info!("Cache miss or expired for {}, fetching fresh data", cache_key);
+    let html = fetch_and_render_network_status(&worker, &network, hide_community).await?;
+    
+    // Update cache
+    let mut cache = worker.cache.write().await;
+    cache.insert(cache_key, CacheEntry {
+        html: html.clone(),
+        timestamp: std::time::Instant::now(),
+    });
+    
     Ok(HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
         .body(html))
@@ -3257,6 +3305,45 @@ mod tests {
     }
 }
 
+/// Background task to refresh the cache periodically
+async fn cache_refresh_task(worker: Worker) {
+    let mut interval = interval(Duration::from_secs(10));
+    
+    // Refresh cache for each network and hide_community combination
+    let networks = vec!["zec", "btc"];
+    let hide_community_options = vec![false, true];
+
+    loop {
+        interval.tick().await;
+        
+        for network_str in &networks {
+            for &hide_community in &hide_community_options {
+                let cache_key = format!("{}-{}", network_str, hide_community);
+                
+                if let Some(network) = SafeNetwork::from_str(network_str) {
+                    // Fetch and handle result immediately to avoid Send issues
+                    let result = fetch_and_render_network_status(&worker, &network, hide_community).await;
+                    match result {
+                        Ok(html) => {
+                            let mut cache = worker.cache.write().await;
+                            cache.insert(cache_key.clone(), CacheEntry {
+                                html,
+                                timestamp: std::time::Instant::now(),
+                            });
+                            info!("Cache refreshed for {}", cache_key);
+                        }
+                        Err(e) => {
+                            error!("Failed to refresh cache for {}: {}", cache_key, e);
+                        }
+                    }
+                } else {
+                    error!("Invalid network: {}", network_str);
+                }
+            }
+        }
+    }
+}
+
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
     // Initialize tracing subscriber with environment filter
@@ -3280,13 +3367,24 @@ async fn main() -> std::io::Result<()> {
 
     let config = Config::from_env().expect("Failed to load config from environment");
 
+    // Initialize cache
+    let cache: PageCache = Arc::new(RwLock::new(HashMap::new()));
+
     let worker = Worker {
         clickhouse: ClickhouseConfig::from_env(),
         http_client,
         config,
+        cache: cache.clone(),
     };
 
+    // Spawn background task to refresh cache
+    let worker_for_cache = worker.clone();
+    actix_web::rt::spawn(async move {
+        cache_refresh_task(worker_for_cache).await;
+    });
+
     info!("🚀 Starting server at http://0.0.0.0:8080");
+    info!("📦 Cache will refresh every 10 seconds");
 
     HttpServer::new(move || {
         App::new()
