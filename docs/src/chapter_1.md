@@ -20,7 +20,6 @@ Services and their dependencies:
 4. **discovery** (depends on: chronicler, web) - Discovers and registers new servers to monitor
 5. **checker-btc** (depends on: tor, chronicler, web) - Polls web every 10 seconds for Bitcoin Electrum servers to check
 6. **checker-zec** (depends on: chronicler, web) - Polls web every 10 seconds for Zcash Lightwalletd servers to check
-7. **checker-http** (depends on: tor, chronicler, web) - Polls web every 10 seconds for HTTP block explorers to check
 
 **Check Frequency:** Each server is checked every 5 minutes. Checkers poll for work every 10 seconds and the job query excludes servers checked within the last 5 minutes.
 

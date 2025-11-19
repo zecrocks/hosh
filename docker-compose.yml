@@ -96,36 +96,6 @@ services:
       chronicler:
         condition: service_healthy
 
-
-  checker-http:
-    build:
-      context: ./checkers/http
-      dockerfile: Dockerfile
-    image: hosh/checker-http
-    environment:
-      - RUST_LOG=warning
-      - WEB_API_URL=http://web:8080
-      - API_KEY=${API_KEY}
-      - TOR_PROXY_HOST=tor
-      - CLICKHOUSE_HOST=chronicler
-      - CLICKHOUSE_PORT=8123
-      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
-      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
-      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
-    logging:
-      driver: "json-file"
-      options:
-        max-size: "25m"
-        max-file: "5"
-    depends_on:
-      web:
-        condition: service_healthy
-      tor:
-        condition: service_healthy
-      chronicler:
-        condition: service_healthy
-
-
   tor:
     image: osminogin/tor-simple
     container_name: tor

@@ -75,19 +75,6 @@ services:
     environment:
       RUST_LOG: info
 
-
-  checker-http:
-    build:
-      context: ./checkers/http
-      dockerfile: dev.Dockerfile
-    image: hosh/checker-http-dev
-    volumes:
-      - ./checkers/http:/usr/src/app
-      - ./checkers/http/target:/usr/src/app/target  # Persist build artifacts
-      - cargo-cache:/usr/local/cargo/registry
-    environment:
-      - RUST_LOG=info
-
   dashboard:
     build: contrib/dashboard
     image: hosh/dashboard
