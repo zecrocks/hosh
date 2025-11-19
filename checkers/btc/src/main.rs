@@ -4,7 +4,6 @@ use axum::{
 };
 use std::net::SocketAddr;
 use tracing::{info, error, Level};
-use tracing_subscriber;
 
 mod routes;
 mod utils;

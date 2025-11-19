@@ -15,9 +15,7 @@ enum ApiHealth {
 }
 
 #[derive(Debug, Clone)]
-struct Server {
-    online: bool,
-}
+struct Server {}
 
 #[derive(Debug, Clone)]
 struct ApiStatus {
@@ -26,7 +24,6 @@ struct ApiStatus {
 
 #[derive(Debug, Clone)]
 struct HtmlServerInfo {
-    hostname: String,
     last_checked: String, // e.g., "4m 21s", "1h 30m", "2d 5h"
 }
 
@@ -38,20 +35,12 @@ impl ApiStatus {
 
         let servers: Vec<Server> = servers_array
             .iter()
-            .map(|server| {
-                Ok(Server {
-                    online: server["online"]
-                        .as_bool()
-                        .ok_or("Missing online status")?,
-                })
+            .map(|_server| {
+                Ok(Server {})
             })
             .collect::<Result<Vec<_>, Box<dyn std::error::Error>>>()?;
 
         Ok(ApiStatus { servers })
-    }
-
-    fn online_count(&self) -> usize {
-        self.servers.iter().filter(|s| s.online).count()
     }
 
     fn total_count(&self) -> usize {
@@ -60,14 +49,6 @@ impl ApiStatus {
 
     fn is_empty(&self) -> bool {
         self.servers.is_empty()
-    }
-
-    fn get_health_status(&self) -> ApiHealth {
-        if self.is_empty() {
-            ApiHealth::Empty
-        } else {
-            ApiHealth::Healthy
-        }
     }
 }
 
@@ -126,11 +107,9 @@ fn parse_html_servers(html: &str) -> Result<Vec<HtmlServerInfo>, Box<dyn std::er
     
     for cap in row_regex.captures_iter(html) {
         if cap.len() >= 3 {
-            let hostname = cap[1].trim().to_string();
             let last_checked = cap[2].trim().to_string();
             
             servers.push(HtmlServerInfo {
-                hostname,
                 last_checked,
             });
         }

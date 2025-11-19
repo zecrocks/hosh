@@ -77,7 +77,7 @@ pub async fn electrum_query(Query(params): Query<QueryParams>) -> Result<Json<se
             info!("✅ Version response: {:?}", response);
             response.get("result")
                 .and_then(|v| v.as_array())
-                .and_then(|arr| arr.get(0))
+                .and_then(|arr| arr.first())
                 .and_then(|v| v.as_str())
                 .unwrap_or("unknown").to_string()
         },

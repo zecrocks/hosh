@@ -9,9 +9,6 @@ use serde::de::Error;
 use serde_json::Value;
 use chrono::{DateTime, Utc, FixedOffset};
 use tracing::{info, warn, error};
-use tracing_subscriber;
-use reqwest;
-use regex;
 use qrcode::{QrCode, render::svg};
 use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
@@ -37,7 +34,6 @@ struct IndexTemplate {
     servers: Vec<ServerInfo>,
     percentile_height: u64,
     current_network: &'static str,
-    online_count: usize,
     total_count: usize,
     community_count: usize,
     hide_community: bool,
@@ -525,7 +521,7 @@ fn validate_json_with_details(input: &str) -> Result<serde_json::Value, String> 
         Ok(value) => Ok(value),
         Err(e) => {
             let error_msg = format!("JSON parse error: {} at line {} column {}", 
-                e.to_string(), e.line(), e.column());
+                e, e.line(), e.column());
             
             // Try to provide more specific error information
             let specific_error = if e.to_string().contains("expected `,` or `}`") {
@@ -645,7 +641,7 @@ where
                 .or_else(|| obj.get("message"))
                 .or_else(|| obj.get("detail"))
                 .and_then(|v| v.as_str())
-                .map(|s| extract_error_info(s));
+                .map(extract_error_info);
                 
             if let Some(msg) = error_msg {
                 if msg.is_empty() {
@@ -697,7 +693,7 @@ where
                 .or_else(|| obj.get("message"))
                 .or_else(|| obj.get("detail"))
                 .and_then(|v| v.as_str())
-                .map(|s| extract_error_info(s));
+                .map(extract_error_info);
                 
             if let Some(msg) = error_msg {
                 if msg.is_empty() {
@@ -745,10 +741,8 @@ impl ServerInfo {
                 parsed_time = Some(time);
             }
             // Strategy 3: Try parsing as naive datetime first (handles nanoseconds better)
-            else if clean_timestamp.ends_with('Z') {
+            else if let Some(naive_str) = clean_timestamp.strip_suffix('Z') {
                 // Remove the Z suffix and parse as naive datetime
-                let naive_str = &clean_timestamp[..clean_timestamp.len()-1];
-                
                 let formats = [
                     "%Y-%m-%dT%H:%M:%S%.f",
                     "%Y-%m-%dT%H:%M:%S%.9f",  // Support for 9-digit nanoseconds
@@ -921,8 +915,6 @@ struct ServerTemplate {
     network: String,
     current_network: &'static str,
     percentile_height: u64,
-    online_count: usize,
-    total_count: usize,
     uptime_stats: UptimeStats,
     results_window_days: u64,
 }
@@ -1212,7 +1204,6 @@ async fn fetch_and_render_network_status(
             servers: Vec::new(),
             percentile_height: 0,
             current_network: network.0,
-            online_count: 0,
             total_count: 0,
             community_count: 0,
             hide_community,
@@ -1486,13 +1477,11 @@ async fn fetch_and_render_network_status(
     };
 
     let total_count = filtered_servers.len();
-    let online_count = filtered_servers.iter().filter(|s| s.is_online()).count();
 
     let template = IndexTemplate {
         servers: filtered_servers,
         percentile_height,
         current_network: network.0,
-        online_count,
         total_count,
         community_count,
         hide_community,
@@ -1686,7 +1675,6 @@ async fn server_detail(
     })?;
 
     let mut heights = Vec::new();
-    let mut total_count = 0;
 
     for line in count_body.lines() {
         if line.trim().is_empty() {
@@ -1704,10 +1692,8 @@ async fn server_detail(
                 }
             }
         }
-        total_count += 1;
     }
 
-    let online_count = heights.len();
     let percentile_height = calculate_percentile(&heights, 90);
 
     // Calculate uptime statistics
@@ -1750,8 +1736,6 @@ async fn server_detail(
         network,
         current_network: safe_network.0,
         percentile_height,
-        online_count,
-        total_count,
         uptime_stats,
         results_window_days: worker.config.results_window_days,
     };
@@ -2575,13 +2559,8 @@ async fn calculate_uptime_stats(
         }
         
         // Parse the timestamp
-        let parsed_time = if let Ok(time) = DateTime::parse_from_rfc3339(timestamp) {
-            Some(time)
-        } else if let Some(time) = parse_rfc3339_with_nanos(timestamp) {
-            Some(time)
-        } else {
-            None
-        };
+        let parsed_time = DateTime::parse_from_rfc3339(timestamp).ok()
+            .or_else(|| parse_rfc3339_with_nanos(timestamp));
         
         if let Some(time) = parsed_time {
             // Format without milliseconds
@@ -3186,9 +3165,7 @@ fn parse_rfc3339_with_nanos(timestamp: &str) -> Option<DateTime<FixedOffset>> {
     let clean_timestamp = timestamp.trim_matches('\'');
     
     // Handle the specific format: 2025-07-31T21:11:21.472525544Z
-    if clean_timestamp.ends_with('Z') {
-        let naive_str = &clean_timestamp[..clean_timestamp.len()-1];
-        
+    if let Some(naive_str) = clean_timestamp.strip_suffix('Z') {
         // Try parsing with different nanosecond formats
         let formats = [
             "%Y-%m-%dT%H:%M:%S%.f",

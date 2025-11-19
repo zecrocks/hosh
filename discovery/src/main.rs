@@ -4,7 +4,6 @@ use tokio::time;
 use chrono::{DateTime, Utc};
 use tracing::{info, error};
 use reqwest::Client;
-use tracing_subscriber;
 use scraper::{Html, Selector};
 
 // Environment variable constants

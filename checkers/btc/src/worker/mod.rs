@@ -4,10 +4,6 @@ use futures_util::stream::StreamExt;
 use crate::routes::electrum::query::{electrum_query, QueryParams};
 use axum::extract::Query;
 use tracing::{debug, error, info};
-use uuid::Uuid;
-use reqwest;
-use uuid;
-use hyper;
 
 #[derive(Debug, Serialize, Deserialize)]
 struct CheckRequest {
@@ -173,7 +169,7 @@ impl Worker {
     async fn submit_check_data(&self, server_data: &ServerData) -> Result<(), Box<dyn std::error::Error>> {
         info!("💾 Submitting check data for {}:{}", server_data.host, server_data.port);
 
-        let response = self.http_client.post(&format!("{}/api/v1/results?api_key={}", self.web_api_url, self.api_key))
+        let response = self.http_client.post(format!("{}/api/v1/results?api_key={}", self.web_api_url, self.api_key))
             .json(server_data)
             .send()
             .await?;
@@ -215,7 +211,7 @@ impl Worker {
         let (tx, mut rx) = tokio::sync::mpsc::channel(self.max_concurrent_checks);
         let worker = self.clone();
         
-        let process_handle = tokio::spawn(async move {
+        let _process_handle = tokio::spawn(async move {
             let mut handles = futures_util::stream::FuturesUnordered::new();
             
             while let Some(req) = rx.recv().await {
@@ -272,19 +268,6 @@ impl Worker {
 }
 
 impl CheckRequest {
-    fn is_valid(&self) -> bool {
-        // If the host field is empty but we have a check_id/target_id, we'll consider it valid
-        if self.host.is_empty() {
-            return false;
-        }
-        
-        if self.user_submitted {
-            self.check_id.is_some() && !self.host.is_empty()
-        } else {
-            !self.host.is_empty()
-        }
-    }
-
     fn get_check_id(&self) -> String {
         self.check_id.clone().unwrap_or_else(|| "none".to_string())
     }

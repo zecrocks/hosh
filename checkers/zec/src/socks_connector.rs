@@ -80,8 +80,7 @@ impl Service<Uri> for SocksConnector {
             ).await
             .map_err(|e| {
                 error!("SOCKS connection failed: {}", e);
-                Box::new(std::io::Error::new(
-                    std::io::ErrorKind::Other,
+                Box::new(std::io::Error::other(
                     format!("SOCKS proxy error: {}", e)
                 )) as Box<dyn std::error::Error + Send + Sync>
             })?;

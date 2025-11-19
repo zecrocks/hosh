@@ -7,7 +7,6 @@ use zcash_client_backend::{
 };
 use tonic::{Request, transport::{Uri, ClientTlsConfig, Endpoint}};
 use tracing::{info, error};
-use reqwest;
 
 mod socks_connector;
 use socks_connector::SocksConnector;
@@ -248,7 +247,7 @@ impl Worker {
     }
 
     async fn submit_to_api(&self, result: &CheckResult) -> Result<(), Box<dyn Error>> {
-        let response = self.http_client.post(&format!("{}/api/v1/results?api_key={}", self.web_api_url, self.api_key))
+        let response = self.http_client.post(format!("{}/api/v1/results?api_key={}", self.web_api_url, self.api_key))
             .json(result)
             .send()
             .await?;

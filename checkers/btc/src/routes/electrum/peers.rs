@@ -44,7 +44,7 @@ pub async fn electrum_peers(Query(params): Query<PeerQueryParams>) -> Result<Jso
 
     for peer in peers {
         if let Some(peer_details) = peer.as_array() {
-            let address = peer_details.get(0).and_then(|v| v.as_str()).unwrap_or("Unknown");
+            let address = peer_details.first().and_then(|v| v.as_str()).unwrap_or("Unknown");
             let empty_vec = Vec::new();
             let features = peer_details
                 .get(2)
