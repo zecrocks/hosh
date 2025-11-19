@@ -18,3 +18,6 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1.0", features = ["v4", "v5", "serde"] }
 reqwest = { version = "0.11", features = ["json"] }
+tower = "0.5"
+tokio-socks = "0.5"
+hyper-util = { version = "0.1", features = ["tokio"] }

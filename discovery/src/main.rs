@@ -109,9 +109,9 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zcash.mysideoftheweb.com", 19067, false), // eZcash (Testnet)
     //// Tor nodes
     // Zec.rocks Mainnet (Zebra + Zaino)
-    // ("6fiyttjv3awhv6afdqeeerfxckdqlt6vejjsadeiqawnt7e3hxdcaxqd.onion", 443, false),
+    ("kxn4wla7i4rczcpn7ljbtmtq4gd4xhtx6f6hxpze7qbfmu66atwsneqd.onion", 443, false),
     // ("lzzfytqg24a7v6ejqh2q4ecaop6mf62gupvdimc4ryxeixtdtzxxjmad.onion", 443, false),
-    // ("vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion", 443, false),
+    ("vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion", 443, false),
     // Zec.rocks Mainnet (Zcashd + Lightwalletd)
     // ("ltefw7pqlslcst5n465kxwgqmb4wxwp7djvhzqlfwhh3wx53xzuwr2ad.onion", 443, false),
     // Zec.rocks Testnet (Zebra + Zaino)

@@ -6,10 +6,11 @@ use zcash_client_backend::{
     proto::service::{compact_tx_streamer_client::CompactTxStreamerClient, Empty},
 };
 use tonic::{Request, transport::{Uri, ClientTlsConfig, Endpoint}};
-use futures_util::StreamExt;
 use tracing::{info, error};
-use uuid::Uuid;
 use reqwest;
+
+mod socks_connector;
+use socks_connector::SocksConnector;
 
 #[derive(Debug, Deserialize)]
 struct CheckRequest {
@@ -84,26 +85,8 @@ struct ServerInfo {
     donation_address: String,
 }
 
-struct ClickhouseConfig {
-    url: String,
-    user: String,
-    password: String,
-    database: String,
-}
-
-impl ClickhouseConfig {
-    fn from_env() -> Self {
-        Self {
-            url: format!("http://{}:{}", 
-                env::var("CLICKHOUSE_HOST").unwrap_or_else(|_| "chronicler".into()),
-                env::var("CLICKHOUSE_PORT").unwrap_or_else(|_| "8123".into())
-            ),
-            user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".into()),
-            password: env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set"),
-            database: env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".into()),
-        }
-    }
-}
+// ClickhouseConfig removed - not used in current implementation
+// Results are submitted via Worker's submit_to_api method instead
 
 #[derive(Clone)]
 struct Worker {
@@ -112,7 +95,7 @@ struct Worker {
     http_client: reqwest::Client,
 }
 
-// Connect directly (without Tor)
+// Connect directly (without SOCKS proxy)
 async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error>> {
     info!("Connecting to lightwalletd server at {}", uri);
     
@@ -161,6 +144,82 @@ async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error>> {
     };
 
     info!("Successfully gathered server info");
+    Ok(info)
+}
+
+// Connect via SOCKS5 proxy (e.g., Tor)
+async fn get_info_via_socks(uri: Uri, proxy_addr: String) -> Result<ServerInfo, Box<dyn Error>> {
+    info!("Connecting to lightwalletd server at {} via SOCKS proxy {}", uri, proxy_addr);
+    
+    let connector = SocksConnector::new(proxy_addr);
+    
+    // Check if this is an .onion address
+    let host = uri.host().unwrap_or("");
+    let is_onion = host.ends_with(".onion");
+    
+    // Many .onion services run without TLS since Tor already provides encryption
+    // Try to construct the URI with http:// scheme for .onion addresses
+    let connection_uri = if is_onion {
+        info!("Detected .onion address - using plaintext connection (Tor provides encryption)");
+        // Construct http:// URI for plaintext gRPC
+        format!("http://{}:{}", host, uri.port_u16().unwrap_or(443))
+            .parse::<Uri>()?
+    } else {
+        uri.clone()
+    };
+    
+    // Use longer timeouts for SOCKS connections (Tor circuit building can be slow)
+    let mut endpoint = Endpoint::from(connection_uri.clone())
+        .connect_timeout(Duration::from_secs(10))  // Longer timeout for SOCKS
+        .timeout(Duration::from_secs(20));         // Longer RPC timeout
+    
+    // Only configure TLS for non-.onion addresses
+    if !is_onion {
+        endpoint = endpoint.tls_config(ClientTlsConfig::new().with_webpki_roots())?;
+    }
+    
+    info!("Establishing connection through SOCKS proxy...");
+    let channel = endpoint
+        .connect_with_connector(connector)
+        .await?;
+    
+    let mut client = CompactTxStreamerClient::with_origin(channel, connection_uri);
+    
+    info!("Sending gRPC request for lightwalletd info...");
+    let mut req = Request::new(Empty {});
+    req.set_timeout(Duration::from_secs(10));
+    
+    let chain_info = match client.get_lightd_info(req).await {
+        Ok(response) => {
+            info!("Received successful gRPC response via SOCKS");
+            response.into_inner()
+        },
+        Err(e) => {
+            error!("gRPC request failed: {}", e);
+            return Err(format!("gRPC error: {}", e).into());
+        }
+    };
+
+    info!("Processing server response...");
+    let info = ServerInfo {
+        block_height: chain_info.block_height,
+        vendor: chain_info.vendor,
+        chain_name: chain_info.chain_name,
+        git_commit: chain_info.git_commit,
+        sapling_activation_height: chain_info.sapling_activation_height,
+        consensus_branch_id: chain_info.consensus_branch_id,
+        taddr_support: chain_info.taddr_support,
+        branch: chain_info.branch,
+        build_date: chain_info.build_date,
+        build_user: chain_info.build_user,
+        estimated_height: chain_info.estimated_height,
+        version: chain_info.version,
+        zcashd_build: chain_info.zcashd_build,
+        zcashd_subversion: chain_info.zcashd_subversion,
+        donation_address: chain_info.donation_address,
+    };
+
+    info!("Successfully gathered server info via SOCKS");
     Ok(info)
 }
 
@@ -218,10 +277,32 @@ impl Worker {
 
         let start_time = Instant::now();
 
-        let (height, error, server_info) = match get_info_direct(uri).await {
-            Ok(info) => (info.block_height, None, Some(info)),
-            Err(e) => {
-                let simplified_error = if e.to_string().contains("tls handshake eof") {
+        // Check if this is an .onion address
+        let is_onion = check_request.host.ends_with(".onion");
+        let socks_proxy = env::var("SOCKS_PROXY").ok();
+
+        let (height, error, server_info) = if is_onion {
+            // .onion addresses require SOCKS proxy
+            if let Some(proxy) = socks_proxy {
+                info!("Using SOCKS proxy for .onion address: {}", proxy);
+                match get_info_via_socks(uri, proxy).await {
+                    Ok(info) => (info.block_height, None, Some(info)),
+                    Err(e) => {
+                        error!("SOCKS connection failed: {}", e);
+                        (0, Some(e.to_string()), None)
+                    },
+                }
+            } else {
+                error!(".onion address requires SOCKS_PROXY to be configured");
+                (0, Some("Cannot connect to .onion address without SOCKS proxy".to_string()), None)
+            }
+        } else {
+            // Use direct connection for regular addresses
+            info!("Using direct connection");
+            match get_info_direct(uri).await {
+                Ok(info) => (info.block_height, None, Some(info)),
+                Err(e) => {
+                    let simplified_error = if e.to_string().contains("tls handshake eof") {
                     "TLS handshake failed - server may be offline or not accepting connections".to_string()
                 } else if e.to_string().contains("connection refused") {
                     "Connection refused - server may be offline or not accepting connections".to_string()
@@ -241,20 +322,42 @@ impl Worker {
                     } else {
                         error_str
                     }
-                };
-                (0, Some(simplified_error), None)
-            },
+                    };
+                    (0, Some(simplified_error), None)
+                },
+            }
         };
 
-        let latency = start_time.elapsed().as_secs_f64() * 1000.0;
-        let ping = (latency * 100.0).round() / 100.0;
-        let status = if error.is_none() { "success" } else { "error" };
+        // Only calculate meaningful ping for successful connections
+        // For failed .onion connections, don't record the failure time as "ping"
+        let (ping, ping_ms) = if error.is_none() {
+            let latency = start_time.elapsed().as_secs_f64() * 1000.0;
+            let ping_value = (latency * 100.0).round() / 100.0;
+            (ping_value, ping_value)
+        } else if is_onion {
+            // Don't record ping for failed .onion connections
+            (0.0, 0.0)
+        } else {
+            // For regular servers, record the failure time (useful for detecting timeouts)
+            let latency = start_time.elapsed().as_secs_f64() * 1000.0;
+            let ping_value = (latency * 100.0).round() / 100.0;
+            (ping_value, ping_value)
+        };
 
         match &error {
-            Some(err) => info!(
-                "Server {}:{} - Error checking block height, Latency: {:.2}ms, Error: {}",
-                check_request.host, check_request.port, ping, err
-            ),
+            Some(err) => {
+                if is_onion {
+                    info!(
+                        "Server {}:{} (.onion) - Connection failed, Error: {}",
+                        check_request.host, check_request.port, err
+                    );
+                } else {
+                    info!(
+                        "Server {}:{} - Error checking block height, Latency: {:.2}ms, Error: {}",
+                        check_request.host, check_request.port, ping, err
+                    );
+                }
+            },
             None => info!(
                 "Server {}:{} - Block height: {}, Latency: {:.2}ms",
                 check_request.host, check_request.port, height, ping
@@ -271,7 +374,7 @@ impl Worker {
             error,
             last_updated: Utc::now(),
             ping,
-            ping_ms: ping,
+            ping_ms,
             check_id: check_request.check_id.clone(),
             user_submitted: check_request.user_submitted,
             vendor: server_info.as_ref().map(|info| info.vendor.clone()),
@@ -324,13 +427,24 @@ async fn main() -> Result<(), Box<dyn Error>> {
             (target.clone(), 443)
         };
         
-        // Check if it's an onion address which we don't support yet
-        if test_server.ends_with(".onion") {
-            error!("Cannot connect to .onion address: Tor support is disabled");
-            return Err("Cannot connect to .onion addresses: Tor support is disabled".into());
+        // Check if this is an .onion address
+        let is_onion = test_server.ends_with(".onion");
+        let socks_proxy = env::var("SOCKS_PROXY").ok();
+        
+        // .onion addresses require SOCKS proxy
+        if is_onion && socks_proxy.is_none() {
+            error!("Cannot connect to .onion address without SOCKS proxy");
+            error!("Set SOCKS_PROXY environment variable (e.g., SOCKS_PROXY=127.0.0.1:9050)");
+            return Err("Cannot connect to .onion addresses without SOCKS proxy".into());
         }
         
-        info!("Testing direct connection to {}:{}", test_server, test_port);
+        if is_onion {
+            if let Some(ref proxy) = socks_proxy {
+                info!("Testing SOCKS connection via {} to .onion address {}:{}", proxy, test_server, test_port);
+            }
+        } else {
+            info!("Testing direct connection to {}:{}", test_server, test_port);
+        }
         
         let uri_str = format!("https://{}:{}", test_server, test_port);
         info!("Constructing URI: {}", uri_str);
@@ -348,16 +462,33 @@ async fn main() -> Result<(), Box<dyn Error>> {
         info!("Starting connection attempt to {} (timeout: {} seconds)...", uri, wait_time);
         let start_time = Instant::now();
         
-        match tokio::time::timeout(
-            Duration::from_secs(wait_time),
-            get_info_direct(uri)
-        ).await {
+        // Only use SOCKS for .onion addresses
+        let connection_result = if is_onion {
+            if let Some(proxy) = socks_proxy {
+                tokio::time::timeout(
+                    Duration::from_secs(wait_time),
+                    get_info_via_socks(uri, proxy)
+                ).await
+            } else {
+                // This shouldn't happen due to earlier check, but handle it
+                return Err("Cannot connect to .onion address without SOCKS proxy".into());
+            }
+        } else {
+            tokio::time::timeout(
+                Duration::from_secs(wait_time),
+                get_info_direct(uri)
+            ).await
+        };
+        
+        match connection_result {
             Ok(result) => {
                 match result {
                     Ok(info) => {
                         let latency = start_time.elapsed().as_secs_f64() * 1000.0;
                         info!("Successfully connected! Block height: {}, Latency: {:.2}ms", 
                              info.block_height, latency);
+                        info!("Server details: vendor={}, version={}, chain={}", 
+                             info.vendor, info.version, info.chain_name);
                     },
                     Err(e) => {
                         error!("Failed to connect: {}", e);

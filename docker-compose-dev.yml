@@ -50,6 +50,7 @@ services:
       - cargo-cache:/usr/local/cargo/registry
     environment:
       RUST_LOG: info
+      SOCKS_PROXY: tor:9050
 
   checker-zec-1:
     build:
@@ -62,6 +63,7 @@ services:
       - cargo-cache:/usr/local/cargo/registry
     environment:
       RUST_LOG: info
+      SOCKS_PROXY: tor:9050
 
   checker-btc:
     build:

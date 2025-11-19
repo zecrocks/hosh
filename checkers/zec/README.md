@@ -9,6 +9,7 @@ The ZEC checker connects to Zcash lightwalletd servers using the gRPC protocol t
 ## Features
 
 - **gRPC Connection**: Connects to Zcash lightwalletd servers using TLS
+- **SOCKS5 Proxy Support**: Route connections through SOCKS proxies (Tor, etc.) for privacy or .onion access
 - **Server Information**: Collects detailed server metadata including:
   - Block height and estimated height
   - Vendor information and git commit
@@ -69,9 +70,130 @@ CLICKHOUSE_PASSWORD=your_password
 # HTTP Client Configuration
 HTTP_TIMEOUT_SECONDS=30
 
+# SOCKS Proxy Configuration (Optional)
+SOCKS_PROXY=127.0.0.1:9050    # Use SOCKS5 proxy (e.g., Tor)
+# SOCKS_PROXY=127.0.0.1:9150  # For Tor Browser
+
 # Logging
 RUST_LOG=info
 ```
+
+## SOCKS Proxy Support
+
+The ZEC checker can route connections through a SOCKS5 proxy (e.g., Tor) to access `.onion` hidden services.
+
+### How It Works
+
+The checker **automatically detects** `.onion` addresses and routes them through the configured SOCKS proxy. Regular clearnet servers use direct connections for optimal performance.
+
+**Behavior:**
+- `.onion` addresses → **SOCKS proxy** (required)
+- Regular servers → **Direct connection** (even if SOCKS_PROXY is set)
+
+### Features
+
+- **Automatic .onion Detection**: Automatically uses SOCKS only for `.onion` addresses
+- **Remote DNS Resolution**: DNS queries are handled by the SOCKS proxy, not locally (critical for .onion addresses)
+- **Tor Support**: Full support for Tor hidden services
+- **Optimal Performance**: Regular servers use fast direct connections
+- **TLS Over SOCKS**: Full TLS encryption is maintained for clearnet servers accessed via SOCKS (if needed)
+
+### Configuration
+
+Set the `SOCKS_PROXY` environment variable to enable `.onion` address support:
+
+```bash
+# Use Tor (standard port)
+export SOCKS_PROXY=127.0.0.1:9050
+
+# Use Tor Browser
+export SOCKS_PROXY=127.0.0.1:9150
+
+# Use custom SOCKS proxy
+export SOCKS_PROXY=proxy.example.com:1080
+```
+
+**Note:** The SOCKS proxy is **only used for `.onion` addresses**. Regular servers will use direct connections regardless of whether `SOCKS_PROXY` is set.
+
+### Testing with Tor
+
+#### Prerequisites
+
+1. **Install Tor**:
+   ```bash
+   # macOS
+   brew install tor
+   
+   # Ubuntu/Debian
+   sudo apt install tor
+   ```
+
+2. **Start Tor**:
+   ```bash
+   # macOS/Linux
+   tor
+   
+   # Or use system service
+   sudo systemctl start tor
+   ```
+
+3. **Or use Tor Browser** (default port 9150)
+
+#### Test with Public Server
+
+```bash
+# Direct connection
+cargo run -- --test zec.rocks:443
+
+# Still uses direct connection (SOCKS only for .onion)
+SOCKS_PROXY=127.0.0.1:9050 cargo run -- --test zec.rocks:443
+```
+
+#### Test with .onion Address
+
+```bash
+# .onion addresses require SOCKS proxy
+SOCKS_PROXY=127.0.0.1:9050 cargo run -- --test <onion-address>:443
+```
+
+### Performance Considerations
+
+**Regular Servers (Direct Connection):**
+- Connection time: ~100-500ms (TLS handshake)
+- Throughput: Full network speed
+- **Always uses direct connection** for optimal performance
+
+**.onion Addresses (Via SOCKS/Tor):**
+- Connection time: ~2-5 seconds (Tor circuit establishment)
+- Throughput: Reduced (Tor bandwidth limits)
+- Additional latency: +200-500ms per request
+- **Automatically routed through SOCKS** when detected
+
+### Security Features
+
+1. **DNS Privacy**: DNS resolution happens remotely at the SOCKS proxy, preventing local DNS leaks
+2. **TLS Validation**: Certificate validation is still performed, protecting against MITM attacks
+3. **Fail-Hard**: If `SOCKS_PROXY` is configured but unreachable, the connection fails rather than falling back to direct connection
+4. **Onion Support**: Can connect to `.onion` addresses for enhanced privacy
+
+### Troubleshooting
+
+**Issue**: "Cannot connect to .onion address without SOCKS proxy"
+- **Solution**: Set the `SOCKS_PROXY` environment variable to a running Tor instance
+
+**Issue**: "SOCKS connection failed: Proxy server unreachable"
+- **Cause**: SOCKS proxy not running
+- **Solution**: Start Tor or your SOCKS proxy
+- **Check**: `curl --socks5 127.0.0.1:9050 https://check.torproject.org`
+
+**Issue**: Regular server seems slow
+- **Cause**: This shouldn't happen - regular servers bypass SOCKS
+- **Check**: Verify the server doesn't have `.onion` in its hostname
+- **Solution**: Regular servers always use fast direct connections
+
+**Issue**: Very slow connections to .onion addresses
+- **Cause**: Tor circuit building / bandwidth limitations
+- **Solution**: Normal for Tor (2-5 seconds is expected). Timeouts are automatically increased.
 
 ## Data Storage
 
@@ -117,11 +239,27 @@ docker compose --profile dev up checker-zec-dev
 docker build -f Dockerfile -t checker-zec .
 ```
 
+### Docker with Tor
+The production docker-compose setup automatically configures the ZEC checker to use Tor:
+
+```bash
+# Start all services including Tor
+docker compose up -d
+
+# The ZEC checkers will automatically use tor:9050 for SOCKS proxy
+# This enables .onion address support and anonymous connections
+```
+
+The `SOCKS_PROXY=tor:9050` environment variable is pre-configured in `docker-compose.yml`.
+
 ## Dependencies
 
 - `tokio` - Async runtime
 - `zcash_client_backend` - Zcash gRPC client
 - `tonic` - gRPC framework
+- `tower` - Service abstraction for custom connectors
+- `tokio-socks` - SOCKS5 protocol implementation
+- `hyper-util` - Hyper utilities for connection handling
 - `async-nats` - NATS client
 - `reqwest` - HTTP client
 - `serde` - Serialization
@@ -156,6 +294,9 @@ The service provides detailed logging for monitoring:
 ## Security
 
 - **TLS Connections**: All gRPC connections use TLS encryption
+- **SOCKS Privacy**: Optional SOCKS proxy support for anonymous connections
+- **Remote DNS**: DNS resolution via proxy prevents DNS leaks
+- **Certificate Validation**: TLS certificates are validated even over SOCKS
 - **No Credentials**: No authentication required for read-only operations
 - **Timeout Protection**: Prevents hanging connections
 - **Error Isolation**: Individual server failures don't affect others 
