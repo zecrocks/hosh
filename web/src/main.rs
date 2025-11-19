@@ -37,6 +37,8 @@ struct IndexTemplate {
     total_count: usize,
     community_count: usize,
     hide_community: bool,
+    tor_only: bool,
+    onion_count: usize,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -888,6 +890,10 @@ impl ServerInfo {
             .unwrap_or(false)
     }
 
+    fn is_onion(&self) -> bool {
+        self.host.ends_with(".onion")
+    }
+
 }
 
 #[derive(Debug)]
@@ -966,6 +972,7 @@ struct ApiResponse {
 #[derive(Deserialize)]
 struct IndexQuery {
     hide_community: Option<bool>,
+    tor_only: Option<bool>,
 }
 
 #[derive(Clone)]
@@ -1045,6 +1052,7 @@ async fn fetch_and_render_network_status(
     worker: &Worker,
     network: &SafeNetwork,
     hide_community: bool,
+    tor_only: bool,
 ) -> Result<String> {
 
     // Update query to handle empty results and use FORMAT JSONEachRow, including 30-day uptime and community flag
@@ -1207,6 +1215,8 @@ async fn fetch_and_render_network_status(
             total_count: 0,
             community_count: 0,
             hide_community,
+            tor_only,
+            onion_count: 0,
         };
 
         let html = template.render().map_err(|e| {
@@ -1468,13 +1478,16 @@ async fn fetch_and_render_network_status(
     let percentile_height = calculate_percentile(&heights, 90);
 
     let community_count = servers.iter().filter(|s| s.is_community()).count();
+    let onion_count = servers.iter().filter(|s| s.is_onion()).count();
 
-    // Filter servers if hide_community is true
-    let filtered_servers = if hide_community {
-        servers.into_iter().filter(|s| !s.is_community()).collect()
-    } else {
-        servers
-    };
+    // Filter servers based on hide_community and tor_only flags
+    let filtered_servers = servers.into_iter()
+        .filter(|s| {
+            let passes_community_filter = !hide_community || !s.is_community();
+            let passes_tor_filter = !tor_only || s.is_onion();
+            passes_community_filter && passes_tor_filter
+        })
+        .collect::<Vec<_>>();
 
     let total_count = filtered_servers.len();
 
@@ -1485,6 +1498,8 @@ async fn fetch_and_render_network_status(
         total_count,
         community_count,
         hide_community,
+        tor_only,
+        onion_count,
     };
 
     let html = template.render().map_err(|e| {
@@ -1505,9 +1520,10 @@ async fn network_status(
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
     
     let hide_community = query_params.hide_community.unwrap_or(false);
+    let tor_only = query_params.tor_only.unwrap_or(false);
     
     // Check if we should use cached version
-    let cache_key = format!("{}-{}", network.0, hide_community);
+    let cache_key = format!("{}-{}-{}", network.0, hide_community, tor_only);
     
     {  // Cache for all variations
         let cache = worker.cache.read().await;
@@ -1524,7 +1540,7 @@ async fn network_status(
     
     // Cache miss or expired, fetch fresh data
     info!("Cache miss or expired for {}, fetching fresh data", cache_key);
-    let html = fetch_and_render_network_status(&worker, &network, hide_community).await?;
+    let html = fetch_and_render_network_status(&worker, &network, hide_community, tor_only).await?;
     
     // Update cache
     let mut cache = worker.cache.write().await;
@@ -3022,35 +3038,38 @@ mod tests {
 async fn cache_refresh_task(worker: Worker) {
     let mut interval = interval(Duration::from_secs(10));
     
-    // Refresh cache for each network and hide_community combination
+    // Refresh cache for each network, hide_community, and tor_only combination
     let networks = vec!["zec", "btc"];
     let hide_community_options = vec![false, true];
+    let tor_only_options = vec![false, true];
 
     loop {
         interval.tick().await;
         
         for network_str in &networks {
             for &hide_community in &hide_community_options {
-                let cache_key = format!("{}-{}", network_str, hide_community);
-                
-                if let Some(network) = SafeNetwork::from_str(network_str) {
-                    // Fetch and handle result immediately to avoid Send issues
-                    let result = fetch_and_render_network_status(&worker, &network, hide_community).await;
-                    match result {
-                        Ok(html) => {
-                            let mut cache = worker.cache.write().await;
-                            cache.insert(cache_key.clone(), CacheEntry {
-                                html,
-                                timestamp: std::time::Instant::now(),
-                            });
-                            info!("Cache refreshed for {}", cache_key);
+                for &tor_only in &tor_only_options {
+                    let cache_key = format!("{}-{}-{}", network_str, hide_community, tor_only);
+                    
+                    if let Some(network) = SafeNetwork::from_str(network_str) {
+                        // Fetch and handle result immediately to avoid Send issues
+                        let result = fetch_and_render_network_status(&worker, &network, hide_community, tor_only).await;
+                        match result {
+                            Ok(html) => {
+                                let mut cache = worker.cache.write().await;
+                                cache.insert(cache_key.clone(), CacheEntry {
+                                    html,
+                                    timestamp: std::time::Instant::now(),
+                                });
+                                info!("Cache refreshed for {}", cache_key);
+                            }
+                            Err(e) => {
+                                error!("Failed to refresh cache for {}: {}", cache_key, e);
+                            }
                         }
-                        Err(e) => {
-                            error!("Failed to refresh cache for {}: {}", cache_key, e);
-                        }
+                    } else {
+                        error!("Invalid network: {}", network_str);
                     }
-                } else {
-                    error!("Invalid network: {}", network_str);
                 }
             }
         }

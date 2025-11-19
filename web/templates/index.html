@@ -3,27 +3,40 @@
 {% block content %}
 <div class="row">
     <div class="col">
-        {% if current_network == "zec" %}
         <!-- Filter buttons -->
         <div class="mb-3">
-            <div class="btn-group" role="group" aria-label="Server type filter">
-                {% if hide_community %}
-                <a href="/{{ current_network }}" class="btn btn-outline-secondary">All Servers</a>
-                <a href="/{{ current_network }}?hide_community=true" class="btn btn-outline-primary active">Hide Community Servers</a>
+            <div class="btn-group me-2" role="group" aria-label="Tor filter">
+                {% if tor_only %}
+                <a href="/{{ current_network }}{% if hide_community %}?hide_community=true{% endif %}" class="btn btn-outline-secondary">All Servers</a>
+                <a href="/{{ current_network }}?tor_only=true{% if hide_community %}&hide_community=true{% endif %}" class="btn btn-outline-primary active">Tor Only</a>
                 {% else %}
-                <a href="/{{ current_network }}" class="btn btn-outline-secondary active">All Servers</a>
-                <a href="/{{ current_network }}?hide_community=true" class="btn btn-outline-primary">Hide Community Servers</a>
+                <a href="/{{ current_network }}{% if hide_community %}?hide_community=true{% endif %}" class="btn btn-outline-secondary active">All Servers</a>
+                <a href="/{{ current_network }}?tor_only=true{% if hide_community %}&hide_community=true{% endif %}" class="btn btn-outline-primary">Tor Only</a>
                 {% endif %}
             </div>
-            <span class="ms-3 text-muted">
+            {% if current_network == "zec" %}
+            <div class="btn-group" role="group" aria-label="Community filter">
                 {% if hide_community %}
+                <a href="/{{ current_network }}{% if tor_only %}?tor_only=true{% endif %}" class="btn btn-outline-secondary">Show All</a>
+                <a href="/{{ current_network }}?hide_community=true{% if tor_only %}&tor_only=true{% endif %}" class="btn btn-outline-primary active">Hide Community</a>
+                {% else %}
+                <a href="/{{ current_network }}{% if tor_only %}?tor_only=true{% endif %}" class="btn btn-outline-secondary active">Show All</a>
+                <a href="/{{ current_network }}?hide_community=true{% if tor_only %}&tor_only=true{% endif %}" class="btn btn-outline-primary">Hide Community</a>
+                {% endif %}
+            </div>
+            {% endif %}
+            <span class="ms-3 text-muted">
+                {% if tor_only && hide_community %}
+                    Showing {{ total_count }} servers ({{ onion_count }} total onion, {{ community_count }} community servers hidden)
+                {% else if tor_only %}
+                    Showing {{ total_count }} onion servers ({{ onion_count }} total onion)
+                {% else if hide_community %}
                     Showing {{ total_count }} servers ({{ community_count }} community servers hidden)
                 {% else %}
                     Showing all {{ total_count }} servers
                 {% endif %}
             </span>
         </div>
-        {% endif %}
         
         <div class="card shadow-sm">
             <div class="table-responsive">
