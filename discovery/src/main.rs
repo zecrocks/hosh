@@ -182,6 +182,9 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("z.networkx.icu", 443, true),
     ("lwd.zcashexplorer.app", 9067, true),
     ("vmi2886543.tail8e3e39.ts.net", 443, true),
+    ("light.zcash.me", 443, true),
+    ("zc.nettools.uno", 443, true),
+    ("zwal.orderpeak.me", 443, true),
 ];
 
 // Static HTTP block explorer configuration
