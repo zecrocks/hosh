@@ -1,7 +1,7 @@
 <!DOCTYPE html>
 <html>
 <head>
-    <title>{% block title %}Hosh: Light Wallet Server Status{% endblock %}</title>
+    <title>{% block title %}Hosh: {% if current_network == "btc" %}Bitcoin{% elif current_network == "zec" %}Zcash{% endif %} Light Wallet Uptime{% endblock %}</title>
     <link href="/static/bootstrap.css" rel="stylesheet">
     <style>
         .status-online { color: #198754 !important; font-weight: bold; }
@@ -18,7 +18,7 @@
     <div class="container py-4">
       <div class="row mb-4">
         <div class="col">
-            <h1 class="text-center display-6 mb-4">Hosh: Light Wallet Uptime</h1>
+            <h1 class="text-center display-6 mb-4">Hosh: {% if current_network == "btc" %}Bitcoin{% elif current_network == "zec" %}Zcash{% endif %} Light Wallet Uptime</h1>
             <div class="text-center mb-3">
                 <div class="btn-group mb-3">
                     <a href="/btc" class="btn btn-{% if current_network == "btc" %}primary{% else %}outline-primary{% endif %} me-2">Bitcoin</a>
