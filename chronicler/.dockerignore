@@ -1,0 +1,28 @@
+# ClickHouse data
+data/
+clickhouse/
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+# Test artifacts
+test-results/
+coverage/
+
+# Environment files
+.env
+.env.*
+
+# Temporary files
+*.tmp
+
