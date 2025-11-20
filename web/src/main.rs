@@ -2247,25 +2247,7 @@ async fn calculate_uptime_stats(
             WHERE hostname = '{}'
             {}
         ),
-        max_checks_day AS (
-            SELECT MAX(sum_checks) as max_total_checks
-            FROM (
-                SELECT sum(total_checks) as sum_checks
-                FROM {}.uptime_stats_by_port
-                WHERE time_bucket >= now() - INTERVAL 1 DAY
-                GROUP BY hostname, port
-            )
-        ),
-        max_checks_week AS (
-            SELECT MAX(sum_checks) as max_total_checks
-            FROM (
-                SELECT sum(total_checks) as sum_checks
-                FROM {}.uptime_stats_by_port
-                WHERE time_bucket >= now() - INTERVAL 7 DAY
-                GROUP BY hostname, port
-            )
-        ),
-        max_checks_month AS (
+        max_checks_30d AS (
             SELECT MAX(sum_checks) as max_total_checks
             FROM (
                 SELECT sum(total_checks) as sum_checks
@@ -2276,7 +2258,7 @@ async fn calculate_uptime_stats(
         )
         SELECT 
             'day' as period,
-            sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks_day), 1) as uptime_percentage
+            sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 1 DAY
@@ -2286,7 +2268,7 @@ async fn calculate_uptime_stats(
         
         SELECT 
             'week' as period,
-            sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks_week), 1) as uptime_percentage
+            sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 7 DAY
@@ -2296,7 +2278,7 @@ async fn calculate_uptime_stats(
         
         SELECT 
             'month' as period,
-            sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks_month), 1) as uptime_percentage
+            sum(online_count) * 100.0 / greatest((SELECT max_total_checks FROM max_checks_30d), 1) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 30 DAY
@@ -2317,8 +2299,6 @@ async fn calculate_uptime_stats(
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database, host, port_filter.replace("AND port", "AND JSONExtractString(response_data, 'port')"),
-        worker.clickhouse.database,
-        worker.clickhouse.database,
         worker.clickhouse.database,
         worker.clickhouse.database, host, port_filter,
         worker.clickhouse.database, host, port_filter,
