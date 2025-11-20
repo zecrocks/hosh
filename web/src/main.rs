@@ -1183,7 +1183,13 @@ async fn fetch_and_render_network_status(
         worker.config.results_window_days
     );
 
-    let response = worker.http_client.post(&worker.clickhouse.url)
+    // Add query settings via URL parameters to limit memory usage
+    let url_with_params = format!(
+        "{}?max_memory_usage=4000000000&max_bytes_before_external_sort=2000000000",
+        worker.clickhouse.url
+    );
+
+    let response = worker.http_client.post(&url_with_params)
         .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
         .header("Content-Type", "text/plain")
         .body(query.clone())
@@ -1522,36 +1528,47 @@ async fn network_status(
     let hide_community = query_params.hide_community.unwrap_or(false);
     let tor_only = query_params.tor_only.unwrap_or(false);
     
-    // Check if we should use cached version
+    // ONLY serve from cache - never trigger ClickHouse queries from user requests
+    // This prevents traffic spikes from overwhelming ClickHouse
     let cache_key = format!("{}-{}-{}", network.0, hide_community, tor_only);
     
-    {  // Cache for all variations
-        let cache = worker.cache.read().await;
-        if let Some(entry) = cache.get(&cache_key) {
-            // Check if cache is still valid (less than 10 seconds old)
-            if entry.timestamp.elapsed() < Duration::from_secs(10) {
-                info!("Serving {} from cache (age: {:?})", cache_key, entry.timestamp.elapsed());
-                return Ok(HttpResponse::Ok()
-                    .content_type("text/html; charset=utf-8")
-                    .body(entry.html.clone()));
-            }
-        }
+    let cache = worker.cache.read().await;
+    if let Some(entry) = cache.get(&cache_key) {
+        // Serve cache regardless of age - background task keeps it fresh
+        // Add X-Cache-Age header for debugging
+        let cache_age_secs = entry.timestamp.elapsed().as_secs();
+        info!("Serving {} from cache (age: {}s)", cache_key, cache_age_secs);
+        
+        return Ok(HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .insert_header(("X-Cache-Age", cache_age_secs.to_string()))
+            .body(entry.html.clone()));
     }
     
-    // Cache miss or expired, fetch fresh data
-    info!("Cache miss or expired for {}, fetching fresh data", cache_key);
-    let html = fetch_and_render_network_status(&worker, &network, hide_community, tor_only).await?;
-    
-    // Update cache
-    let mut cache = worker.cache.write().await;
-    cache.insert(cache_key, CacheEntry {
-        html: html.clone(),
-        timestamp: std::time::Instant::now(),
-    });
-    
-    Ok(HttpResponse::Ok()
+    // Cache miss - this should only happen on first startup
+    // Don't trigger a query, return a friendly error and let background task populate it
+    warn!("Cache miss for {} - waiting for background refresh", cache_key);
+    Ok(HttpResponse::ServiceUnavailable()
         .content_type("text/html; charset=utf-8")
-        .body(html))
+        .body(format!(
+            r#"<!DOCTYPE html>
+            <html>
+            <head>
+                <title>Loading...</title>
+                <meta http-equiv="refresh" content="2">
+                <style>
+                    body {{ font-family: sans-serif; text-align: center; padding: 50px; }}
+                    .loading {{ font-size: 24px; color: #666; }}
+                </style>
+            </head>
+            <body>
+                <div class="loading">
+                    <p>⏳ Loading network status...</p>
+                    <p style="font-size: 14px; color: #999;">Cache is warming up. This page will refresh automatically.</p>
+                </div>
+            </body>
+            </html>"#
+        )))
 }
 
 #[get("/{network}/{host}")]
@@ -3036,15 +3053,62 @@ mod tests {
 
 /// Background task to refresh the cache periodically
 async fn cache_refresh_task(worker: Worker) {
-    let mut interval = interval(Duration::from_secs(10));
+    // Increase interval to reduce load - env var or default to 20 seconds
+    let refresh_interval_secs = env::var("CACHE_REFRESH_INTERVAL_SECS")
+        .ok()
+        .and_then(|s| s.parse::<u64>().ok())
+        .unwrap_or(20);
     
     // Refresh cache for each network, hide_community, and tor_only combination
     let networks = vec!["zec", "btc"];
     let hide_community_options = vec![false, true];
     let tor_only_options = vec![false, true];
 
+    // Populate cache immediately on startup (before starting the interval loop)
+    info!("Initial cache population on startup");
+    let cycle_start = std::time::Instant::now();
+    
+    for network_str in &networks {
+        for &hide_community in &hide_community_options {
+            for &tor_only in &tor_only_options {
+                let cache_key = format!("{}-{}-{}", network_str, hide_community, tor_only);
+                
+                if let Some(network) = SafeNetwork::from_str(network_str) {
+                    let query_start = std::time::Instant::now();
+                    
+                    let result = fetch_and_render_network_status(&worker, &network, hide_community, tor_only).await;
+                    match result {
+                        Ok(html) => {
+                            let mut cache = worker.cache.write().await;
+                            cache.insert(cache_key.clone(), CacheEntry {
+                                html,
+                                timestamp: std::time::Instant::now(),
+                            });
+                            info!("Cache refreshed for {} in {:?}", cache_key, query_start.elapsed());
+                        }
+                        Err(e) => {
+                            error!("Failed to refresh cache for {}: {}", cache_key, e);
+                        }
+                    }
+                    
+                    // Add a small delay between queries to prevent memory spikes
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                } else {
+                    error!("Invalid network: {}", network_str);
+                }
+            }
+        }
+    }
+    
+    info!("Initial cache population completed in {:?}", cycle_start.elapsed());
+    
+    // Then refresh periodically
+    let mut interval = interval(Duration::from_secs(refresh_interval_secs));
     loop {
         interval.tick().await;
+        
+        info!("Starting cache refresh cycle");
+        let cycle_start = std::time::Instant::now();
         
         for network_str in &networks {
             for &hide_community in &hide_community_options {
@@ -3052,7 +3116,8 @@ async fn cache_refresh_task(worker: Worker) {
                     let cache_key = format!("{}-{}-{}", network_str, hide_community, tor_only);
                     
                     if let Some(network) = SafeNetwork::from_str(network_str) {
-                        // Fetch and handle result immediately to avoid Send issues
+                        let query_start = std::time::Instant::now();
+                        
                         let result = fetch_and_render_network_status(&worker, &network, hide_community, tor_only).await;
                         match result {
                             Ok(html) => {
@@ -3061,18 +3126,24 @@ async fn cache_refresh_task(worker: Worker) {
                                     html,
                                     timestamp: std::time::Instant::now(),
                                 });
-                                info!("Cache refreshed for {}", cache_key);
+                                info!("Cache refreshed for {} in {:?}", cache_key, query_start.elapsed());
                             }
                             Err(e) => {
                                 error!("Failed to refresh cache for {}: {}", cache_key, e);
+                                // Keep old cache if refresh fails - don't remove it
                             }
                         }
+                        
+                        // Add a small delay between queries to prevent memory spikes
+                        tokio::time::sleep(Duration::from_millis(500)).await;
                     } else {
                         error!("Invalid network: {}", network_str);
                     }
                 }
             }
         }
+        
+        info!("Cache refresh cycle completed in {:?}", cycle_start.elapsed());
     }
 }
 
