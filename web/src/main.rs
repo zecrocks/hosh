@@ -1069,15 +1069,6 @@ async fn fetch_and_render_network_status(
                 WHERE r.checker_module = '{}'
                 AND r.checked_at >= now() - INTERVAL {} DAY
             ),
-            first_seen_dates AS (
-                SELECT 
-                    hostname,
-                    JSONExtractString(response_data, 'port') as port,
-                    min(checked_at) as first_seen
-                FROM {}.results
-                WHERE checker_module = '{}'
-                GROUP BY hostname, port
-            ),
             max_checks AS (
                 SELECT MAX(sum_checks) as max_total_checks
                 FROM (
@@ -1103,11 +1094,9 @@ async fn fetch_and_render_network_status(
                 lr.ping_ms as ping,
                 lr.response_data,
                 u30.uptime_percentage as uptime_30_day,
-                toString(fs.first_seen) as first_seen,
                 t.community
             FROM latest_results lr
             LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
-            LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
             LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
             WHERE lr.rn = 1
             FORMAT JSONEachRow
@@ -1115,8 +1104,6 @@ async fn fetch_and_render_network_status(
             worker.clickhouse.database,
             network.0,
             worker.config.results_window_days,
-            worker.clickhouse.database,
-            network.0,
             worker.clickhouse.database,
             worker.clickhouse.database,
             worker.clickhouse.database
@@ -1132,15 +1119,6 @@ async fn fetch_and_render_network_status(
                 FROM {}.results r
                 WHERE r.checker_module = '{}'
                 AND r.checked_at >= now() - INTERVAL {} DAY
-            ),
-            first_seen_dates AS (
-                SELECT 
-                    hostname,
-                    JSONExtractString(response_data, 'port') as port,
-                    min(checked_at) as first_seen
-                FROM {}.results
-                WHERE checker_module = '{}'
-                GROUP BY hostname, port
             ),
             uptime_30_day AS (
                 SELECT 
@@ -1158,11 +1136,9 @@ async fn fetch_and_render_network_status(
                 lr.ping_ms as ping,
                 lr.response_data,
                 u30.uptime_percentage as uptime_30_day,
-                toString(fs.first_seen) as first_seen,
                 t.community
             FROM latest_results lr
             LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
-            LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
             LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
             WHERE lr.rn = 1
             FORMAT JSONEachRow
@@ -1170,8 +1146,6 @@ async fn fetch_and_render_network_status(
             worker.clickhouse.database,
             network.0,
             worker.config.results_window_days,
-            worker.clickhouse.database,
-            network.0,
             worker.clickhouse.database,
             worker.clickhouse.database
         )
@@ -1807,15 +1781,6 @@ async fn network_api(
                 WHERE r.checker_module = '{}'
                 AND r.checked_at >= now() - INTERVAL {} DAY
             ),
-            first_seen_dates AS (
-                SELECT 
-                    hostname,
-                    JSONExtractString(response_data, 'port') as port,
-                    min(checked_at) as first_seen
-                FROM {}.results
-                WHERE checker_module = '{}'
-                GROUP BY hostname, port
-            ),
             max_checks AS (
                 SELECT MAX(sum_checks) as max_total_checks
                 FROM (
@@ -1841,11 +1806,9 @@ async fn network_api(
                 lr.ping_ms as ping,
                 lr.response_data,
                 u30.uptime_percentage as uptime_30_day,
-                toString(fs.first_seen) as first_seen,
                 t.community
             FROM latest_results lr
             LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
-            LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
             LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
             WHERE lr.rn = 1
             FORMAT JSONEachRow
@@ -1853,8 +1816,6 @@ async fn network_api(
             worker.clickhouse.database,
             network.0,
             worker.config.results_window_days,
-            worker.clickhouse.database,
-            network.0,
             worker.clickhouse.database,
             worker.clickhouse.database,
             worker.clickhouse.database
@@ -1870,15 +1831,6 @@ async fn network_api(
                 FROM {}.results r
                 WHERE r.checker_module = '{}'
                 AND r.checked_at >= now() - INTERVAL {} DAY
-            ),
-            first_seen_dates AS (
-                SELECT 
-                    hostname,
-                    JSONExtractString(response_data, 'port') as port,
-                    min(checked_at) as first_seen
-                FROM {}.results
-                WHERE checker_module = '{}'
-                GROUP BY hostname, port
             ),
             uptime_30_day AS (
                 SELECT 
@@ -1896,11 +1848,9 @@ async fn network_api(
                 lr.ping_ms as ping,
                 lr.response_data,
                 u30.uptime_percentage as uptime_30_day,
-                toString(fs.first_seen) as first_seen,
                 t.community
             FROM latest_results lr
             LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
-            LEFT JOIN first_seen_dates fs ON lr.hostname = fs.hostname AND JSONExtractString(lr.response_data, 'port') = fs.port
             LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
             WHERE lr.rn = 1
             FORMAT JSONEachRow
@@ -1908,8 +1858,6 @@ async fn network_api(
             worker.clickhouse.database,
             network.0,
             worker.config.results_window_days,
-            worker.clickhouse.database,
-            network.0,
             worker.clickhouse.database,
             worker.clickhouse.database
         )
