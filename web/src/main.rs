@@ -1,7 +1,7 @@
 use std::env;
 use std::collections::HashMap;
 use std::sync::Arc;
-use actix_web::{get, post, web::{self, Redirect}, App, HttpResponse, HttpServer, Result};
+use actix_web::{get, post, web::{self, Redirect}, App, HttpResponse, HttpServer, Result, middleware::Logger};
 use actix_files as fs;
 use askama::Template;
 use serde::{Deserialize, Serialize};
@@ -1542,6 +1542,7 @@ async fn network_status(
         return Ok(HttpResponse::Ok()
             .content_type("text/html; charset=utf-8")
             .insert_header(("X-Cache-Age", cache_age_secs.to_string()))
+            .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
             .body(entry.html.clone()));
     }
     
@@ -1780,6 +1781,7 @@ async fn server_detail(
     
     Ok(HttpResponse::Ok()
         .content_type("text/html; charset=utf-8")
+        .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
         .body(html))
 }
 
@@ -2002,6 +2004,7 @@ async fn network_api(
 
     Ok(HttpResponse::Ok()
         .content_type("application/json")
+        .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
         .json(ApiResponse { servers: api_servers }))
 }
 
@@ -3149,9 +3152,12 @@ async fn cache_refresh_task(worker: Worker) {
 
 #[actix_web::main]
 async fn main() -> std::io::Result<()> {
-    // Initialize tracing subscriber with environment filter
+    // Initialize tracing subscriber with environment filter (default to info if not set)
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("info"));
+    
     let subscriber = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_env_filter(env_filter)
         .with_target(false)
         .with_thread_ids(false)
         .with_thread_names(false)
@@ -3191,6 +3197,7 @@ async fn main() -> std::io::Result<()> {
 
     HttpServer::new(move || {
         App::new()
+            .wrap(Logger::new("\"%r\" %s %b %Ts"))
             .app_data(web::Data::new(worker.clone()))
             .service(fs::Files::new("/static", "./static"))
             .service(root)
