@@ -184,6 +184,23 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("light.zcash.me", 443, true),
     ("zc.nettools.uno", 443, true),
     ("zwal.orderpeak.me", 443, true),
+    ("eu.zec.stardust.rest", 443, true),
+    ("eu2.zec.stardust.rest", 443, true),
+    ("jp.zec.stardust.rest", 443, true),
+    ("lightwalletd.mainnet.cipherscan.app", 443, true),
+    ("zec.indahouse.me", 443, true),
+    ("lwt.notmyf.art", 9067, true),
+    ("zl.crendel.my", 443, true),
+    ("zcash1-vps2-dmz5.abanet-ca.net", 9067, true),
+    ("api-zec.noderoller.cloud", 9067, true),
+    ("z.devels.club", 443, true),
+    ("zcashlw.devshore.ovh", 443, true),
+    ("zz.cryptmaster.xyz", 443, true),
+    ("zl.devopser.online", 443, true),
+    ("lightwallet.online", 443, true),
+    ("zcashwalletapi.fun", 443, true),
+    ("l.encore.lat", 443, true),
+    ("zec.rollrunner.info", 443, true),
 ];
 
 // Static HTTP block explorer configuration
