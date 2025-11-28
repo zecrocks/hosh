@@ -202,6 +202,7 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("l.encore.lat", 443, true),
     ("zec.rollrunner.info", 443, true),
     ("zecw.newfactor.biz", 443, true),
+    ("webhighway.website", 443, true),
 ];
 
 // Static HTTP block explorer configuration
