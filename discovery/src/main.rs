@@ -205,6 +205,7 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("webhighway.website", 443, true),
     ("lw.chponks.site", 443, true),
     ("zcash.sirius-sec.com", 8443, true),
+    ("zecapi.online", 443, true),
 ];
 
 // Static HTTP block explorer configuration
