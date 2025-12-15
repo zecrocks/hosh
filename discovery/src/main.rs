@@ -209,6 +209,8 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("node.zecwhales.online", 443, true),
     ("lwd.zecbhave.uk", 443, true),
     ("zec.intertake.click", 9067, true),
+    ("zcash-in.space", 443, true),
+    ("z.cryptpos.xyz", 443, true),
 ];
 
 // Static HTTP block explorer configuration
