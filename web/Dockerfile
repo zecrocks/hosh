@@ -1,47 +1,42 @@
-FROM rust:1.87-slim-bullseye AS builder
+FROM rust:1.87-slim-bullseye AS chef
+RUN cargo install cargo-chef
+WORKDIR /app
 
-WORKDIR /usr/src/app
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     git \
     && rm -rf /var/lib/apt/lists/*
+# Cache mounts speed up cargo registry and git dependencies
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --release --recipe-path recipe.json
 
-# Dependency caching
-COPY Cargo.toml Cargo.lock ./
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release
 
-RUN mkdir -p src && \
-    echo "fn main() {println!(\"dummy\");}" > src/main.rs && \
-    cargo build --release && \
-    rm -rf src target/release/hosh-web*
-
-# Copy templates and real source code
-COPY templates ./templates
-COPY src ./src
-
-# Break the Cargo cache, build
-RUN touch ./src/main.rs && cargo build --release
-
-COPY static ./static
-
-# Runtime stage
 FROM debian:bullseye-slim
 
 WORKDIR /app
 
-# Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     wget \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy the binary and templates from builder
-COPY --from=builder /usr/src/app/target/release/hosh-web /app/hosh-web
-COPY --from=builder /usr/src/app/templates /app/templates
-COPY --from=builder /usr/src/app/static /app/static
+COPY --from=builder /app/target/release/hosh-web /app/hosh-web
+COPY --from=builder /app/templates /app/templates
+COPY --from=builder /app/static /app/static
 
-# Set the binary as executable
 RUN chmod +x /app/hosh-web
 
 CMD ["/app/hosh-web"]

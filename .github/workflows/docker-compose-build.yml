@@ -20,7 +20,7 @@ jobs:
       uses: docker/setup-buildx-action@v3
       
     - name: Build Docker Compose Services
-      run: docker compose build
+      run: DOCKER_BUILDKIT=1 docker compose build
     
     - name: Verify Images
       run: docker images 

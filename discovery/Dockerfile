@@ -1,14 +1,27 @@
-FROM rust:1.87-slim-bullseye AS builder
+FROM rust:1.87-slim-bullseye AS chef
+RUN cargo install cargo-chef
+WORKDIR /app
 
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+COPY --from=planner /app/recipe.json recipe.json
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     && rm -rf /var/lib/apt/lists/*
+# Cache mounts speed up cargo registry and git dependencies
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    cargo chef cook --release --recipe-path recipe.json
 
-WORKDIR /usr/src/app
 COPY . .
-
-RUN cargo build --release
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/app/target \
+    cargo build --release
 
 FROM debian:bullseye-slim
 
@@ -17,6 +30,6 @@ RUN apt-get update && apt-get install -y \
     libssl1.1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /usr/src/app/target/release/discovery /usr/local/bin/discovery
+COPY --from=builder /app/target/release/discovery /usr/local/bin/discovery
 
 CMD ["discovery"] 
