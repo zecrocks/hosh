@@ -515,11 +515,17 @@ async fn main() -> Result<(), Box<dyn Error>> {
                         Ok(jobs) => {
                             info!("✅ Found {} jobs", jobs.len());
                             let mut handles = Vec::new();
+                            // Use 60 second timeout per check to prevent indefinite hangs
+                            let check_timeout = Duration::from_secs(60);
                             for job in jobs {
                                 let worker_clone = worker.clone();
+                                let host = job.host.clone();
+                                let port = job.port;
                                 handles.push(tokio::spawn(async move {
-                                    if let Err(e) = worker_clone.process_check(job).await {
-                                        error!("Error processing check: {}", e);
+                                    match tokio::time::timeout(check_timeout, worker_clone.process_check(job)).await {
+                                        Ok(Ok(())) => {},
+                                        Ok(Err(e)) => error!("Error processing check for {}:{}: {}", host, port, e),
+                                        Err(_) => error!("Check timed out after {:?} for {}:{}", check_timeout, host, port),
                                     }
                                 }));
                             }

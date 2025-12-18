@@ -4,6 +4,7 @@ use tokio_socks::tcp::Socks5Stream;
 use std::future::Future;
 use std::pin::Pin;
 use std::task::{Context, Poll};
+use std::time::Duration;
 use hyper_util::rt::TokioIo;
 use tracing::{debug, info, error};
 
@@ -74,10 +75,20 @@ impl Service<Uri> for SocksConnector {
             // 
             // Important: DNS resolution happens on the proxy side, not locally.
             // This is critical for .onion addresses and privacy.
-            let socks_stream = Socks5Stream::connect(
-                proxy_addr.as_str(),
-                target.as_str()
+            // 
+            // Use a 30 second timeout to prevent indefinite hangs on Tor circuit issues.
+            let socks_connect_timeout = Duration::from_secs(30);
+            let socks_stream = tokio::time::timeout(
+                socks_connect_timeout,
+                Socks5Stream::connect(proxy_addr.as_str(), target.as_str())
             ).await
+            .map_err(|_| {
+                error!("SOCKS connection timed out after {:?}", socks_connect_timeout);
+                Box::new(std::io::Error::new(
+                    std::io::ErrorKind::TimedOut,
+                    format!("SOCKS connection timed out after {:?}", socks_connect_timeout)
+                )) as Box<dyn std::error::Error + Send + Sync>
+            })?
             .map_err(|e| {
                 error!("SOCKS connection failed: {}", e);
                 Box::new(std::io::Error::other(
