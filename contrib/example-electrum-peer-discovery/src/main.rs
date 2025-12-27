@@ -50,7 +50,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 println!("Discovered peers:");
                 for peer in peers {
                     if let Some(peer_details) = peer.as_array() {
-                        let address = peer_details.get(0).and_then(|v| v.as_str()).unwrap_or("Unknown");
+                        let address = peer_details.first().and_then(|v| v.as_str()).unwrap_or("Unknown");
                         let hostname = peer_details.get(1).and_then(|v| v.as_str()).unwrap_or("Unknown");
 
                         // Use a longer-lived default empty vector

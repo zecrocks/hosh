@@ -3309,6 +3309,8 @@ async fn main() -> std::io::Result<()> {
     subscriber.init();
 
     let http_client = reqwest::Client::builder()
+        // Hard cap request duration so cache refreshes can't hang forever if ClickHouse stalls
+        .timeout(std::time::Duration::from_secs(10))
         .pool_idle_timeout(std::time::Duration::from_secs(300))
         .pool_max_idle_per_host(32)
         .tcp_keepalive(std::time::Duration::from_secs(60))
