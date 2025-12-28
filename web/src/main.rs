@@ -47,6 +47,20 @@ struct IndexTemplate {
     onion_count: usize,
 }
 
+#[derive(Clone)]
+struct LeaderboardEntry {
+    rank: usize,
+    server: ServerInfo,
+}
+
+#[derive(Template)]
+#[template(path = "leaderboard.html")]
+struct LeaderboardTemplate {
+    entries: Vec<LeaderboardEntry>,
+    current_network: &'static str,
+    percentile_height: u64,
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 struct ServerInfo {
     #[serde(default, deserialize_with = "deserialize_host")]
@@ -1092,7 +1106,7 @@ async fn fetch_and_render_network_status(
         WITH latest_results AS (
             SELECT
                 r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.checked_at >= now() - INTERVAL {} DAY
@@ -1101,7 +1115,7 @@ async fn fetch_and_render_network_status(
         first_seen_per_server AS (
             SELECT
                 hostname,
-                JSONExtractString(response_data, 'port') as port,
+                toString(port) as port,
                 min(checked_at) as first_seen,
                 least(dateDiff('day', min(checked_at), now()), 30) / 30.0 as percentage_of_month
             FROM {}.results
@@ -1128,8 +1142,8 @@ async fn fetch_and_render_network_status(
             u30.uptime_percentage as uptime_30_day,
             t.community
         FROM latest_results lr
-        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
-        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
+        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
+        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
         WHERE lr.rn = 1
         FORMAT JSONEachRow
         "#,
@@ -1526,6 +1540,158 @@ async fn fetch_and_render_network_status(
     Ok(html)
 }
 
+/// Helper function to fetch and render the leaderboard page (top 50 by uptime)
+async fn fetch_and_render_leaderboard(
+    worker: &Worker,
+    network: &SafeNetwork,
+) -> Result<String> {
+    // Query for leaderboard - top 50 servers by 30-day uptime
+    let query = format!(
+        r#"
+        WITH latest_results AS (
+            SELECT
+                r.*,
+                ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
+            FROM {}.results r
+            WHERE r.checker_module = '{}'
+            AND r.checked_at >= now() - INTERVAL {} DAY
+        ),
+        first_seen_per_server AS (
+            SELECT
+                hostname,
+                toString(port) as port,
+                min(checked_at) as first_seen,
+                least(dateDiff('day', min(checked_at), now()), 30) / 30.0 as percentage_of_month
+            FROM {}.results
+            WHERE checker_module = '{}'
+            GROUP BY hostname, port
+        ),
+        uptime_30_day AS (
+            SELECT
+                u.hostname,
+                u.port,
+                (sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1)) * fs.percentage_of_month as uptime_percentage
+            FROM {}.uptime_stats_by_port u
+            LEFT JOIN first_seen_per_server fs ON u.hostname = fs.hostname AND u.port = fs.port
+            WHERE u.time_bucket >= now() - INTERVAL 30 DAY
+            GROUP BY u.hostname, u.port, fs.percentage_of_month
+        )
+        SELECT
+            lr.hostname,
+            lr.checked_at,
+            lr.status,
+            lr.ping_ms as ping,
+            lr.response_data,
+            u30.uptime_percentage as uptime_30_day,
+            t.community
+        FROM latest_results lr
+        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
+        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
+        WHERE lr.rn = 1
+        AND u30.uptime_percentage IS NOT NULL
+        AND u30.uptime_percentage > 0
+        ORDER BY u30.uptime_percentage DESC
+        LIMIT 50
+        FORMAT JSONEachRow
+        "#,
+        worker.clickhouse.database,
+        network.0,
+        worker.config.results_window_days,
+        worker.clickhouse.database,
+        network.0,
+        worker.clickhouse.database,
+        worker.clickhouse.database
+    );
+
+    info!("Executing ClickHouse leaderboard query for network {}", network.0);
+
+    let url_with_params = format!(
+        "{}?max_memory_usage=4000000000&max_bytes_before_external_sort=2000000000",
+        worker.clickhouse.url
+    );
+
+    let response = worker
+        .http_client
+        .post(&url_with_params)
+        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
+        .header("Content-Type", "text/plain")
+        .body(query.clone())
+        .send()
+        .await
+        .map_err(|e| {
+            error!("ClickHouse query error: {}", e);
+            actix_web::error::ErrorInternalServerError("Database query failed")
+        })?;
+
+    let status = response.status();
+    let body = response.text().await.map_err(|e| {
+        error!("Failed to read response body: {}", e);
+        actix_web::error::ErrorInternalServerError("Failed to read database response")
+    })?;
+
+    if !status.is_success() {
+        error!("ClickHouse query failed with status {}: {}", status, body);
+        return Err(actix_web::error::ErrorInternalServerError(
+            "Database query failed",
+        ));
+    }
+
+    // Parse results and build leaderboard entries
+    let mut entries = Vec::new();
+    let mut rank = 1;
+
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            continue;
+        }
+
+        if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
+            let response_data = match result.get("response_data") {
+                Some(Value::String(s)) => s.as_str(),
+                _ => "{}",
+            };
+
+            let cleaned_response_data = validate_and_fix_json(response_data)
+                .unwrap_or_else(|| "{}".to_string());
+
+            if let Ok(mut server_info) = serde_json::from_str::<ServerInfo>(&cleaned_response_data) {
+                server_info.uptime_30_day = result.get("uptime_30_day").and_then(|v| v.as_f64());
+                server_info.community = result
+                    .get("community")
+                    .and_then(|v| v.as_bool())
+                    .unwrap_or(false);
+
+                entries.push(LeaderboardEntry {
+                    rank,
+                    server: server_info,
+                });
+                rank += 1;
+            }
+        }
+    }
+
+    // Get percentile height for consistency with other pages
+    let percentile_height = entries
+        .iter()
+        .map(|e| e.server.height)
+        .filter(|&h| h > 0)
+        .max()
+        .unwrap_or(0);
+
+    let template = LeaderboardTemplate {
+        entries,
+        current_network: network.0,
+        percentile_height,
+    };
+
+    let html = template.render().map_err(|e| {
+        error!("Template rendering error: {}", e);
+        actix_web::error::ErrorInternalServerError("Template rendering failed")
+    })?;
+
+    Ok(html)
+}
+
 #[get("/{network}")]
 async fn network_status(
     worker: web::Data<Worker>,
@@ -1588,6 +1754,60 @@ async fn network_status(
         )))
 }
 
+#[get("/{network}/leaderboard")]
+async fn leaderboard(
+    worker: web::Data<Worker>,
+    network: web::Path<String>,
+) -> Result<HttpResponse> {
+    let network = SafeNetwork::from_str(&network)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+
+    // Serve from cache
+    let cache_key = format!("{}-leaderboard", network.0);
+
+    let cache = worker.cache.read().await;
+    if let Some(entry) = cache.get(&cache_key) {
+        let cache_age_secs = entry.timestamp.elapsed().as_secs();
+        info!(
+            "Serving {} from cache (age: {}s)",
+            cache_key, cache_age_secs
+        );
+
+        return Ok(HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .insert_header(("X-Cache-Age", cache_age_secs.to_string()))
+            .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
+            .body(entry.html.clone()));
+    }
+
+    // Cache miss - waiting for background refresh
+    warn!(
+        "Cache miss for {} - waiting for background refresh",
+        cache_key
+    );
+    Ok(HttpResponse::ServiceUnavailable()
+        .content_type("text/html; charset=utf-8")
+        .body(format!(
+            r#"<!DOCTYPE html>
+            <html>
+            <head>
+                <title>Loading...</title>
+                <meta http-equiv="refresh" content="2">
+                <style>
+                    body {{ font-family: sans-serif; text-align: center; padding: 50px; }}
+                    .loading {{ font-size: 24px; color: #666; }}
+                </style>
+            </head>
+            <body>
+                <div class="loading">
+                    <p>Loading leaderboard...</p>
+                    <p style="font-size: 14px; color: #999;">Cache is warming up. This page will refresh automatically.</p>
+                </div>
+            </body>
+            </html>"#
+        )))
+}
+
 #[get("/{network}/{host}")]
 async fn server_detail(
     worker: web::Data<Worker>,
@@ -1616,7 +1836,7 @@ async fn server_detail(
         WITH latest_results AS (
             SELECT
                 r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.hostname = '{}'
@@ -1638,10 +1858,7 @@ async fn server_detail(
         host,
         worker.config.results_window_days,
         if let Some(port_num) = port {
-            format!(
-                "AND JSONExtractString(r.response_data, 'port') = '{}'",
-                port_num
-            )
+            format!("AND r.port = {}", port_num)
         } else {
             String::new()
         }
@@ -1694,7 +1911,7 @@ async fn server_detail(
         WITH latest_results AS (
             SELECT
                 r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.hostname = '{}'
@@ -1712,10 +1929,7 @@ async fn server_detail(
         safe_network.0,
         host,
         if let Some(port_num) = port {
-            format!(
-                "AND JSONExtractString(r.response_data, 'port') = '{}'",
-                port_num
-            )
+            format!("AND r.port = {}", port_num)
         } else {
             String::new()
         }
@@ -1829,7 +2043,7 @@ async fn network_api(
         WITH latest_results AS (
             SELECT
                 r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname, JSONExtractString(r.response_data, 'port') ORDER BY r.checked_at DESC) as rn
+                ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
             FROM {}.results r
             WHERE r.checker_module = '{}'
             AND r.checked_at >= now() - INTERVAL {} DAY
@@ -1838,7 +2052,7 @@ async fn network_api(
         first_seen_per_server AS (
             SELECT
                 hostname,
-                JSONExtractString(response_data, 'port') as port,
+                toString(port) as port,
                 min(checked_at) as first_seen,
                 least(dateDiff('day', min(checked_at), now()), 30) / 30.0 as percentage_of_month
             FROM {}.results
@@ -1865,8 +2079,8 @@ async fn network_api(
             u30.uptime_percentage as uptime_30_day,
             t.community
         FROM latest_results lr
-        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND JSONExtractString(lr.response_data, 'port') = u30.port
-        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND JSONExtractString(lr.response_data, 'port') = toString(t.port) AND lr.checker_module = t.module
+        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
+        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
         WHERE lr.rn = 1
         FORMAT JSONEachRow
         "#,
@@ -2112,12 +2326,11 @@ async fn get_jobs(
     );
 
     // Fetch recently checked (hostname, port) pairs
-    // Port is stored in response_data JSON field
     let recent_checks_query = format!(
         r#"
         SELECT DISTINCT
             hostname as host,
-            toUInt16OrDefault(JSONExtractString(response_data, 'port'), 50002) as port
+            port
         FROM {}.results
         WHERE checker_module = '{}'
         AND checked_at >= now() - INTERVAL 5 MINUTE
@@ -2240,12 +2453,28 @@ async fn post_results(
         .or_else(|| body.get("ping"))
         .and_then(|v| v.as_f64());
 
-    // Serialize the full response data as JSON
+    // Extract fields we want to persist forever (before response_data TTL clears them)
+    let server_version = body
+        .get("server_version")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let error = body
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
+    let block_height = body
+        .get("height")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0);
+
+    // Serialize the full response data as JSON (will be TTL'd after 7 days)
     let response_data = serde_json::to_string(&body.0).unwrap_or_default();
 
-    // Insert into ClickHouse (port is stored in response_data JSON, not as a separate column)
+    // Insert into ClickHouse with extracted columns that persist forever
     let insert_query = format!(
-        "INSERT INTO {}.results (hostname, checker_module, status, ping_ms, response_data, checked_at) FORMAT JSONEachRow",
+        "INSERT INTO {}.results (hostname, checker_module, status, ping_ms, port, server_version, error, block_height, response_data, checked_at) FORMAT JSONEachRow",
         worker.clickhouse.database
     );
 
@@ -2254,6 +2483,10 @@ async fn post_results(
         "checker_module": checker_module,
         "status": status,
         "ping_ms": ping_ms,
+        "port": port,
+        "server_version": server_version,
+        "error": error,
+        "block_height": block_height,
         "response_data": response_data,
         "checked_at": chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
     });
@@ -2307,10 +2540,12 @@ async fn calculate_uptime_stats(
     port: Option<u16>,
 ) -> Result<UptimeStats, actix_web::Error> {
     // Query for uptime statistics using the port-aware uptime_stats_by_port materialized view
-    let port_filter = if let Some(port_num) = port {
-        format!("AND port = '{}'", port_num)
+    // port_filter is for uptime_stats_by_port (port is String)
+    // port_filter_results is for results table (port is UInt16)
+    let (port_filter, port_filter_results) = if let Some(port_num) = port {
+        (format!("AND port = '{}'", port_num), format!("AND port = {}", port_num))
     } else {
-        String::new()
+        (String::new(), String::new())
     };
 
     let uptime_query = format!(
@@ -2376,7 +2611,7 @@ async fn calculate_uptime_stats(
         "#,
         worker.clickhouse.database, // first_seen_date CTE - {}.results
         host,                       // first_seen_date CTE - hostname = '{}'
-        port_filter.replace("AND port", "AND JSONExtractString(response_data, 'port')"), // first_seen_date CTE - port filter
+        port_filter_results,        // first_seen_date CTE - port filter (results table uses UInt16)
         worker.clickhouse.database, // day query - {}.uptime_stats_by_port
         host,                       // day query - hostname = '{}'
         port_filter,                // day query - port filter
@@ -2449,10 +2684,7 @@ async fn calculate_uptime_stats(
 
     // Get total checks, last check time, last online time, first_seen, and current status
     let port_filter = if let Some(port_num) = port {
-        format!(
-            "AND JSONExtractString(response_data, 'port') = '{}'",
-            port_num
-        )
+        format!("AND port = {}", port_num)
     } else {
         String::new()
     };
@@ -3225,6 +3457,35 @@ async fn cache_refresh_task(worker: Worker) {
         }
     }
 
+    // Populate leaderboard cache for ZEC only
+    if let Some(network) = SafeNetwork::from_str("zec") {
+        let cache_key = "zec-leaderboard".to_string();
+        let query_start = std::time::Instant::now();
+
+        let result = fetch_and_render_leaderboard(&worker, &network).await;
+        match result {
+            Ok(html) => {
+                let mut cache = worker.cache.write().await;
+                cache.insert(
+                    cache_key.clone(),
+                    CacheEntry {
+                        html,
+                        timestamp: std::time::Instant::now(),
+                    },
+                );
+                info!(
+                    "Cache refreshed for {} in {:?}",
+                    cache_key,
+                    query_start.elapsed()
+                );
+            }
+            Err(e) => {
+                error!("Failed to refresh cache for {}: {}", cache_key, e);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
     info!(
         "Initial cache population completed in {:?}",
         cycle_start.elapsed()
@@ -3282,6 +3543,35 @@ async fn cache_refresh_task(worker: Worker) {
                     }
                 }
             }
+        }
+
+        // Refresh leaderboard cache for ZEC only
+        if let Some(network) = SafeNetwork::from_str("zec") {
+            let cache_key = "zec-leaderboard".to_string();
+            let query_start = std::time::Instant::now();
+
+            let result = fetch_and_render_leaderboard(&worker, &network).await;
+            match result {
+                Ok(html) => {
+                    let mut cache = worker.cache.write().await;
+                    cache.insert(
+                        cache_key.clone(),
+                        CacheEntry {
+                            html,
+                            timestamp: std::time::Instant::now(),
+                        },
+                    );
+                    info!(
+                        "Cache refreshed for {} in {:?}",
+                        cache_key,
+                        query_start.elapsed()
+                    );
+                }
+                Err(e) => {
+                    error!("Failed to refresh cache for {}: {}", cache_key, e);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
         info!(
@@ -3345,6 +3635,7 @@ async fn main() -> std::io::Result<()> {
             .service(fs::Files::new("/static", "./static"))
             .service(root)
             .service(network_status)
+            .service(leaderboard)
             .service(server_detail)
             .service(network_api)
             .service(get_jobs)

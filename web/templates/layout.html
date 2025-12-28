@@ -24,6 +24,11 @@
                     <a href="/btc" class="btn btn-{% if current_network == "btc" %}primary{% else %}outline-primary{% endif %} me-2">Bitcoin</a>
                     <a href="/zec" class="btn btn-{% if current_network == "zec" %}primary{% else %}outline-primary{% endif %}">Zcash</a>
                 </div>
+                {% if current_network == "zec" %}
+                <div class="btn-group mb-3 ms-3">
+                    <a href="/zec/leaderboard" class="btn btn-outline-warning">Leaderboard</a>
+                </div>
+                {% endif %}
             </div>
             
             <div class="text-center text-muted">
