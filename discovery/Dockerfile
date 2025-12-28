@@ -21,7 +21,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release
+    cargo build --release && \
+    cp /app/target/release/discovery /app/discovery
 
 FROM debian:bullseye-slim
 
@@ -30,6 +31,6 @@ RUN apt-get update && apt-get install -y \
     libssl1.1 \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/discovery /usr/local/bin/discovery
+COPY --from=builder /app/discovery /usr/local/bin/discovery
 
 CMD ["discovery"] 

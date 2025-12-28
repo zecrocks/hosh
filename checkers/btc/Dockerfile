@@ -27,7 +27,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release
+    cargo build --release && \
+    cp /app/target/release/btc-backend /app/btc-backend
 
 # Runtime stage
 FROM debian:bullseye-slim
@@ -42,7 +43,7 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy the binary from builder
-COPY --from=builder /app/target/release/btc-backend /app/btc-backend
+COPY --from=builder /app/btc-backend /app/btc-backend
 
 # Set the binary as executable
 RUN chmod +x /app/btc-backend

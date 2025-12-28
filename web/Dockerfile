@@ -22,7 +22,8 @@ COPY . .
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/app/target \
-    cargo build --release
+    cargo build --release && \
+    cp /app/target/release/hosh-web /app/hosh-web
 
 FROM debian:bullseye-slim
 
@@ -33,7 +34,7 @@ RUN apt-get update && apt-get install -y \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-COPY --from=builder /app/target/release/hosh-web /app/hosh-web
+COPY --from=builder /app/hosh-web /app/hosh-web
 COPY --from=builder /app/templates /app/templates
 COPY --from=builder /app/static /app/static
 
