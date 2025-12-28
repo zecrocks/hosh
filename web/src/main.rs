@@ -19,6 +19,14 @@ use tokio::sync::RwLock;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
+// =============================================================================
+// LEADERBOARD VERSION REQUIREMENTS
+// Only servers running these versions (or newer) are included in the leaderboard
+// =============================================================================
+const LEADERBOARD_MIN_ZEBRA_VERSION: &str = "3.1.0";
+const LEADERBOARD_MIN_LWD_VERSION: &str = "0.4.18";
+const LEADERBOARD_MIN_ZAINO_VERSION: &str = "0.1.2";
+
 mod filters {
     use askama::Result;
     use serde_json::Value;
@@ -932,6 +940,85 @@ impl ServerInfo {
     fn is_onion(&self) -> bool {
         self.host.ends_with(".onion")
     }
+
+    /// Check if this server meets the minimum version requirements for the leaderboard
+    fn meets_leaderboard_version_requirements(&self) -> bool {
+        // Check Zebra version from zcashd_subversion (e.g., "/Zebra:3.1.0/")
+        let zebra_ok = if let Some(subversion) = self.extra.get("zcashd_subversion") {
+            if let Some(subversion_str) = subversion.as_str() {
+                // Extract version from format like "/Zebra:3.1.0/"
+                if let Some(version_part) = subversion_str
+                    .strip_prefix("/Zebra:")
+                    .and_then(|s| s.strip_suffix('/'))
+                {
+                    version_meets_minimum(version_part, LEADERBOARD_MIN_ZEBRA_VERSION)
+                } else {
+                    false // Not a Zebra node
+                }
+            } else {
+                false
+            }
+        } else {
+            false // No subversion info, can't verify Zebra
+        };
+
+        if !zebra_ok {
+            return false;
+        }
+
+        // Check LWD version
+        let lwd_version = self.server_version.as_deref().unwrap_or("");
+        
+        // Check if this is a Zaino server
+        let is_zaino = self
+            .extra
+            .get("vendor")
+            .and_then(|v| v.as_str())
+            .map(|v| v.contains("Zaino"))
+            .unwrap_or(false);
+
+        if is_zaino {
+            // For Zaino, check against LEADERBOARD_MIN_ZAINO_VERSION
+            let clean_version = lwd_version.trim_start_matches('v');
+            version_meets_minimum(clean_version, LEADERBOARD_MIN_ZAINO_VERSION)
+        } else {
+            // For regular LWD, check against LEADERBOARD_MIN_LWD_VERSION
+            let clean_version = lwd_version.trim_start_matches('v');
+            version_meets_minimum(clean_version, LEADERBOARD_MIN_LWD_VERSION)
+        }
+    }
+}
+
+/// Compare two semantic version strings, returns true if `version` >= `minimum`
+fn version_meets_minimum(version: &str, minimum: &str) -> bool {
+    let parse_version = |v: &str| -> Vec<u32> {
+        v.split('.')
+            .filter_map(|part| {
+                // Handle versions like "0.4.18-rc1" by taking only the numeric part
+                part.split(|c: char| !c.is_ascii_digit())
+                    .next()
+                    .and_then(|n| n.parse().ok())
+            })
+            .collect()
+    };
+
+    let version_parts = parse_version(version);
+    let minimum_parts = parse_version(minimum);
+
+    // Compare each part
+    for i in 0..minimum_parts.len().max(version_parts.len()) {
+        let v = version_parts.get(i).copied().unwrap_or(0);
+        let m = minimum_parts.get(i).copied().unwrap_or(0);
+        
+        if v > m {
+            return true;
+        }
+        if v < m {
+            return false;
+        }
+    }
+    
+    true // Equal versions
 }
 
 #[derive(Debug)]
@@ -1660,6 +1747,11 @@ async fn fetch_and_render_leaderboard(
                     .get("community")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
+
+                // Only include servers that meet the minimum version requirements
+                if !server_info.meets_leaderboard_version_requirements() {
+                    continue;
+                }
 
                 entries.push(LeaderboardEntry {
                     rank,
