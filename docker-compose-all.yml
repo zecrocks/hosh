@@ -1,0 +1,112 @@
+# Minimal docker-compose for testing the unified "all" role
+# This runs all services (web, discovery, checker-btc, checker-zec) in a single container
+#
+# Usage:
+#   docker compose -f docker-compose-all.yml up
+#
+# This is useful for:
+#   - Testing the unified binary works correctly
+#   - Simple single-node deployments
+#   - Development/debugging
+
+services:
+  hosh:
+    build: .
+    image: hosh/hosh
+    container_name: hosh-all
+    command: ["--roles", "all"]
+    ports:
+      - "8080:8080"
+    environment:
+      - RUST_LOG=${RUST_LOG:-info}
+      - API_KEY=${API_KEY}
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - RESULTS_WINDOW_DAYS=${RESULTS_WINDOW_DAYS:-30}
+      - DISCOVERY_INTERVAL=60
+      - WEB_API_URL=http://localhost:8080
+      - SOCKS_PROXY=tor:9050
+      - TOR_PROXY_HOST=tor
+      - TOR_PROXY_PORT=9050
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    depends_on:
+      chronicler:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "timeout 5 bash -c 'cat < /dev/null > /dev/tcp/127.0.0.1/8080'",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  tor:
+    image: osminogin/tor-simple
+    container_name: tor
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "3"
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --fail --socks5-hostname localhost:9050 -s https://check.torproject.org/ | grep -qm1 Congratulations",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    environment:
+      - TOR_NewCircuitPeriod=300
+      - TOR_MaxCircuitDirtiness=600
+
+  chronicler:
+    build: ./chronicler
+    container_name: chronicler
+    environment:
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "1m"
+        max-file: "3"
+    ports:
+      - "8123:8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:8123/ping",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+volumes:
+  clickhouse-data:

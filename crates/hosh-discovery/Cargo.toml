@@ -1,0 +1,17 @@
+[package]
+name = "hosh-discovery"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hosh-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+scraper.workspace = true
+futures.workspace = true

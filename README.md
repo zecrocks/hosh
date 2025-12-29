@@ -19,18 +19,35 @@ Some digital asset wallets assume the perfect uptime of these servers.
 docker compose up
 ```
 
-Load http://localhost:8080 in your browser.
+Load http://localhost:8080/zec (Zcash) or http://localhost:8080/btc (Bitcoin) in your browser.
 
 ## Development
 
+For the simplest development experience with hot-reload:
 
-To work in developer mode, create a symlink to `docker-compose-dev.yml`
+```sh
+docker compose -f docker-compose-dev-all.yml up
+```
+
+This runs all roles (web, checkers, discovery) in a single container with `cargo watch` for automatic recompilation.
+
+Alternatively, to work with separate containers in developer mode:
 
 ```sh
 ln -s docker-compose-dev.yml docker-compose.override.yml
+docker compose up
 ```
 
-This will build and run dev versions for all containers.
+## Architecture
+
+Hosh is built as a unified Rust binary with role-based execution:
+
+```sh
+# Run specific roles
+./hosh --roles web
+./hosh --roles checker-btc,checker-zec
+./hosh --roles all  # runs all roles (default)
+```
 
 
 होश में रहना ही समझदारी की पहली सीढ़ी है।

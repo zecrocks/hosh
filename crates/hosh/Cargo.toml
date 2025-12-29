@@ -1,0 +1,20 @@
+[package]
+name = "hosh"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "hosh"
+path = "src/main.rs"
+
+[dependencies]
+hosh-core.workspace = true
+hosh-web.workspace = true
+hosh-checker-btc.workspace = true
+hosh-checker-zec.workspace = true
+hosh-discovery.workspace = true
+tokio.workspace = true
+clap.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

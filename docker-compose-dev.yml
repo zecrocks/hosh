@@ -1,81 +1,177 @@
 services:
-
-  hosh-dev:
-    # build this before building any of the -dev services
+  web:
     build:
       context: .
       dockerfile: dev.Dockerfile
     image: hosh/dev
-    profiles:
-      - dev
-
-
-  web:
-    build:
-      context: ./web
-      dockerfile: dev.Dockerfile
-    image: hosh/web-dev
+    command:
+      [
+        "cargo",
+        "watch",
+        "-q",
+        "-c",
+        "-w",
+        "crates",
+        "-x",
+        "run -p hosh -- --roles web",
+      ]
     ports:
       - "8080:8080"
     volumes:
-      - ./web:/usr/src/web
-      - ./web/target:/usr/src/web/target  # Persist build artifacts
+      - .:/app
+      - target-cache:/app/target
       - cargo-cache:/usr/local/cargo/registry
     environment:
       - RUST_LOG=info
       - API_KEY=${API_KEY}
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - RESULTS_WINDOW_DAYS=${RESULTS_WINDOW_DAYS:-30}
+    depends_on:
+      chronicler:
+        condition: service_healthy
 
   discovery:
-    build:
-      context: ./discovery
-      dockerfile: dev.Dockerfile
-    image: hosh/discovery-dev
+    image: hosh/dev
+    command:
+      [
+        "cargo",
+        "watch",
+        "-q",
+        "-c",
+        "-w",
+        "crates",
+        "-x",
+        "run -p hosh -- --roles discovery",
+      ]
     volumes:
-      - ./discovery:/usr/src/app
-      - ./discovery/target:/usr/src/app/target  # Persist build artifacts
+      - .:/app
+      - target-cache:/app/target
       - cargo-cache:/usr/local/cargo/registry
     environment:
       - RUST_LOG=info
       - RUST_BACKTRACE=1
-      - TRACING_LEVEL=info
+      - DISCOVERY_INTERVAL=3600
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    depends_on:
+      web:
+        condition: service_started
+      chronicler:
+        condition: service_healthy
 
   checker-zec:
-    build:
-      context: ./checkers/zec
-      dockerfile: dev.Dockerfile
-    image: hosh/checker-zec-dev
+    image: hosh/dev
+    command:
+      [
+        "cargo",
+        "watch",
+        "-q",
+        "-c",
+        "-w",
+        "crates",
+        "-x",
+        "run -p hosh -- --roles checker-zec",
+      ]
     volumes:
-      - ./checkers/zec:/usr/src/zec
-      - ./checkers/zec/target:/usr/src/zec/target  # Persist build artifacts
+      - .:/app
+      - target-cache:/app/target
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      RUST_LOG: info
-      SOCKS_PROXY: tor:9050
+      - RUST_LOG=info
+      - WEB_API_URL=http://web:8080
+      - API_KEY=${API_KEY}
+      - SOCKS_PROXY=tor:9050
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    depends_on:
+      web:
+        condition: service_started
+      tor:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
 
   checker-zec-1:
-    build:
-      context: ./checkers/zec
-      dockerfile: dev.Dockerfile
-    image: hosh/checker-zec-dev
+    image: hosh/dev
+    command:
+      [
+        "cargo",
+        "watch",
+        "-q",
+        "-c",
+        "-w",
+        "crates",
+        "-x",
+        "run -p hosh -- --roles checker-zec",
+      ]
     volumes:
-      - ./checkers/zec:/usr/src/zec
-      - ./checkers/zec/target:/usr/src/zec/target  # Persist build artifacts
+      - .:/app
+      - target-cache:/app/target
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      RUST_LOG: info
-      SOCKS_PROXY: tor:9050
+      - RUST_LOG=info
+      - WEB_API_URL=http://web:8080
+      - API_KEY=${API_KEY}
+      - SOCKS_PROXY=tor:9050
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    depends_on:
+      web:
+        condition: service_started
+      tor:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
 
   checker-btc:
-    build:
-      context: ./checkers/btc
-      dockerfile: dev.Dockerfile
-    image: hosh/checker-btc-dev
+    image: hosh/dev
+    command:
+      [
+        "cargo",
+        "watch",
+        "-q",
+        "-c",
+        "-w",
+        "crates",
+        "-x",
+        "run -p hosh -- --roles checker-btc",
+      ]
     volumes:
-      - ./checkers/btc:/usr/src/btc
-      - ./checkers/btc/target:/usr/src/btc/target  # Persist build artifacts
+      - .:/app
+      - target-cache:/app/target
       - cargo-cache:/usr/local/cargo/registry
     environment:
-      RUST_LOG: info
+      - RUST_LOG=info
+      - RUN_MODE=worker
+      - WEB_API_URL=http://web:8080
+      - API_KEY=${API_KEY}
+      - TOR_PROXY_HOST=tor
+      - TOR_PROXY_PORT=9050
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+    depends_on:
+      web:
+        condition: service_started
+      tor:
+        condition: service_healthy
+      chronicler:
+        condition: service_healthy
 
   dashboard:
     build: contrib/dashboard
@@ -96,8 +192,8 @@ services:
       - CLICKHOUSE_USER=${CLICKHOUSE_USER}
       - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
     depends_on:
-      - chronicler
-
+      chronicler:
+        condition: service_healthy
 
   docs:
     image: peaceiris/mdbook:latest
@@ -110,7 +206,6 @@ services:
       - .:/hosh
     command: ["serve", "--hostname", "0.0.0.0", "--port", "3000"]
     working_dir: /hosh/docs
-
 
   architecture:
     image: terrastruct/d2:v0.1.2
@@ -125,7 +220,6 @@ services:
       - "8000:8080"
     command: ["--watch", "/home/debian/src/architecture.d2"]
 
-
   redis:
     image: redis:alpine
     healthcheck:
@@ -133,9 +227,6 @@ services:
       interval: 5s
       timeout: 3s
       retries: 5
-    # Uncomment for local development, or use "docker compose exec -ti redis redis-cli"
-    # ports:
-    #   - "6379:6379"
     volumes:
       - redis-data:/data
     command: redis-server --appendonly yes
@@ -150,7 +241,7 @@ services:
     image: hosh/nostr-alert-dev
     volumes:
       - ./contrib/nostr-alert:/usr/src/nostr-alert
-      - ./contrib/nostr-alert/target:/usr/src/nostr-alert/target  # Persist build artifacts
+      - ./contrib/nostr-alert/target:/usr/src/nostr-alert/target
       - cargo-cache:/usr/local/cargo/registry
     environment:
       - RUST_LOG=info
@@ -170,5 +261,5 @@ services:
 
 volumes:
   cargo-cache:
-  btc-data:
+  target-cache:
   redis-data:

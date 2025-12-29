@@ -1,0 +1,23 @@
+[package]
+name = "hosh-web"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hosh-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+actix-web.workspace = true
+actix-files.workspace = true
+askama.workspace = true
+askama_actix.workspace = true
+regex.workspace = true
+qrcode.workspace = true
+rand.workspace = true
+redis.workspace = true

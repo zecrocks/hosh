@@ -1,19 +1,22 @@
-FROM rust:1.85-slim-bullseye
+FROM rust:1.87-slim-bullseye
 
-# Install required dependencies for OpenSSL, Rust, and cargo
+# Install all build dependencies for the unified binary
 RUN apt-get update && apt-get install -y \
     pkg-config \
     libssl-dev \
     g++ \
     git \
     make \
+    protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
-# Install cargo-watch for hot reloading (with --locked to use exact version)
+# Install cargo-watch for hot reloading
 RUN cargo install cargo-watch --locked --version 8.4.0
+
+WORKDIR /app
 
 # Set environment variable for incremental compilation
 ENV RUST_INCREMENTAL=1
 
-# Default command that can be overridden by child images
-CMD ["cargo", "watch", "-q", "-c", "-w", "src", "-x", "run"] 
+# Default command runs all roles with hot reloading
+CMD ["cargo", "watch", "-q", "-c", "-w", "crates", "-x", "run -p hosh -- --roles all"]

@@ -1,0 +1,108 @@
+# Development docker-compose with all roles in a single container
+# Uses cargo-watch for hot-reload
+#
+# Usage:
+#   docker compose -f docker-compose-dev-all.yml up
+#
+# Benefits:
+#   - Faster startup (one cargo build instead of five)
+#   - Less resource usage
+#   - Simpler logs (all in one stream)
+#   - Still has hot-reload via cargo-watch
+
+services:
+  hosh:
+    build:
+      context: .
+      dockerfile: dev.Dockerfile
+    image: hosh/dev
+    container_name: hosh-dev-all
+    command:
+      [
+        "cargo",
+        "watch",
+        "-q",
+        "-c",
+        "-w",
+        "crates",
+        "-x",
+        "run -p hosh -- --roles all",
+      ]
+    ports:
+      - "8080:8080"
+    volumes:
+      - .:/app
+      - target-cache:/app/target
+      - cargo-cache:/usr/local/cargo/registry
+    environment:
+      - RUST_LOG=info
+      - RUST_BACKTRACE=1
+      - API_KEY=${API_KEY}
+      - CLICKHOUSE_HOST=chronicler
+      - CLICKHOUSE_PORT=8123
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+      - RESULTS_WINDOW_DAYS=${RESULTS_WINDOW_DAYS:-30}
+      - DISCOVERY_INTERVAL=60
+      - WEB_API_URL=http://localhost:8080
+      - SOCKS_PROXY=tor:9050
+      - TOR_PROXY_HOST=tor
+      - TOR_PROXY_PORT=9050
+    depends_on:
+      chronicler:
+        condition: service_healthy
+      tor:
+        condition: service_healthy
+
+  tor:
+    image: osminogin/tor-simple
+    container_name: tor
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "curl --fail --socks5-hostname localhost:9050 -s https://check.torproject.org/ | grep -qm1 Congratulations",
+        ]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+    environment:
+      - TOR_NewCircuitPeriod=300
+      - TOR_MaxCircuitDirtiness=600
+
+  chronicler:
+    build: ./chronicler
+    container_name: chronicler
+    environment:
+      - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+      - CLICKHOUSE_USER=${CLICKHOUSE_USER}
+      - CLICKHOUSE_PASSWORD=${CLICKHOUSE_PASSWORD}
+      - CLICKHOUSE_DB=${CLICKHOUSE_DB}
+    ports:
+      - "8123:8123"
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "wget",
+          "--no-verbose",
+          "--tries=1",
+          "--spider",
+          "http://127.0.0.1:8123/ping",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    ulimits:
+      nofile:
+        soft: 262144
+        hard: 262144
+
+volumes:
+  cargo-cache:
+  target-cache:
+  clickhouse-data:

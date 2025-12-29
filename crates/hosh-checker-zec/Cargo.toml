@@ -1,0 +1,24 @@
+[package]
+name = "hosh-checker-zec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+hosh-core.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+reqwest.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+tonic.workspace = true
+rustls.workspace = true
+http.workspace = true
+hyper-util.workspace = true
+zcash_client_backend.workspace = true
+tokio-socks.workspace = true
+tower.workspace = true
+rand.workspace = true
+futures-util.workspace = true
