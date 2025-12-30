@@ -8,6 +8,3 @@ UPDATE port = 50002 WHERE module = 'btc' AND port = 0;
 
 ALTER TABLE hosh.targets
 UPDATE port = 443 WHERE module = 'zec' AND port = 0;
-
-ALTER TABLE hosh.targets
-UPDATE port = 80 WHERE module = 'http' AND port = 0; 

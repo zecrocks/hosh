@@ -63,10 +63,6 @@ bitcoin = "0.32"
 # SOCKS/Tor support
 tokio-socks = "0.5"
 tokio-openssl = "0.6"
-arti-client = "0.37"
-
-# HTML scraping (for discovery)
-scraper = "0.25"
 
 # Misc utilities
 regex = "1"
@@ -76,10 +72,6 @@ hex = "0.4"
 base64 = "0.22"
 futures = "0.3"
 futures-util = { version = "0.3", features = ["std"] }
-
-
-# Priority queue
-priority-queue = "1.4"
 
 # Internal crates
 hosh-core = { path = "crates/hosh-core" }

@@ -156,21 +156,3 @@ pub struct ZecServerInfo {
     pub zcashd_subversion: String,
     pub donation_address: String,
 }
-
-/// A static server entry for discovery.
-#[derive(Debug, Clone)]
-pub struct StaticServer {
-    pub hostname: &'static str,
-    pub port: u16,
-    pub community: bool,
-}
-
-impl StaticServer {
-    pub const fn new(hostname: &'static str, port: u16, community: bool) -> Self {
-        Self {
-            hostname,
-            port,
-            community,
-        }
-    }
-}

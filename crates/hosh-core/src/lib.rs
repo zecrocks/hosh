@@ -2,7 +2,6 @@
 
 pub mod clickhouse;
 pub mod config;
-pub mod tracing_setup;
 pub mod types;
 
 pub use clickhouse::ClickHouseClient;

@@ -1034,7 +1034,6 @@ impl SafeNetwork {
         match s {
             "btc" => Some(SafeNetwork("btc")),
             "zec" => Some(SafeNetwork("zec")),
-            "http" => Some(SafeNetwork("http")),
             _ => None,
         }
     }
@@ -1633,10 +1632,7 @@ async fn fetch_and_render_network_status(
 }
 
 /// Helper function to fetch and render the leaderboard page (top 50 by uptime)
-async fn fetch_and_render_leaderboard(
-    worker: &Worker,
-    network: &SafeNetwork,
-) -> Result<String> {
+async fn fetch_and_render_leaderboard(worker: &Worker, network: &SafeNetwork) -> Result<String> {
     // Query for leaderboard - top 50 servers by 30-day uptime
     let query = format!(
         r#"
@@ -1695,7 +1691,10 @@ async fn fetch_and_render_leaderboard(
         worker.clickhouse.database
     );
 
-    info!("Executing ClickHouse leaderboard query for network {}", network.0);
+    info!(
+        "Executing ClickHouse leaderboard query for network {}",
+        network.0
+    );
 
     let url_with_params = format!(
         "{}?max_memory_usage=4000000000&max_bytes_before_external_sort=2000000000",
@@ -1743,10 +1742,11 @@ async fn fetch_and_render_leaderboard(
                 _ => "{}",
             };
 
-            let cleaned_response_data = validate_and_fix_json(response_data)
-                .unwrap_or_else(|| "{}".to_string());
+            let cleaned_response_data =
+                validate_and_fix_json(response_data).unwrap_or_else(|| "{}".to_string());
 
-            if let Ok(mut server_info) = serde_json::from_str::<ServerInfo>(&cleaned_response_data) {
+            if let Ok(mut server_info) = serde_json::from_str::<ServerInfo>(&cleaned_response_data)
+            {
                 server_info.uptime_30_day = result.get("uptime_30_day").and_then(|v| v.as_f64());
                 server_info.community = result
                     .get("community")
@@ -2255,7 +2255,6 @@ async fn network_api(
             let (port, protocol) = match network.0 {
                 "btc" => (server.port.unwrap_or(50002), "ssl"),
                 "zec" => (server.port.unwrap_or(443), "grpc"),
-                "http" => (server.port.unwrap_or(80), "http"),
                 _ => unreachable!(),
             };
 
@@ -2543,15 +2542,9 @@ async fn post_results(
         .and_then(|v| v.as_str())
         .unwrap_or("");
 
-    let error = body
-        .get("error")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let error = body.get("error").and_then(|v| v.as_str()).unwrap_or("");
 
-    let block_height = body
-        .get("height")
-        .and_then(|v| v.as_u64())
-        .unwrap_or(0);
+    let block_height = body.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
 
     // Serialize the full response data as JSON (will be TTL'd after 7 days)
     let response_data = serde_json::to_string(&body.0).unwrap_or_default();
@@ -2627,7 +2620,10 @@ async fn calculate_uptime_stats(
     // port_filter is for uptime_stats_by_port (port is String)
     // port_filter_results is for results table (port is UInt16)
     let (port_filter, port_filter_results) = if let Some(port_num) = port {
-        (format!("AND port = '{}'", port_num), format!("AND port = {}", port_num))
+        (
+            format!("AND port = '{}'", port_num),
+            format!("AND port = {}", port_num),
+        )
     } else {
         (String::new(), String::new())
     };

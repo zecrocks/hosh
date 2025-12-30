@@ -4,13 +4,12 @@
 //! the monitoring system. It maintains static server lists and can also discover
 //! servers dynamically.
 
-use std::{env, error::Error, time::Duration};
-use serde::{Deserialize, Serialize};
-use tokio::time;
 use chrono::{DateTime, Utc};
-use tracing::{info, error};
 use reqwest::Client;
-use scraper::{Html, Selector};
+use serde::{Deserialize, Serialize};
+use std::{env, error::Error, time::Duration};
+use tokio::time;
+use tracing::{error, info};
 
 // Environment variable constants
 const DEFAULT_DISCOVERY_INTERVAL: u64 = 3600; // 1 hour default
@@ -34,7 +33,8 @@ impl ClickHouseConfig {
         Self {
             url,
             user: env::var("CLICKHOUSE_USER").unwrap_or_else(|_| "hosh".into()),
-            password: env::var("CLICKHOUSE_PASSWORD").expect("CLICKHOUSE_PASSWORD environment variable must be set"),
+            password: env::var("CLICKHOUSE_PASSWORD")
+                .expect("CLICKHOUSE_PASSWORD environment variable must be set"),
             database: env::var("CLICKHOUSE_DB").unwrap_or_else(|_| "hosh".into()),
             client: reqwest::Client::new(),
         }
@@ -42,7 +42,9 @@ impl ClickHouseConfig {
 
     async fn execute_query(&self, query: &str) -> Result<String, Box<dyn Error>> {
         info!("Executing ClickHouse query");
-        let response = self.client.post(&self.url)
+        let response = self
+            .client
+            .post(&self.url)
             .basic_auth(&self.user, Some(&self.password))
             .header("Content-Type", "text/plain")
             .body(query.to_string())
@@ -52,7 +54,10 @@ impl ClickHouseConfig {
         let status = response.status();
         if !status.is_success() {
             let error_text = response.text().await?;
-            error!("ClickHouse query failed with status {}: {}", status, error_text);
+            error!(
+                "ClickHouse query failed with status {}: {}",
+                status, error_text
+            );
             return Err(format!("ClickHouse query failed: {}", error_text).into());
         }
 
@@ -61,7 +66,12 @@ impl ClickHouseConfig {
         Ok(result)
     }
 
-    async fn target_exists(&self, module: &str, hostname: &str, port: u16) -> Result<bool, Box<dyn Error>> {
+    async fn target_exists(
+        &self,
+        module: &str,
+        hostname: &str,
+        port: u16,
+    ) -> Result<bool, Box<dyn Error>> {
         let query = format!(
             "SELECT count() FROM {}.targets WHERE module = '{}' AND hostname = '{}' AND port = {}",
             self.database, module, hostname, port
@@ -70,7 +80,13 @@ impl ClickHouseConfig {
         Ok(result.trim().parse::<i64>()? > 0)
     }
 
-    async fn insert_target(&self, module: &str, hostname: &str, port: u16, community: bool) -> Result<(), Box<dyn Error>> {
+    async fn insert_target(
+        &self,
+        module: &str,
+        hostname: &str,
+        port: u16,
+        community: bool,
+    ) -> Result<(), Box<dyn Error>> {
         if self.target_exists(module, hostname, port).await? {
             info!("Target already exists: {} {}:{}", module, hostname, port);
             return Ok(());
@@ -81,7 +97,10 @@ impl ClickHouseConfig {
             self.database, module, hostname, port, community
         );
         self.execute_query(&query).await?;
-        info!("Successfully inserted target: {} {}:{} (community: {})", module, hostname, port, community);
+        info!(
+            "Successfully inserted target: {} {}:{} (community: {})",
+            module, hostname, port, community
+        );
         Ok(())
     }
 }
@@ -114,9 +133,17 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zcash.mysideoftheweb.com", 19067, false), // eZcash (Testnet)
     //// Tor nodes
     // Zec.rocks Mainnet (Zebra + Zaino)
-    ("kxn4wla7i4rczcpn7ljbtmtq4gd4xhtx6f6hxpze7qbfmu66atwsneqd.onion", 443, false),
+    (
+        "kxn4wla7i4rczcpn7ljbtmtq4gd4xhtx6f6hxpze7qbfmu66atwsneqd.onion",
+        443,
+        false,
+    ),
     // ("lzzfytqg24a7v6ejqh2q4ecaop6mf62gupvdimc4ryxeixtdtzxxjmad.onion", 443, false),
-    ("vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion", 443, false),
+    (
+        "vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion",
+        443,
+        false,
+    ),
     // Zec.rocks Mainnet (Zcashd + Lightwalletd)
     // ("ltefw7pqlslcst5n465kxwgqmb4wxwp7djvhzqlfwhh3wx53xzuwr2ad.onion", 443, false),
     // Zec.rocks Testnet (Zebra + Zaino)
@@ -219,15 +246,6 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("z.cryptpos.xyz", 443, true),
 ];
 
-// Static HTTP block explorer configuration
-const HTTP_EXPLORERS: &[(&str, &str)] = &[
-    ("blockchair", "https://blockchair.com"),
-    ("blockstream", "https://blockstream.info"),
-    ("zecrocks", "https://explorer.zec.rocks"),
-    ("blockchain", "https://blockchain.com"),
-    ("zcashexplorer", "https://mainnet.zcashexplorer.app"),
-];
-
 #[derive(Debug, Deserialize)]
 struct BtcServerDetails {
     #[serde(default)]
@@ -250,7 +268,8 @@ struct ServerData {
     version: Option<String>,
 }
 
-async fn fetch_btc_servers() -> Result<std::collections::HashMap<String, BtcServerDetails>, Box<dyn Error>> {
+async fn fetch_btc_servers(
+) -> Result<std::collections::HashMap<String, BtcServerDetails>, Box<dyn Error>> {
     info!("Fetching BTC servers from Electrum repository...");
     let client = reqwest::Client::new();
     let response = client
@@ -264,17 +283,23 @@ async fn fetch_btc_servers() -> Result<std::collections::HashMap<String, BtcServ
     Ok(servers)
 }
 
-async fn get_server_details(client: &Client, host: &str, port: u16) -> Result<ServerData, Box<dyn Error>> {
+async fn get_server_details(
+    client: &Client,
+    host: &str,
+    port: u16,
+) -> Result<ServerData, Box<dyn Error>> {
     let start_time = std::time::Instant::now();
     let url = format!("http://{}:{}", host, port);
 
-    let response = client.get(&url)
+    let response = client
+        .get(&url)
         .timeout(Duration::from_secs(5))
         .send()
         .await?;
 
     let ping = start_time.elapsed().as_secs_f64();
-    let version = response.headers()
+    let version = response
+        .headers()
         .get("server")
         .and_then(|v| v.to_str().ok())
         .map(|s| s.to_string());
@@ -291,31 +316,6 @@ async fn get_server_details(client: &Client, host: &str, port: u16) -> Result<Se
     })
 }
 
-async fn get_blockchair_onion_url(client: &Client) -> Result<Option<String>, Box<dyn Error>> {
-    let url = "https://blockchair.com";
-    let response = client.get(url).send().await?;
-    let text = response.text().await?;
-    let document = Html::parse_document(&text);
-
-    // Use a more specific selector to target the onion URL link directly
-    let link_selector = Selector::parse("a[href*='.onion']").unwrap();
-
-    if let Some(link) = document.select(&link_selector).next() {
-        if let Some(href) = link.value().attr("href") {
-            // Only return the URL if it contains the blkchair prefix
-            if href.contains("blkchair") {
-                info!("Found Blockchair onion URL: {}", href);
-                return Ok(Some(href.to_string()));
-            } else {
-                info!("Found onion URL but it's not Blockchair's: {}", href);
-            }
-        }
-    }
-
-    info!("No Blockchair onion URL found");
-    Ok(None)
-}
-
 async fn update_servers(
     client: &reqwest::Client,
     clickhouse: &ClickHouseConfig,
@@ -323,9 +323,15 @@ async fn update_servers(
     // Process ZEC servers first
     info!("Processing {} ZEC servers...", ZEC_SERVERS.len());
     for (host, port, community) in ZEC_SERVERS {
-        info!("Processing ZEC server: {}:{} (community: {})", host, port, community);
+        info!(
+            "Processing ZEC server: {}:{} (community: {})",
+            host, port, community
+        );
         if !clickhouse.target_exists("zec", host, *port).await? {
-            if let Err(e) = clickhouse.insert_target("zec", host, *port, *community).await {
+            if let Err(e) = clickhouse
+                .insert_target("zec", host, *port, *community)
+                .await
+            {
                 error!("Failed to insert ZEC server {}:{}: {}", host, port, e);
             }
         } else {
@@ -333,43 +339,12 @@ async fn update_servers(
         }
     }
 
-    // Process HTTP block explorers second
-    info!("Processing {} HTTP block explorers...", HTTP_EXPLORERS.len());
-    for (explorer, url) in HTTP_EXPLORERS {
-        info!("Processing HTTP explorer: {} ({})", explorer, url);
-
-        // Insert the main explorer target if it doesn't exist
-        if !clickhouse.target_exists("http", url, 80).await? {
-            if let Err(e) = clickhouse.insert_target("http", url, 80, false).await {
-                error!("Failed to insert HTTP explorer {}: {}", url, e);
-                continue;
-            }
-        } else {
-            info!("HTTP explorer {} already exists, skipping", url);
-        }
-
-        // Special handling for Blockchair to get onion URL
-        if explorer == &"blockchair" {
-            if let Some(onion_url) = get_blockchair_onion_url(client).await? {
-                info!("Found Blockchair onion URL: {}", onion_url);
-                if !clickhouse.target_exists("http", &onion_url, 80).await? {
-                    if let Err(e) = clickhouse.insert_target("http", &onion_url, 80, false).await {
-                        error!("Failed to insert Blockchair onion URL {}: {}", onion_url, e);
-                    }
-                } else {
-                    info!("Blockchair onion URL {} already exists, skipping", onion_url);
-                }
-            } else {
-                error!("Failed to get Blockchair onion URL");
-            }
-        }
-    }
-
-    // Process BTC servers last
+    // Process BTC servers
     let btc_servers = fetch_btc_servers().await?;
     info!("Processing {} BTC servers...", btc_servers.len());
     for (host, details) in btc_servers {
-        let port = details.s
+        let port = details
+            .s
             .and_then(|s| s.parse::<u16>().ok())
             .unwrap_or(50001);
         info!("Processing BTC server: {}:{}", host, port);
@@ -385,7 +360,10 @@ async fn update_servers(
                 }
                 Err(e) => {
                     // Still insert the target even if verification fails
-                    info!("Could not verify BTC server {}:{}: {}, but inserting anyway", host, port, e);
+                    info!(
+                        "Could not verify BTC server {}:{}: {}, but inserting anyway",
+                        host, port, e
+                    );
                     if let Err(e) = clickhouse.insert_target("btc", &host, port, false).await {
                         error!("Failed to insert BTC server {}:{}: {}", host, port, e);
                     }
@@ -427,7 +405,10 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
             Err(e) => error!("Error during discovery cycle: {}", e),
         }
 
-        info!("Sleeping for {} seconds before next discovery cycle", discovery_interval);
+        info!(
+            "Sleeping for {} seconds before next discovery cycle",
+            discovery_interval
+        );
         time::sleep(Duration::from_secs(discovery_interval)).await;
     }
 }
