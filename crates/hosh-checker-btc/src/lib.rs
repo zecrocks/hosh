@@ -62,10 +62,8 @@ pub async fn run_server() -> Result<(), Box<dyn std::error::Error + Send + Sync>
     let addr = SocketAddr::from(([0, 0, 0, 0], 5000));
     info!("Server running on http://{}", addr);
 
-    if let Err(e) = axum::Server::bind(&addr)
-        .serve(app.into_make_service())
-        .await
-    {
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    if let Err(e) = axum::serve(listener, app).await {
         error!("Server error: {}", e);
         return Err(Box::new(e));
     }

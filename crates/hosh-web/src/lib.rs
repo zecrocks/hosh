@@ -36,7 +36,7 @@ mod filters {
     use askama::Result;
     use serde_json::Value;
 
-    pub fn format_value(v: &Value) -> Result<String> {
+    pub fn format_value(v: &Value, _env: &dyn askama::Values) -> Result<String> {
         match v {
             Value::String(s) => Ok(s.to_string()),
             Value::Number(n) => Ok(n.to_string()),
@@ -2312,19 +2312,6 @@ struct CheckRequest {
     user_submitted: Option<bool>,
 }
 
-// Struct for check results
-#[derive(Debug, Deserialize, Serialize)]
-struct CheckResult {
-    hostname: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    port: Option<u16>,
-    checker_module: String,
-    status: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    ping_ms: Option<f64>,
-    response_data: String,
-}
-
 // GET /api/v1/jobs - Returns servers that need to be checked
 #[get("/api/v1/jobs")]
 async fn get_jobs(
@@ -3135,16 +3122,18 @@ mod tests {
         let result = validate_json_with_details(input);
         assert!(result.is_ok());
 
-        // Test invalid JSON
+        // Test invalid JSON (trailing comma)
         let input = r#"{"host":"test.com","port":50002,}"#;
         let result = validate_json_with_details(input);
         assert!(result.is_err());
-        assert!(result.unwrap_err().contains("expected value"));
+        // Error message format may vary by serde_json version, just check it's an error
+        let err_msg = result.unwrap_err();
+        assert!(err_msg.contains("JSON parse error"));
 
-        // Test JSON with unescaped quotes
+        // Test JSON with curly braces inside a string value (valid JSON)
         let input = r#"{"host":"test.com","error":"Response { status: 400 }"}"#;
         let result = validate_json_with_details(input);
-        assert!(result.is_err());
+        assert!(result.is_ok()); // This is actually valid JSON - braces in strings are allowed
     }
 
     #[test]
@@ -3164,194 +3153,114 @@ mod tests {
 
     #[test]
     fn test_deserialize_height() {
-        // Test number height
-        let json = r#"{"height":12345}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let height = deserialize_height(serde::Deserializer::from(
-            serde_json::to_value(result["height"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(height, 12345);
+        // Test number height - deserialize via ServerInfo struct
+        let json = r#"{"host":"test","height":12345}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.height, 12345);
 
         // Test string height
-        let json = r#"{"height":"0"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let height = deserialize_height(serde::Deserializer::from(
-            serde_json::to_value(result["height"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(height, 0);
+        let json = r#"{"host":"test","height":"0"}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.height, 0);
 
         // Test empty string height
-        let json = r#"{"height":""}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let height = deserialize_height(serde::Deserializer::from(
-            serde_json::to_value(result["height"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(height, 0);
+        let json = r#"{"host":"test","height":""}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.height, 0);
 
         // Test null height
-        let json = r#"{"height":null}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let height = deserialize_height(serde::Deserializer::from(
-            serde_json::to_value(result["height"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(height, 0);
+        let json = r#"{"host":"test","height":null}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.height, 0);
     }
 
     #[test]
     fn test_deserialize_ping() {
-        // Test number ping
-        let json = r#"{"ping":123.45}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let ping = deserialize_ping(serde::Deserializer::from(
-            serde_json::to_value(result["ping"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(ping, Some(123.45));
+        // Test number ping - deserialize via ServerInfo struct
+        let json = r#"{"host":"test","ping":123.45}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.ping, Some(123.45));
 
         // Test string ping
-        let json = r#"{"ping":"123.45"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let ping = deserialize_ping(serde::Deserializer::from(
-            serde_json::to_value(result["ping"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(ping, Some(123.45));
+        let json = r#"{"host":"test","ping":"123.45"}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.ping, Some(123.45));
 
         // Test empty string ping
-        let json = r#"{"ping":""}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let ping = deserialize_ping(serde::Deserializer::from(
-            serde_json::to_value(result["ping"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(ping, None);
+        let json = r#"{"host":"test","ping":""}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.ping, None);
 
         // Test null ping
-        let json = r#"{"ping":null}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let ping = deserialize_ping(serde::Deserializer::from(
-            serde_json::to_value(result["ping"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(ping, None);
+        let json = r#"{"host":"test","ping":null}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.ping, None);
     }
 
     #[test]
     fn test_deserialize_user_submitted() {
-        // Test boolean true
-        let json = r#"{"user_submitted":true}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(
-            serde_json::to_value(result["user_submitted"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(user_submitted, true);
+        // Test boolean true - deserialize via ServerInfo struct
+        let json = r#"{"host":"test","user_submitted":true}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.user_submitted, true);
 
         // Test boolean false
-        let json = r#"{"user_submitted":false}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(
-            serde_json::to_value(result["user_submitted"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(user_submitted, false);
+        let json = r#"{"host":"test","user_submitted":false}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.user_submitted, false);
 
         // Test string "true"
-        let json = r#"{"user_submitted":"true"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(
-            serde_json::to_value(result["user_submitted"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(user_submitted, true);
+        let json = r#"{"host":"test","user_submitted":"true"}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.user_submitted, true);
 
         // Test string "false"
-        let json = r#"{"user_submitted":"false"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(
-            serde_json::to_value(result["user_submitted"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(user_submitted, false);
+        let json = r#"{"host":"test","user_submitted":"false"}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.user_submitted, false);
 
         // Test string "FALSE" (case insensitive)
-        let json = r#"{"user_submitted":"FALSE"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(
-            serde_json::to_value(result["user_submitted"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(user_submitted, false);
+        let json = r#"{"host":"test","user_submitted":"FALSE"}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.user_submitted, false);
 
         // Test number 1 (true)
-        let json = r#"{"user_submitted":1}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(
-            serde_json::to_value(result["user_submitted"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(user_submitted, true);
+        let json = r#"{"host":"test","user_submitted":1}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.user_submitted, true);
 
         // Test number 0 (false)
-        let json = r#"{"user_submitted":0}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(
-            serde_json::to_value(result["user_submitted"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(user_submitted, false);
+        let json = r#"{"host":"test","user_submitted":0}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.user_submitted, false);
 
         // Test null (defaults to false)
-        let json = r#"{"user_submitted":null}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let user_submitted = deserialize_user_submitted(serde::Deserializer::from(
-            serde_json::to_value(result["user_submitted"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(user_submitted, false);
+        let json = r#"{"host":"test","user_submitted":null}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.user_submitted, false);
     }
 
     #[test]
     fn test_deserialize_error_field() {
-        // Test boolean true
-        let json = r#"{"error":true}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let error = deserialize_error_field(serde::Deserializer::from(
-            serde_json::to_value(result["error"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(error, Some("Server error occurred".to_string()));
+        // Test boolean true - deserialize via ServerInfo struct
+        let json = r#"{"host":"test","error":true}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.error, Some("Server error occurred".to_string()));
 
         // Test boolean false
-        let json = r#"{"error":false}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let error = deserialize_error_field(serde::Deserializer::from(
-            serde_json::to_value(result["error"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(error, None);
+        let json = r#"{"host":"test","error":false}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.error, None);
 
         // Test string error
-        let json = r#"{"error":"Connection failed"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let error = deserialize_error_field(serde::Deserializer::from(
-            serde_json::to_value(result["error"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(error, Some("Connection failed"));
+        let json = r#"{"host":"test","error":"Connection failed"}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.error, Some("Connection failed".to_string()));
 
         // Test null
-        let json = r#"{"error":null}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let error = deserialize_error_field(serde::Deserializer::from(
-            serde_json::to_value(result["error"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(error, None);
+        let json = r#"{"host":"test","error":null}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.error, None);
     }
 
     #[test]
@@ -3384,9 +3293,11 @@ mod tests {
             ping: None,
             server_version: Some("unknown".to_string()),
             user_submitted: false,
+            community: false,
             check_id: Some("test-id".to_string()),
             extra: HashMap::new(),
             last_updated: Some("2025-07-31T21:11:21.472525544Z".to_string()),
+            uptime_30_day: None,
         };
 
         let formatted = server_info.formatted_last_updated();
@@ -3407,9 +3318,11 @@ mod tests {
             ping: None,
             server_version: Some("unknown".to_string()),
             user_submitted: false,
+            community: false,
             check_id: Some("test-id".to_string()),
             extra: HashMap::new(),
             last_updated: Some("2025-07-31T21:11:21.472525544Z".to_string()),
+            uptime_30_day: None,
         };
 
         let formatted2 = server_info2.formatted_last_updated();
@@ -3442,53 +3355,33 @@ mod tests {
 
     #[test]
     fn test_deserialize_host() {
-        // Test quoted hostname
+        // Test quoted hostname - deserialize via ServerInfo struct
         let json = r#"{"host":"'128.0.190.26'"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let host = deserialize_host(serde::Deserializer::from(
-            serde_json::to_value(result["host"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(host, "128.0.190.26");
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.host, "128.0.190.26");
 
         // Test unquoted hostname
         let json = r#"{"host":"example.com"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let host = deserialize_host(serde::Deserializer::from(
-            serde_json::to_value(result["host"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(host, "example.com");
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.host, "example.com");
     }
 
     #[test]
     fn test_deserialize_server_version() {
-        // Test quoted server version
-        let json = r#"{"server_version":"'unknown'"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let version = deserialize_server_version(serde::Deserializer::from(
-            serde_json::to_value(result["server_version"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(version, Some("unknown".to_string()));
+        // Test quoted server version - deserialize via ServerInfo struct
+        let json = r#"{"host":"test","server_version":"'unknown'"}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.server_version, Some("unknown".to_string()));
 
         // Test unquoted server version
-        let json = r#"{"server_version":"ElectrumX 1.16.0"}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let version = deserialize_server_version(serde::Deserializer::from(
-            serde_json::to_value(result["server_version"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(version, Some("ElectrumX 1.16.0".to_string()));
+        let json = r#"{"host":"test","server_version":"ElectrumX 1.16.0"}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.server_version, Some("ElectrumX 1.16.0".to_string()));
 
         // Test null server version
-        let json = r#"{"server_version":null}"#;
-        let result: serde_json::Value = serde_json::from_str(json).unwrap();
-        let version = deserialize_server_version(serde::Deserializer::from(
-            serde_json::to_value(result["server_version"]).unwrap(),
-        ))
-        .unwrap();
-        assert_eq!(version, None);
+        let json = r#"{"host":"test","server_version":null}"#;
+        let result: ServerInfo = serde_json::from_str(json).unwrap();
+        assert_eq!(result.server_version, None);
     }
 }
 

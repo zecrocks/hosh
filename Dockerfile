@@ -1,4 +1,4 @@
-FROM rust:1.87-slim-bullseye AS chef
+FROM rust:1.92-slim-bookworm AS chef
 RUN cargo install cargo-chef
 WORKDIR /app
 
@@ -30,14 +30,14 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
     cp /app/target/release/hosh /app/hosh
 
 # Runtime stage
-FROM debian:bullseye-slim
+FROM debian:bookworm-slim
 
 WORKDIR /app
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
     ca-certificates \
-    libssl1.1 \
+    libssl3 \
     wget \
     && rm -rf /var/lib/apt/lists/*
 

@@ -178,7 +178,7 @@ pub async fn send_electrum_request(
                     return Err(format!("Read error: {}", e));
                 }
             };
-            
+
             if n == 0 {
                 if buffer.is_empty() {
                     error!("Empty response received");
@@ -219,16 +219,13 @@ pub async fn send_electrum_request(
 
 pub fn error_response(message: &str, error_type: &str) -> axum::response::Response {
     error!(error_type = error_type, "API error: {}", message);
-    let error_body = serde_json::json!({ 
+    let error_body = serde_json::json!({
         "error": message,
-        "error_type": error_type 
+        "error_type": error_type
     });
     axum::response::Response::builder()
         .status(400)
         .header("Content-Type", "application/json")
-        .body(axum::body::boxed(axum::body::Full::from(error_body.to_string())))
+        .body(axum::body::Body::from(error_body.to_string()))
         .unwrap()
 }
-
-
-
