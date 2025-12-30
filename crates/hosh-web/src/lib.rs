@@ -1208,7 +1208,7 @@ async fn fetch_and_render_network_status(
                 hostname,
                 toString(port) as port,
                 min(checked_at) as first_seen,
-                least(dateDiff('day', min(checked_at), now()), 30) / 30.0 as percentage_of_month
+                least(dateDiff('hour', min(checked_at), now()), 720) / 720.0 as percentage_of_month
             FROM {}.results
             WHERE checker_module = '{}'
             GROUP BY hostname, port
@@ -1649,7 +1649,7 @@ async fn fetch_and_render_leaderboard(worker: &Worker, network: &SafeNetwork) ->
                 hostname,
                 toString(port) as port,
                 min(checked_at) as first_seen,
-                least(dateDiff('day', min(checked_at), now()), 30) / 30.0 as percentage_of_month
+                least(dateDiff('hour', min(checked_at), now()), 720) / 720.0 as percentage_of_month
             FROM {}.results
             WHERE checker_module = '{}'
             GROUP BY hostname, port
@@ -2151,7 +2151,7 @@ async fn network_api(
                 hostname,
                 toString(port) as port,
                 min(checked_at) as first_seen,
-                least(dateDiff('day', min(checked_at), now()), 30) / 30.0 as percentage_of_month
+                least(dateDiff('hour', min(checked_at), now()), 720) / 720.0 as percentage_of_month
             FROM {}.results
             WHERE checker_module = '{}'
             GROUP BY hostname, port
@@ -2546,12 +2546,17 @@ async fn post_results(
 
     let block_height = body.get("height").and_then(|v| v.as_u64()).unwrap_or(0);
 
+    let checker_location = body
+        .get("checker_location")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+
     // Serialize the full response data as JSON (will be TTL'd after 7 days)
     let response_data = serde_json::to_string(&body.0).unwrap_or_default();
 
     // Insert into ClickHouse with extracted columns that persist forever
     let insert_query = format!(
-        "INSERT INTO {}.results (hostname, checker_module, status, ping_ms, port, server_version, error, block_height, response_data, checked_at) FORMAT JSONEachRow",
+        "INSERT INTO {}.results (hostname, checker_module, status, ping_ms, port, server_version, error, block_height, checker_location, response_data, checked_at) FORMAT JSONEachRow",
         worker.clickhouse.database
     );
 
@@ -2564,6 +2569,7 @@ async fn post_results(
         "server_version": server_version,
         "error": error,
         "block_height": block_height,
+        "checker_location": checker_location,
         "response_data": response_data,
         "checked_at": chrono::Utc::now().format("%Y-%m-%d %H:%M:%S%.3f").to_string(),
     });
@@ -2639,10 +2645,10 @@ async fn calculate_uptime_stats(
         -- Calculate the percentage of the 30-day period that the server has been announced
         -- If first_seen is within the last 30 days, this will be < 1.0
         -- If first_seen is 30+ days ago, this will be 1.0
-        days_announced AS (
+        hours_announced AS (
             SELECT
-                least(dateDiff('day', first_seen, now()), 30) as days_in_period,
-                least(dateDiff('day', first_seen, now()), 30) / 30.0 as percentage_of_month
+                least(dateDiff('hour', first_seen, now()), 720) as hours_in_period,
+                least(dateDiff('hour', first_seen, now()), 720) / 720.0 as percentage_of_month
             FROM first_seen_date
         )
         SELECT
@@ -2669,7 +2675,7 @@ async fn calculate_uptime_stats(
         -- This penalizes newly announced servers proportionally to how long they've been known
         SELECT
             'month' as period,
-            (sum(online_count) * 100.0 / greatest(sum(total_checks), 1)) * (SELECT percentage_of_month FROM days_announced) as uptime_percentage
+            (sum(online_count) * 100.0 / greatest(sum(total_checks), 1)) * (SELECT percentage_of_month FROM hours_announced) as uptime_percentage
         FROM {}.uptime_stats_by_port
         WHERE hostname = '{}'
         AND time_bucket >= now() - INTERVAL 30 DAY
