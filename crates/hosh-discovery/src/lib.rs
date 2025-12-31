@@ -249,6 +249,7 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zec.topacio.trade", 443, true),
     ("node.manyrz.xyz", 443, true),
     ("znodo.edgarlenon.xyz", 443, true),
+    ("zec.0xrpc.io", 443, true),
 ];
 
 #[derive(Debug, Deserialize)]
