@@ -72,6 +72,9 @@ struct LeaderboardTemplate {
     entries: Vec<LeaderboardEntry>,
     current_network: &'static str,
     percentile_height: u64,
+    min_zebra_version: &'static str,
+    min_lwd_version: &'static str,
+    min_zaino_version: &'static str,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -1779,6 +1782,9 @@ async fn fetch_and_render_leaderboard(worker: &Worker, network: &SafeNetwork) ->
         entries,
         current_network: network.0,
         percentile_height,
+        min_zebra_version: LEADERBOARD_MIN_ZEBRA_VERSION,
+        min_lwd_version: LEADERBOARD_MIN_LWD_VERSION,
+        min_zaino_version: LEADERBOARD_MIN_ZAINO_VERSION,
     };
 
     let html = template.render().map_err(|e| {

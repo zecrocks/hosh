@@ -6,6 +6,10 @@
         <h2 class="mb-4">Top 50 Servers by Uptime</h2>
         <p class="text-muted mb-4">Ranked by 30-day calendar uptime. Only servers that have been online at least once are shown.</p>
         
+        <div class="alert alert-info mb-4">
+            <strong>Qualifying Versions:</strong> Zebra {{ min_zebra_version }}+ &nbsp;|&nbsp; LWD {{ min_lwd_version }}+ &nbsp;|&nbsp; Zaino {{ min_zaino_version }}+
+        </div>
+        
         <div class="card shadow-sm">
             <div class="table-responsive">
                 <table class="table table-hover table-striped mb-0">
@@ -24,15 +28,7 @@
                         {% for entry in entries %}
                         <tr>
                             <td>
-                                {% if entry.rank == 1 %}
-                                <span class="badge bg-warning text-dark fs-6">#1</span>
-                                {% else if entry.rank == 2 %}
-                                <span class="badge bg-secondary fs-6">#2</span>
-                                {% else if entry.rank == 3 %}
-                                <span class="badge bg-danger fs-6">#3</span>
-                                {% else %}
                                 <span class="text-muted">#{{ entry.rank }}</span>
-                                {% endif %}
                             </td>
                             <td>
                                 <a href="/{{ current_network }}/{{ entry.server.host_with_port() }}">{{ entry.server.host_with_port() }}</a>
