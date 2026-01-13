@@ -245,11 +245,14 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zcash-in.space", 443, true),
     ("z.cryptpos.xyz", 443, true),
     ("l.ombie.cash", 443, true),
+    ("z.ombie.cash", 443, true),
     ("lwd.bunny-zec.xyz", 443, true),
+    ("zecdolprice.uk", 443, true),
     ("zec.topacio.trade", 443, true),
     ("node.manyrz.xyz", 443, true),
     ("znodo.edgarlenon.xyz", 443, true),
     ("zec.0xrpc.io", 443, true),
+    ("rqjlg3q7qul4i7ha2je3b4trp4o2xex5kwpxuzw75cltizyiwkh6s4ad.onion", 443, true),
 ];
 
 #[derive(Debug, Deserialize)]
