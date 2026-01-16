@@ -2130,13 +2130,21 @@ async fn server_detail(
         .body(html))
 }
 
+#[derive(Debug, Deserialize)]
+struct NetworkApiQuery {
+    /// Filter to only show leaderboard-eligible servers (ZEC only)
+    leaderboard: Option<bool>,
+}
+
 #[get("/api/v0/{network}.json")]
 async fn network_api(
     worker: web::Data<Worker>,
     network: web::Path<String>,
+    query: web::Query<NetworkApiQuery>,
 ) -> Result<HttpResponse> {
     let network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+    let filter_leaderboard = query.leaderboard.unwrap_or(false) && network.0 == "zec";
 
     // Query the results table to get all servers for the network
     // uptime = (checks_succeeded / total_checks) * percentage_of_month_announced
@@ -2254,6 +2262,16 @@ async fn network_api(
             }
         }
     }
+
+    // Filter for leaderboard-eligible servers if requested (ZEC only)
+    let servers: Vec<ServerInfo> = if filter_leaderboard {
+        servers
+            .into_iter()
+            .filter(|s| s.meets_leaderboard_version_requirements())
+            .collect()
+    } else {
+        servers
+    };
 
     let api_servers: Vec<ApiServerInfo> = servers
         .into_iter()
