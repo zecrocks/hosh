@@ -2193,6 +2193,7 @@ async fn network_api(
         LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
         LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
         WHERE lr.rn = 1
+        {}
         FORMAT JSONEachRow
         "#,
         worker.clickhouse.database,
@@ -2201,7 +2202,12 @@ async fn network_api(
         worker.clickhouse.database,
         network.0,
         worker.clickhouse.database,
-        worker.clickhouse.database
+        worker.clickhouse.database,
+        if filter_leaderboard {
+            "AND u30.uptime_percentage IS NOT NULL AND u30.uptime_percentage > 0 ORDER BY u30.uptime_percentage DESC LIMIT 50"
+        } else {
+            ""
+        }
     );
 
     let response = match worker
