@@ -2204,7 +2204,7 @@ async fn network_api(
         worker.clickhouse.database
     );
 
-    let response = worker
+    let response = match worker
         .http_client
         .post(&worker.clickhouse.url)
         .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
@@ -2212,22 +2212,32 @@ async fn network_api(
         .body(query.clone())
         .send()
         .await
-        .map_err(|e| {
+    {
+        Ok(r) => r,
+        Err(e) => {
             error!("ClickHouse query error: {}", e);
-            actix_web::error::ErrorInternalServerError("Database query failed")
-        })?;
+            return Ok(HttpResponse::InternalServerError()
+                .content_type("application/json")
+                .json(serde_json::json!({"error": "Database query failed"})));
+        }
+    };
 
     let status = response.status();
-    let body = response.text().await.map_err(|e| {
-        error!("Failed to read response body: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to read database response")
-    })?;
+    let body = match response.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            error!("Failed to read response body: {}", e);
+            return Ok(HttpResponse::InternalServerError()
+                .content_type("application/json")
+                .json(serde_json::json!({"error": "Failed to read database response"})));
+        }
+    };
 
     if !status.is_success() {
         error!("ClickHouse query failed with status {}: {}", status, body);
-        return Err(actix_web::error::ErrorInternalServerError(
-            "Database query failed",
-        ));
+        return Ok(HttpResponse::InternalServerError()
+            .content_type("application/json")
+            .json(serde_json::json!({"error": "Database query failed"})));
     }
 
     let mut servers = Vec::new();
