@@ -43,6 +43,7 @@ services:
       - RUN_MODE=worker
       - WEB_API_URL=http://web:8080
       - API_KEY=${API_KEY}
+      - CHECKER_LOCATION=iah
       - TOR_PROXY_HOST=tor
       - TOR_PROXY_PORT=9050
       - CLICKHOUSE_HOST=chronicler
@@ -70,6 +71,7 @@ services:
       - RUST_LOG=warning
       - WEB_API_URL=http://web:8080
       - API_KEY=${API_KEY}
+      - CHECKER_LOCATION=iah
       - SOCKS_PROXY=tor:9050
       - CLICKHOUSE_HOST=chronicler
       - CLICKHOUSE_PORT=8123
@@ -96,6 +98,7 @@ services:
       - RUST_LOG=warning
       - WEB_API_URL=http://web:8080
       - API_KEY=${API_KEY}
+      - CHECKER_LOCATION=iah
       - SOCKS_PROXY=tor:9050
       - CLICKHOUSE_HOST=chronicler
       - CLICKHOUSE_PORT=8123

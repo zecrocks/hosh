@@ -1,0 +1,27 @@
+# Example Docker Compose for running a remote checker in a different region
+# This checker posts results to a central Hosh instance (e.g., hosh.zec.rocks)
+#
+# Usage:
+#   1. Copy this file and .env.checker.example to your remote server
+#   2. Create .env.checker with your actual values
+#   3. Run: docker compose -f docker-compose-checker.yml up -d
+
+services:
+  checker:
+    image: ghcr.io/zecrocks/hosh:latest
+    restart: unless-stopped
+    environment:
+      - WEB_API_URL=${WEB_API_URL:-https://hosh.zec.rocks}
+      - API_KEY=${API_KEY:?API_KEY is required}
+      - CHECKER_LOCATION=${CHECKER_LOCATION:-eu}
+      - SOCKS_PROXY=${SOCKS_PROXY:-}
+    command: ["--roles", "checker-btc,checker-zec"]
+    # Uncomment to run only one checker type:
+    # command: ["--roles", "checker-btc"]
+    # command: ["--roles", "checker-zec"]
+
+  # Optional: Tor proxy for checking .onion addresses
+  # Uncomment if you need to check .onion servers
+  # tor:
+  #   image: dperson/torproxy:latest
+  #   restart: unless-stopped

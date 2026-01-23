@@ -4,6 +4,7 @@
 
 use clap::Parser;
 use std::collections::HashSet;
+use std::env;
 use tracing::{error, info};
 
 #[derive(Parser)]
@@ -16,6 +17,12 @@ struct Cli {
     /// Examples: --roles web  |  --roles all  |  --roles web,discovery,checker-zec
     #[arg(long, default_value = "all")]
     roles: String,
+
+    /// Geographic location identifier for this checker instance (IATA airport code)
+    /// Used for multi-region monitoring (e.g., jfk, lax, fra, sin, dxb)
+    /// Can also be set via CHECKER_LOCATION env var (CLI flag takes precedence)
+    #[arg(long)]
+    location: Option<String>,
 }
 
 const VALID_ROLES: &[&str] = &["web", "checker-btc", "checker-zec", "discovery", "all"];
@@ -75,6 +82,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     info!("Starting Hosh with roles: {:?}", roles);
 
+    // Resolve location: CLI flag > env var > default
+    let location = cli
+        .location
+        .or_else(|| env::var("CHECKER_LOCATION").ok())
+        .unwrap_or_else(|| "iah".to_string());
+    info!("Checker location: {}", location);
+
     let run_web = roles.contains("web");
     let run_btc = roles.contains("checker-btc");
     let run_zec = roles.contains("checker-zec");
@@ -95,6 +109,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Use tokio::select! to run all enabled roles concurrently
     // Each branch will only be active if the role is enabled
+    let btc_location = location.clone();
+    let zec_location = location.clone();
     tokio::select! {
         result = async { hosh_web::run().await }, if run_web => {
             match result {
@@ -102,13 +118,13 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 Err(e) => error!("Web server error: {}", e),
             }
         }
-        result = async { hosh_checker_btc::run().await }, if run_btc => {
+        result = async { hosh_checker_btc::run_with_location(&btc_location).await }, if run_btc => {
             match result {
                 Ok(()) => info!("BTC checker completed"),
                 Err(e) => error!("BTC checker error: {}", e),
             }
         }
-        result = async { hosh_checker_zec::run().await }, if run_zec => {
+        result = async { hosh_checker_zec::run_with_location(&zec_location).await }, if run_zec => {
             match result {
                 Ok(()) => info!("ZEC checker completed"),
                 Err(e) => error!("ZEC checker error: {}", e),

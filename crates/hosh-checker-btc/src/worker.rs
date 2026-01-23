@@ -1,8 +1,8 @@
-use serde::{Deserialize, Serialize};
-use std::env;
-use futures_util::stream::StreamExt;
 use crate::routes::electrum::query::{electrum_query, QueryParams};
 use axum::extract::Query;
+use futures_util::stream::StreamExt;
+use serde::{Deserialize, Serialize};
+use std::env;
 use tracing::{debug, error, info};
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -19,8 +19,12 @@ struct CheckRequest {
     user_submitted: bool,
 }
 
-fn default_port() -> u16 { 50002 }
-fn default_version() -> String { "unknown".to_string() }
+fn default_port() -> u16 {
+    50002
+}
+fn default_version() -> String {
+    "unknown".to_string()
+}
 
 #[derive(Debug, Serialize)]
 struct ServerData {
@@ -46,6 +50,7 @@ struct ServerData {
     status: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     additional_data: Option<serde_json::Value>,
+    checker_location: String,
 }
 
 #[derive(Clone)]
@@ -54,21 +59,34 @@ pub struct Worker {
     api_key: String,
     max_concurrent_checks: usize,
     http_client: reqwest::Client,
+    location: String,
 }
 
 impl Worker {
     pub async fn new() -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        Self::new_with_location("dfw").await
+    }
+
+    pub async fn new_with_location(
+        location: &str,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let web_api_url = env::var("WEB_API_URL").unwrap_or_else(|_| "http://web:8080".to_string());
         let api_key = env::var("API_KEY").expect("API_KEY environment variable must be set");
 
-        info!("🚀 Initializing BTC Worker with web API URL: {}", web_api_url);
+        info!(
+            "🚀 Initializing BTC Worker with web API URL: {} (location: {})",
+            web_api_url, location
+        );
 
         let max_concurrent_checks = env::var("MAX_CONCURRENT_CHECKS")
             .unwrap_or_else(|_| "3".to_string())
             .parse()
             .unwrap_or(10);
 
-        info!("⚙️ Setting max concurrent checks to: {}", max_concurrent_checks);
+        info!(
+            "⚙️ Setting max concurrent checks to: {}",
+            max_concurrent_checks
+        );
 
         // Create a pooled HTTP client
         info!("🌐 Creating HTTP client with connection pooling...");
@@ -84,11 +102,15 @@ impl Worker {
             api_key,
             max_concurrent_checks,
             http_client,
+            location: location.to_string(),
         })
     }
 
     async fn query_server_data(&self, request: &CheckRequest) -> Option<ServerData> {
-        info!("🔍 Querying server data for {}:{}", request.host, request.port);
+        info!(
+            "🔍 Querying server data for {}:{}",
+            request.host, request.port
+        );
         let params = QueryParams {
             url: request.host.clone(),
             port: Some(request.port),
@@ -96,7 +118,10 @@ impl Worker {
 
         match electrum_query(Query(params)).await {
             Ok(response) => {
-                info!("✅ Successfully queried server {}:{}", request.host, request.port);
+                info!(
+                    "✅ Successfully queried server {}:{}",
+                    request.host, request.port
+                );
                 let data = response.0;
                 let filtered_data = serde_json::json!({
                     "bits": data["bits"],
@@ -115,7 +140,10 @@ impl Worker {
                 });
 
                 let height = data["height"].as_u64().unwrap_or(0);
-                info!("📊 Server {}:{} - Block height: {}", request.host, request.port, height);
+                info!(
+                    "📊 Server {}:{} - Block height: {}",
+                    request.host, request.port, height
+                );
 
                 Some(ServerData {
                     checker_module: "btc".to_string(),
@@ -123,7 +151,8 @@ impl Worker {
                     host: request.host.clone(),
                     port: request.port,
                     height,
-                    electrum_version: data.get("server_version")
+                    electrum_version: data
+                        .get("server_version")
                         .and_then(|v| v.as_str())
                         .unwrap_or(&request.version)
                         .to_string(),
@@ -137,12 +166,16 @@ impl Worker {
                     check_id: request.get_check_id(),
                     status: "online".to_string(),
                     additional_data: Some(filtered_data),
+                    checker_location: self.location.clone(),
                 })
             }
             Err(e) => {
                 // Extract error message in a serializable format
                 let error_message = format!("Failed to query server: {:?}", e);
-                error!("❌ Failed to query server {}:{} - {}", request.host, request.port, error_message);
+                error!(
+                    "❌ Failed to query server {}:{} - {}",
+                    request.host, request.port, error_message
+                );
 
                 Some(ServerData {
                     checker_module: "btc".to_string(),
@@ -161,15 +194,27 @@ impl Worker {
                     check_id: request.get_check_id(),
                     status: "offline".to_string(),
                     additional_data: None,
+                    checker_location: self.location.clone(),
                 })
             }
         }
     }
 
-    async fn submit_check_data(&self, server_data: &ServerData) -> Result<(), Box<dyn std::error::Error>> {
-        info!("💾 Submitting check data for {}:{}", server_data.host, server_data.port);
+    async fn submit_check_data(
+        &self,
+        server_data: &ServerData,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        info!(
+            "💾 Submitting check data for {}:{}",
+            server_data.host, server_data.port
+        );
 
-        let response = self.http_client.post(format!("{}/api/v1/results?api_key={}", self.web_api_url, self.api_key))
+        let response = self
+            .http_client
+            .post(format!(
+                "{}/api/v1/results?api_key={}",
+                self.web_api_url, self.api_key
+            ))
             .json(server_data)
             .send()
             .await?;
@@ -235,7 +280,10 @@ impl Worker {
 
         loop {
             info!("📡 Fetching jobs from web API...");
-            let jobs_url = format!("{}/api/v1/jobs?api_key={}&checker_module=btc&limit={}", self.web_api_url, self.api_key, self.max_concurrent_checks);
+            let jobs_url = format!(
+                "{}/api/v1/jobs?api_key={}&checker_module=btc&limit={}",
+                self.web_api_url, self.api_key, self.max_concurrent_checks
+            );
             match self.http_client.get(&jobs_url).send().await {
                 Ok(response) => {
                     if response.status().is_success() {
@@ -253,7 +301,10 @@ impl Worker {
                             }
                         }
                     } else {
-                        error!("❌ Web API returned non-success status: {}", response.status());
+                        error!(
+                            "❌ Web API returned non-success status: {}",
+                            response.status()
+                        );
                     }
                 }
                 Err(e) => {

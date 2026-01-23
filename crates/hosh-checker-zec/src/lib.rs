@@ -4,15 +4,18 @@
 //! via gRPC. It supports both direct connections and connections through SOCKS proxies
 //! (for .onion addresses via Tor).
 
-use std::{env, error::Error, time::Duration};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
-use zcash_client_backend::{
-    proto::service::{compact_tx_streamer_client::CompactTxStreamerClient, Empty},
+use std::{env, error::Error, time::Duration};
+use tonic::{
+    transport::{ClientTlsConfig, Endpoint, Uri},
+    Request,
 };
-use tonic::{Request, transport::{Uri, ClientTlsConfig, Endpoint}};
-use tracing::{info, error};
+use tracing::{error, info};
+use zcash_client_backend::proto::service::{
+    compact_tx_streamer_client::CompactTxStreamerClient, Empty,
+};
 
 mod socks_connector;
 use socks_connector::SocksConnector;
@@ -69,6 +72,7 @@ struct CheckResult {
     zcashd_subversion: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     donation_address: Option<String>,
+    checker_location: String,
 }
 
 #[derive(Debug)]
@@ -98,6 +102,7 @@ struct Worker {
     web_api_url: String,
     api_key: String,
     http_client: reqwest::Client,
+    location: String,
 }
 
 // Connect directly (without SOCKS proxy)
@@ -106,8 +111,8 @@ async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error + Send + 
 
     let endpoint = Endpoint::from(uri.clone())
         .tls_config(ClientTlsConfig::new().with_webpki_roots())?
-        .connect_timeout(Duration::from_secs(5))   // dial timeout
-        .timeout(Duration::from_secs(15));         // per-RPC client-side timeout
+        .connect_timeout(Duration::from_secs(5)) // dial timeout
+        .timeout(Duration::from_secs(15)); // per-RPC client-side timeout
 
     info!("Establishing secure connection...");
     let channel = endpoint.connect().await?;
@@ -116,13 +121,13 @@ async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error + Send + 
 
     info!("Sending gRPC request for lightwalletd info...");
     let mut req = Request::new(Empty {});
-    req.set_timeout(Duration::from_secs(10));  // per-call deadline
+    req.set_timeout(Duration::from_secs(10)); // per-call deadline
 
     let chain_info = match client.get_lightd_info(req).await {
         Ok(response) => {
             info!("Received successful gRPC response");
             response.into_inner()
-        },
+        }
         Err(e) => {
             error!("gRPC request failed: {}", e);
             return Err(format!("gRPC error: {}", e).into());
@@ -153,8 +158,14 @@ async fn get_info_direct(uri: Uri) -> Result<ServerInfo, Box<dyn Error + Send + 
 }
 
 // Connect via SOCKS5 proxy (e.g., Tor)
-async fn get_info_via_socks(uri: Uri, proxy_addr: String) -> Result<ServerInfo, Box<dyn Error + Send + Sync>> {
-    info!("Connecting to lightwalletd server at {} via SOCKS proxy {}", uri, proxy_addr);
+async fn get_info_via_socks(
+    uri: Uri,
+    proxy_addr: String,
+) -> Result<ServerInfo, Box<dyn Error + Send + Sync>> {
+    info!(
+        "Connecting to lightwalletd server at {} via SOCKS proxy {}",
+        uri, proxy_addr
+    );
 
     let connector = SocksConnector::new(proxy_addr);
 
@@ -167,16 +178,15 @@ async fn get_info_via_socks(uri: Uri, proxy_addr: String) -> Result<ServerInfo, 
     let connection_uri = if is_onion {
         info!("Detected .onion address - using plaintext connection (Tor provides encryption)");
         // Construct http:// URI for plaintext gRPC
-        format!("http://{}:{}", host, uri.port_u16().unwrap_or(443))
-            .parse::<Uri>()?
+        format!("http://{}:{}", host, uri.port_u16().unwrap_or(443)).parse::<Uri>()?
     } else {
         uri.clone()
     };
 
     // Use longer timeouts for SOCKS connections (Tor circuit building can be slow)
     let mut endpoint = Endpoint::from(connection_uri.clone())
-        .connect_timeout(Duration::from_secs(10))  // Longer timeout for SOCKS
-        .timeout(Duration::from_secs(20));         // Longer RPC timeout
+        .connect_timeout(Duration::from_secs(10)) // Longer timeout for SOCKS
+        .timeout(Duration::from_secs(20)); // Longer RPC timeout
 
     // Only configure TLS for non-.onion addresses
     if !is_onion {
@@ -184,9 +194,7 @@ async fn get_info_via_socks(uri: Uri, proxy_addr: String) -> Result<ServerInfo, 
     }
 
     info!("Establishing connection through SOCKS proxy...");
-    let channel = endpoint
-        .connect_with_connector(connector)
-        .await?;
+    let channel = endpoint.connect_with_connector(connector).await?;
 
     let mut client = CompactTxStreamerClient::with_origin(channel, connection_uri);
 
@@ -198,7 +206,7 @@ async fn get_info_via_socks(uri: Uri, proxy_addr: String) -> Result<ServerInfo, 
         Ok(response) => {
             info!("Received successful gRPC response via SOCKS");
             response.into_inner()
-        },
+        }
         Err(e) => {
             error!("gRPC request failed: {}", e);
             return Err(format!("gRPC error: {}", e).into());
@@ -229,7 +237,12 @@ async fn get_info_via_socks(uri: Uri, proxy_addr: String) -> Result<ServerInfo, 
 }
 
 impl Worker {
+    #[allow(dead_code)]
     pub async fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
+        Self::new_with_location("dfw").await
+    }
+
+    pub async fn new_with_location(location: &str) -> Result<Self, Box<dyn Error + Send + Sync>> {
         rustls::crypto::ring::default_provider()
             .install_default()
             .expect("Failed to install rustls crypto provider");
@@ -237,7 +250,10 @@ impl Worker {
         let web_api_url = env::var("WEB_API_URL").unwrap_or_else(|_| "http://web:8080".to_string());
         let api_key = env::var("API_KEY").expect("API_KEY environment variable must be set");
 
-        info!("🚀 Initializing ZEC Worker with web API URL: {}", web_api_url);
+        info!(
+            "🚀 Initializing ZEC Worker with web API URL: {} (location: {})",
+            web_api_url, location
+        );
 
         let http_client = reqwest::Client::builder()
             .pool_idle_timeout(std::time::Duration::from_secs(300))
@@ -249,11 +265,20 @@ impl Worker {
             web_api_url,
             api_key,
             http_client,
+            location: location.to_string(),
         })
     }
 
-    async fn submit_to_api(&self, result: &CheckResult) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let response = self.http_client.post(format!("{}/api/v1/results?api_key={}", self.web_api_url, self.api_key))
+    async fn submit_to_api(
+        &self,
+        result: &CheckResult,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let response = self
+            .http_client
+            .post(format!(
+                "{}/api/v1/results?api_key={}",
+                self.web_api_url, self.api_key
+            ))
             .json(result)
             .send()
             .await?;
@@ -271,14 +296,18 @@ impl Worker {
         Ok(())
     }
 
-    async fn process_check(&self, check_request: CheckRequest) -> Result<(), Box<dyn Error + Send + Sync>> {
-        let uri: Uri = match format!("https://{}:{}", check_request.host, check_request.port).parse() {
-            Ok(u) => u,
-            Err(e) => {
-                error!("Invalid URI: {e}");
-                return Ok(());
-            }
-        };
+    async fn process_check(
+        &self,
+        check_request: CheckRequest,
+    ) -> Result<(), Box<dyn Error + Send + Sync>> {
+        let uri: Uri =
+            match format!("https://{}:{}", check_request.host, check_request.port).parse() {
+                Ok(u) => u,
+                Err(e) => {
+                    error!("Invalid URI: {e}");
+                    return Ok(());
+                }
+            };
 
         let start_time = Instant::now();
 
@@ -295,11 +324,15 @@ impl Worker {
                     Err(e) => {
                         error!("SOCKS connection failed: {}", e);
                         (0, Some(e.to_string()), None)
-                    },
+                    }
                 }
             } else {
                 error!(".onion address requires SOCKS_PROXY to be configured");
-                (0, Some("Cannot connect to .onion address without SOCKS proxy".to_string()), None)
+                (
+                    0,
+                    Some("Cannot connect to .onion address without SOCKS proxy".to_string()),
+                    None,
+                )
             }
         } else {
             // Use direct connection for regular addresses
@@ -308,28 +341,30 @@ impl Worker {
                 Ok(info) => (info.block_height, None, Some(info)),
                 Err(e) => {
                     let simplified_error = if e.to_string().contains("tls handshake eof") {
-                    "TLS handshake failed - server may be offline or not accepting connections".to_string()
-                } else if e.to_string().contains("connection refused") {
-                    "Connection refused - server may be offline or not accepting connections".to_string()
-                } else if e.to_string().contains("InvalidContentType") {
-                    "Invalid content type - server may not be a valid Zcash node".to_string()
-                } else {
-                    let error_str = e.to_string();
-                    if let Some(start) = error_str.find("message: \"") {
-                        let start = start + 10;
-                        if let Some(end) = error_str[start..].find("\", source:") {
-                            error_str[start..start + end].to_string()
-                        } else if let Some(end) = error_str[start..].find("\"") {
-                            error_str[start..start + end].to_string()
+                        "TLS handshake failed - server may be offline or not accepting connections"
+                            .to_string()
+                    } else if e.to_string().contains("connection refused") {
+                        "Connection refused - server may be offline or not accepting connections"
+                            .to_string()
+                    } else if e.to_string().contains("InvalidContentType") {
+                        "Invalid content type - server may not be a valid Zcash node".to_string()
+                    } else {
+                        let error_str = e.to_string();
+                        if let Some(start) = error_str.find("message: \"") {
+                            let start = start + 10;
+                            if let Some(end) = error_str[start..].find("\", source:") {
+                                error_str[start..start + end].to_string()
+                            } else if let Some(end) = error_str[start..].find("\"") {
+                                error_str[start..start + end].to_string()
+                            } else {
+                                error_str
+                            }
                         } else {
                             error_str
                         }
-                    } else {
-                        error_str
-                    }
                     };
                     (0, Some(simplified_error), None)
-                },
+                }
             }
         };
 
@@ -362,7 +397,7 @@ impl Worker {
                         check_request.host, check_request.port, ping, err
                     );
                 }
-            },
+            }
             None => info!(
                 "Server {}:{} - Block height: {}, Latency: {:.2}ms",
                 check_request.host, check_request.port, height, ping
@@ -375,7 +410,11 @@ impl Worker {
             host: check_request.host.clone(),
             port: check_request.port,
             height,
-            status: if error.is_none() { "online".to_string() } else { "offline".to_string() },
+            status: if error.is_none() {
+                "online".to_string()
+            } else {
+                "offline".to_string()
+            },
             error,
             last_updated: Utc::now(),
             ping,
@@ -385,8 +424,12 @@ impl Worker {
             vendor: server_info.as_ref().map(|info| info.vendor.clone()),
             git_commit: server_info.as_ref().map(|info| info.git_commit.clone()),
             chain_name: server_info.as_ref().map(|info| info.chain_name.clone()),
-            sapling_activation_height: server_info.as_ref().map(|info| info.sapling_activation_height),
-            consensus_branch_id: server_info.as_ref().map(|info| info.consensus_branch_id.clone()),
+            sapling_activation_height: server_info
+                .as_ref()
+                .map(|info| info.sapling_activation_height),
+            consensus_branch_id: server_info
+                .as_ref()
+                .map(|info| info.consensus_branch_id.clone()),
             taddr_support: server_info.as_ref().map(|info| info.taddr_support),
             branch: server_info.as_ref().map(|info| info.branch.clone()),
             build_date: server_info.as_ref().map(|info| info.build_date.clone()),
@@ -394,8 +437,13 @@ impl Worker {
             estimated_height: server_info.as_ref().map(|info| info.estimated_height),
             server_version: server_info.as_ref().map(|info| info.version.clone()),
             zcashd_build: server_info.as_ref().map(|info| info.zcashd_build.clone()),
-            zcashd_subversion: server_info.as_ref().map(|info| info.zcashd_subversion.clone()),
-            donation_address: server_info.as_ref().map(|info| info.donation_address.clone()),
+            zcashd_subversion: server_info
+                .as_ref()
+                .map(|info| info.zcashd_subversion.clone()),
+            donation_address: server_info
+                .as_ref()
+                .map(|info| info.donation_address.clone()),
+            checker_location: self.location.clone(),
         };
 
         if let Err(e) = self.submit_to_api(&result).await {
@@ -406,17 +454,31 @@ impl Worker {
     }
 }
 
-/// Run the ZEC checker worker.
+/// Run the ZEC checker worker with default location.
 ///
 /// This is the main entry point for the ZEC checker service.
 /// It polls the web API for jobs and checks Zcash lightwalletd servers.
 pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
-    info!("Starting ZEC checker in normal mode");
-    let worker = Worker::new().await?;
+    run_with_location("dfw").await
+}
+
+/// Run the ZEC checker worker with a specified location.
+///
+/// The location identifier is included in all check results to enable
+/// multi-region monitoring.
+pub async fn run_with_location(location: &str) -> Result<(), Box<dyn Error + Send + Sync>> {
+    info!(
+        "Starting ZEC checker in normal mode (location: {})",
+        location
+    );
+    let worker = Worker::new_with_location(location).await?;
 
     loop {
         info!("📡 Fetching jobs from web API...");
-        let jobs_url = format!("{}/api/v1/jobs?api_key={}&checker_module=zec&limit=10", worker.web_api_url, worker.api_key);
+        let jobs_url = format!(
+            "{}/api/v1/jobs?api_key={}&checker_module=zec&limit=10",
+            worker.web_api_url, worker.api_key
+        );
         match worker.http_client.get(&jobs_url).send().await {
             Ok(response) => {
                 if response.status().is_success() {
@@ -431,10 +493,21 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                                 let host = job.host.clone();
                                 let port = job.port;
                                 handles.push(tokio::spawn(async move {
-                                    match tokio::time::timeout(check_timeout, worker_clone.process_check(job)).await {
-                                        Ok(Ok(())) => {},
-                                        Ok(Err(e)) => error!("Error processing check for {}:{}: {}", host, port, e),
-                                        Err(_) => error!("Check timed out after {:?} for {}:{}", check_timeout, host, port),
+                                    match tokio::time::timeout(
+                                        check_timeout,
+                                        worker_clone.process_check(job),
+                                    )
+                                    .await
+                                    {
+                                        Ok(Ok(())) => {}
+                                        Ok(Err(e)) => error!(
+                                            "Error processing check for {}:{}: {}",
+                                            host, port, e
+                                        ),
+                                        Err(_) => error!(
+                                            "Check timed out after {:?} for {}:{}",
+                                            check_timeout, host, port
+                                        ),
                                     }
                                 }));
                             }
@@ -445,7 +518,10 @@ pub async fn run() -> Result<(), Box<dyn Error + Send + Sync>> {
                         }
                     }
                 } else {
-                    error!("❌ Web API returned non-success status: {}", response.status());
+                    error!(
+                        "❌ Web API returned non-success status: {}",
+                        response.status()
+                    );
                 }
             }
             Err(e) => {
@@ -481,7 +557,10 @@ pub async fn test_connection(target: &str) -> Result<(), Box<dyn Error + Send + 
 
     if is_onion {
         if let Some(ref proxy) = socks_proxy {
-            info!("Testing SOCKS connection via {} to .onion address {}:{}", proxy, test_server, test_port);
+            info!(
+                "Testing SOCKS connection via {} to .onion address {}:{}",
+                proxy, test_server, test_port
+            );
         }
     } else {
         info!("Testing direct connection to {}:{}", test_server, test_port);
@@ -500,7 +579,10 @@ pub async fn test_connection(target: &str) -> Result<(), Box<dyn Error + Send + 
 
     let wait_time = 20;
 
-    info!("Starting connection attempt to {} (timeout: {} seconds)...", uri, wait_time);
+    info!(
+        "Starting connection attempt to {} (timeout: {} seconds)...",
+        uri, wait_time
+    );
     let start_time = Instant::now();
 
     // Only use SOCKS for .onion addresses
@@ -508,32 +590,32 @@ pub async fn test_connection(target: &str) -> Result<(), Box<dyn Error + Send + 
         if let Some(proxy) = socks_proxy {
             tokio::time::timeout(
                 Duration::from_secs(wait_time),
-                get_info_via_socks(uri, proxy)
-            ).await
+                get_info_via_socks(uri, proxy),
+            )
+            .await
         } else {
             return Err("Cannot connect to .onion address without SOCKS proxy".into());
         }
     } else {
-        tokio::time::timeout(
-            Duration::from_secs(wait_time),
-            get_info_direct(uri)
-        ).await
+        tokio::time::timeout(Duration::from_secs(wait_time), get_info_direct(uri)).await
     };
 
     match connection_result {
-        Ok(result) => {
-            match result {
-                Ok(info) => {
-                    let latency = start_time.elapsed().as_secs_f64() * 1000.0;
-                    info!("Successfully connected! Block height: {}, Latency: {:.2}ms",
-                         info.block_height, latency);
-                    info!("Server details: vendor={}, version={}, chain={}",
-                         info.vendor, info.version, info.chain_name);
-                },
-                Err(e) => {
-                    error!("Failed to connect: {}", e);
-                    return Err(e);
-                }
+        Ok(result) => match result {
+            Ok(info) => {
+                let latency = start_time.elapsed().as_secs_f64() * 1000.0;
+                info!(
+                    "Successfully connected! Block height: {}, Latency: {:.2}ms",
+                    info.block_height, latency
+                );
+                info!(
+                    "Server details: vendor={}, version={}, chain={}",
+                    info.vendor, info.version, info.chain_name
+                );
+            }
+            Err(e) => {
+                error!("Failed to connect: {}", e);
+                return Err(e);
             }
         },
         Err(_) => {
