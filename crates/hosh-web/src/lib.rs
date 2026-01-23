@@ -58,6 +58,7 @@ struct IndexTemplate {
     hide_community: bool,
     tor_only: bool,
     onion_count: usize,
+    historical_at: Option<String>,
 }
 
 #[derive(Clone)]
@@ -75,6 +76,7 @@ struct LeaderboardTemplate {
     min_zebra_version: &'static str,
     min_lwd_version: &'static str,
     min_zaino_version: &'static str,
+    historical_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
@@ -1042,6 +1044,68 @@ impl SafeNetwork {
     }
 }
 
+// =============================================================================
+// HISTORICAL TIMESTAMP PARSING
+// =============================================================================
+
+/// Parse a historical timestamp from the `at` query parameter.
+/// Accepts multiple formats:
+/// - RFC3339: `2025-01-15T14:30:00Z`
+/// - Date only: `2025-01-15` (interpreted as 00:00:00 UTC)
+fn parse_historical_timestamp(at: Option<&str>) -> Result<Option<DateTime<Utc>>, String> {
+    let at_str = match at {
+        Some(s) if !s.is_empty() => s,
+        _ => return Ok(None),
+    };
+
+    // Try RFC3339 format
+    if let Ok(dt) = DateTime::parse_from_rfc3339(at_str) {
+        return Ok(Some(dt.with_timezone(&Utc)));
+    }
+
+    // Try date-only format (YYYY-MM-DD) - interpret as 00:00:00 UTC
+    if let Ok(dt) = chrono::NaiveDate::parse_from_str(at_str, "%Y-%m-%d") {
+        let naive_datetime = dt.and_hms_opt(0, 0, 0).unwrap();
+        return Ok(Some(DateTime::<Utc>::from_naive_utc_and_offset(naive_datetime, Utc)));
+    }
+
+    Err("Invalid timestamp format. Accepted formats: RFC3339 (2025-01-15T14:30:00Z) or date (2025-01-15)".to_string())
+}
+
+/// Validate that the timestamp is within acceptable bounds.
+/// Rejects future timestamps and timestamps older than 1 year.
+fn validate_timestamp_bounds(at: DateTime<Utc>) -> Result<(), String> {
+    let now = Utc::now();
+
+    // Reject future timestamps
+    if at > now {
+        return Err("Cannot view future timestamps".to_string());
+    }
+
+    // Reject timestamps older than 1 year
+    let one_year_ago = now - chrono::Duration::days(365);
+    if at < one_year_ago {
+        return Err("Historical data not available beyond 1 year".to_string());
+    }
+
+    Ok(())
+}
+
+/// Generate the SQL time reference expression.
+/// For historical queries, returns a parseDateTimeBestEffort expression.
+/// For current queries, returns "now()".
+fn time_reference_sql(at: Option<DateTime<Utc>>) -> String {
+    match at {
+        Some(dt) => format!("parseDateTimeBestEffort('{}')", dt.to_rfc3339()),
+        None => "now()".to_string(),
+    }
+}
+
+/// Format a historical timestamp for display in templates.
+fn format_historical_timestamp(at: Option<DateTime<Utc>>) -> Option<String> {
+    at.map(|dt| dt.format("%Y-%m-%d %H:%M:%S UTC").to_string())
+}
+
 #[derive(Template)]
 #[template(path = "server.html")]
 struct ServerTemplate {
@@ -1055,6 +1119,7 @@ struct ServerTemplate {
     percentile_height: u64,
     uptime_stats: UptimeStats,
     results_window_days: u64,
+    historical_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -1105,6 +1170,17 @@ struct ApiResponse {
 struct IndexQuery {
     hide_community: Option<bool>,
     tor_only: Option<bool>,
+    at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LeaderboardQuery {
+    at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ServerDetailQuery {
+    at: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1184,12 +1260,27 @@ async fn root() -> Result<Redirect> {
 }
 
 /// Helper function to fetch and render the network status page
+/// When `at` is provided, queries historical data as of that timestamp.
 async fn fetch_and_render_network_status(
     worker: &Worker,
     network: &SafeNetwork,
     hide_community: bool,
     tor_only: bool,
+    at: Option<DateTime<Utc>>,
 ) -> Result<String> {
+    // Generate time reference for SQL queries
+    let time_ref = time_reference_sql(at);
+    let upper_bound = if at.is_some() {
+        format!("AND r.checked_at <= {}", time_ref)
+    } else {
+        String::new()
+    };
+    let uptime_upper_bound = if at.is_some() {
+        format!("AND u.time_bucket <= {}", time_ref)
+    } else {
+        String::new()
+    };
+
     // Update query to handle empty results and use FORMAT JSONEachRow, including 30-day uptime and community flag
     // For ZEC, use max-check-based calculation. For other networks, use simple check-based calculation.
     // Both ZEC and BTC use the same formula:
@@ -1201,9 +1292,10 @@ async fn fetch_and_render_network_status(
             SELECT
                 r.*,
                 ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
-            FROM {}.results r
-            WHERE r.checker_module = '{}'
-            AND r.checked_at >= now() - INTERVAL {} DAY
+            FROM {db}.results r
+            WHERE r.checker_module = '{network}'
+            AND r.checked_at >= {time_ref} - INTERVAL {window} DAY
+            {upper_bound}
         ),
         -- Calculate first_seen and percentage of month for each server
         first_seen_per_server AS (
@@ -1211,9 +1303,10 @@ async fn fetch_and_render_network_status(
                 hostname,
                 toString(port) as port,
                 min(checked_at) as first_seen,
-                least(dateDiff('hour', min(checked_at), now()), 720) / 720.0 as percentage_of_month
-            FROM {}.results
-            WHERE checker_module = '{}'
+                least(dateDiff('hour', min(checked_at), {time_ref}), 720) / 720.0 as percentage_of_month
+            FROM {db}.results
+            WHERE checker_module = '{network}'
+            AND checked_at <= {time_ref}
             GROUP BY hostname, port
         ),
         uptime_30_day AS (
@@ -1222,9 +1315,10 @@ async fn fetch_and_render_network_status(
                 u.port,
                 -- (checks_succeeded / total_checks) * percentage_of_month_announced
                 (sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1)) * fs.percentage_of_month as uptime_percentage
-            FROM {}.uptime_stats_by_port u
+            FROM {db}.uptime_stats_by_port u
             LEFT JOIN first_seen_per_server fs ON u.hostname = fs.hostname AND u.port = fs.port
-            WHERE u.time_bucket >= now() - INTERVAL 30 DAY
+            WHERE u.time_bucket >= {time_ref} - INTERVAL 30 DAY
+            {uptime_upper_bound}
             GROUP BY u.hostname, u.port, fs.percentage_of_month
         )
         SELECT
@@ -1237,17 +1331,16 @@ async fn fetch_and_render_network_status(
             t.community
         FROM latest_results lr
         LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
-        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
+        LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
         WHERE lr.rn = 1
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database,
-        network.0,
-        worker.config.results_window_days,
-        worker.clickhouse.database,
-        network.0,
-        worker.clickhouse.database,
-        worker.clickhouse.database
+        db = worker.clickhouse.database,
+        network = network.0,
+        window = worker.config.results_window_days,
+        time_ref = time_ref,
+        upper_bound = upper_bound,
+        uptime_upper_bound = uptime_upper_bound,
     );
 
     info!(
@@ -1299,6 +1392,7 @@ async fn fetch_and_render_network_status(
             hide_community,
             tor_only,
             onion_count: 0,
+            historical_at: format_historical_timestamp(at),
         };
 
         let html = template.render().map_err(|e| {
@@ -1624,6 +1718,7 @@ async fn fetch_and_render_network_status(
         hide_community,
         tor_only,
         onion_count,
+        historical_at: format_historical_timestamp(at),
     };
 
     let html = template.render().map_err(|e| {
@@ -1635,7 +1730,25 @@ async fn fetch_and_render_network_status(
 }
 
 /// Helper function to fetch and render the leaderboard page (top 50 by uptime)
-async fn fetch_and_render_leaderboard(worker: &Worker, network: &SafeNetwork) -> Result<String> {
+/// When `at` is provided, queries historical data as of that timestamp.
+async fn fetch_and_render_leaderboard(
+    worker: &Worker,
+    network: &SafeNetwork,
+    at: Option<DateTime<Utc>>,
+) -> Result<String> {
+    // Generate time reference for SQL queries
+    let time_ref = time_reference_sql(at);
+    let upper_bound = if at.is_some() {
+        format!("AND r.checked_at <= {}", time_ref)
+    } else {
+        String::new()
+    };
+    let uptime_upper_bound = if at.is_some() {
+        format!("AND u.time_bucket <= {}", time_ref)
+    } else {
+        String::new()
+    };
+
     // Query for leaderboard - top 50 servers by 30-day uptime
     let query = format!(
         r#"
@@ -1643,18 +1756,20 @@ async fn fetch_and_render_leaderboard(worker: &Worker, network: &SafeNetwork) ->
             SELECT
                 r.*,
                 ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
-            FROM {}.results r
-            WHERE r.checker_module = '{}'
-            AND r.checked_at >= now() - INTERVAL {} DAY
+            FROM {db}.results r
+            WHERE r.checker_module = '{network}'
+            AND r.checked_at >= {time_ref} - INTERVAL {window} DAY
+            {upper_bound}
         ),
         first_seen_per_server AS (
             SELECT
                 hostname,
                 toString(port) as port,
                 min(checked_at) as first_seen,
-                least(dateDiff('hour', min(checked_at), now()), 720) / 720.0 as percentage_of_month
-            FROM {}.results
-            WHERE checker_module = '{}'
+                least(dateDiff('hour', min(checked_at), {time_ref}), 720) / 720.0 as percentage_of_month
+            FROM {db}.results
+            WHERE checker_module = '{network}'
+            AND checked_at <= {time_ref}
             GROUP BY hostname, port
         ),
         uptime_30_day AS (
@@ -1662,9 +1777,10 @@ async fn fetch_and_render_leaderboard(worker: &Worker, network: &SafeNetwork) ->
                 u.hostname,
                 u.port,
                 (sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1)) * fs.percentage_of_month as uptime_percentage
-            FROM {}.uptime_stats_by_port u
+            FROM {db}.uptime_stats_by_port u
             LEFT JOIN first_seen_per_server fs ON u.hostname = fs.hostname AND u.port = fs.port
-            WHERE u.time_bucket >= now() - INTERVAL 30 DAY
+            WHERE u.time_bucket >= {time_ref} - INTERVAL 30 DAY
+            {uptime_upper_bound}
             GROUP BY u.hostname, u.port, fs.percentage_of_month
         )
         SELECT
@@ -1677,7 +1793,7 @@ async fn fetch_and_render_leaderboard(worker: &Worker, network: &SafeNetwork) ->
             t.community
         FROM latest_results lr
         LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
-        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
+        LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
         WHERE lr.rn = 1
         AND u30.uptime_percentage IS NOT NULL
         AND u30.uptime_percentage > 0
@@ -1685,13 +1801,12 @@ async fn fetch_and_render_leaderboard(worker: &Worker, network: &SafeNetwork) ->
         LIMIT 50
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database,
-        network.0,
-        worker.config.results_window_days,
-        worker.clickhouse.database,
-        network.0,
-        worker.clickhouse.database,
-        worker.clickhouse.database
+        db = worker.clickhouse.database,
+        network = network.0,
+        window = worker.config.results_window_days,
+        time_ref = time_ref,
+        upper_bound = upper_bound,
+        uptime_upper_bound = uptime_upper_bound,
     );
 
     info!(
@@ -1785,6 +1900,7 @@ async fn fetch_and_render_leaderboard(worker: &Worker, network: &SafeNetwork) ->
         min_zebra_version: LEADERBOARD_MIN_ZEBRA_VERSION,
         min_lwd_version: LEADERBOARD_MIN_LWD_VERSION,
         min_zaino_version: LEADERBOARD_MIN_ZAINO_VERSION,
+        historical_at: format_historical_timestamp(at),
     };
 
     let html = template.render().map_err(|e| {
@@ -1806,6 +1922,28 @@ async fn network_status(
 
     let hide_community = query_params.hide_community.unwrap_or(false);
     let tor_only = query_params.tor_only.unwrap_or(false);
+
+    // Parse and validate historical timestamp if provided
+    let historical_at = parse_historical_timestamp(query_params.at.as_deref())
+        .map_err(actix_web::error::ErrorBadRequest)?;
+
+    if let Some(at) = historical_at {
+        validate_timestamp_bounds(at).map_err(actix_web::error::ErrorBadRequest)?;
+    }
+
+    // For historical queries, bypass cache and query ClickHouse directly
+    if historical_at.is_some() {
+        info!(
+            "Historical query for {} at {:?}",
+            network.0, historical_at
+        );
+        let html = fetch_and_render_network_status(&worker, &network, hide_community, tor_only, historical_at).await?;
+        return Ok(HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .insert_header(("X-Historical-At", query_params.at.as_deref().unwrap_or("")))
+            .insert_header(("Cache-Control", "no-cache"))
+            .body(html));
+    }
 
     // ONLY serve from cache - never trigger ClickHouse queries from user requests
     // This prevents traffic spikes from overwhelming ClickHouse
@@ -1861,9 +1999,32 @@ async fn network_status(
 async fn leaderboard(
     worker: web::Data<Worker>,
     network: web::Path<String>,
+    query_params: web::Query<LeaderboardQuery>,
 ) -> Result<HttpResponse> {
     let network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+
+    // Parse and validate historical timestamp if provided
+    let historical_at = parse_historical_timestamp(query_params.at.as_deref())
+        .map_err(actix_web::error::ErrorBadRequest)?;
+
+    if let Some(at) = historical_at {
+        validate_timestamp_bounds(at).map_err(actix_web::error::ErrorBadRequest)?;
+    }
+
+    // For historical queries, bypass cache and query ClickHouse directly
+    if historical_at.is_some() {
+        info!(
+            "Historical leaderboard query for {} at {:?}",
+            network.0, historical_at
+        );
+        let html = fetch_and_render_leaderboard(&worker, &network, historical_at).await?;
+        return Ok(HttpResponse::Ok()
+            .content_type("text/html; charset=utf-8")
+            .insert_header(("X-Historical-At", query_params.at.as_deref().unwrap_or("")))
+            .insert_header(("Cache-Control", "no-cache"))
+            .body(html));
+    }
 
     // Serve from cache
     let cache_key = format!("{}-leaderboard", network.0);
@@ -1915,6 +2076,7 @@ async fn leaderboard(
 async fn server_detail(
     worker: web::Data<Worker>,
     path: web::Path<(String, String)>,
+    query_params: web::Query<ServerDetailQuery>,
 ) -> Result<HttpResponse> {
     let (network, host_with_port) = path.into_inner();
 
@@ -1933,6 +2095,22 @@ async fn server_detail(
     let safe_network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
 
+    // Parse and validate historical timestamp if provided
+    let historical_at = parse_historical_timestamp(query_params.at.as_deref())
+        .map_err(actix_web::error::ErrorBadRequest)?;
+
+    if let Some(at) = historical_at {
+        validate_timestamp_bounds(at).map_err(actix_web::error::ErrorBadRequest)?;
+    }
+
+    // Generate time reference for SQL queries
+    let time_ref = time_reference_sql(historical_at);
+    let upper_bound = if historical_at.is_some() {
+        format!("AND r.checked_at <= {}", time_ref)
+    } else {
+        String::new()
+    };
+
     // Query the targets table to get server information
     let query = format!(
         r#"
@@ -1940,11 +2118,12 @@ async fn server_detail(
             SELECT
                 r.*,
                 ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
-            FROM {}.results r
-            WHERE r.checker_module = '{}'
-            AND r.hostname = '{}'
-            AND r.checked_at >= now() - INTERVAL {} DAY
-            {}
+            FROM {db}.results r
+            WHERE r.checker_module = '{network}'
+            AND r.hostname = '{host}'
+            AND r.checked_at >= {time_ref} - INTERVAL {window} DAY
+            {upper_bound}
+            {port_filter}
         )
         SELECT
             hostname,
@@ -1956,11 +2135,13 @@ async fn server_detail(
         WHERE rn = 1
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database,
-        safe_network.0,
-        host,
-        worker.config.results_window_days,
-        if let Some(port_num) = port {
+        db = worker.clickhouse.database,
+        network = safe_network.0,
+        host = host,
+        window = worker.config.results_window_days,
+        time_ref = time_ref,
+        upper_bound = upper_bound,
+        port_filter = if let Some(port_num) = port {
             format!("AND r.port = {}", port_num)
         } else {
             String::new()
@@ -2015,11 +2196,12 @@ async fn server_detail(
             SELECT
                 r.*,
                 ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
-            FROM {}.results r
-            WHERE r.checker_module = '{}'
-            AND r.hostname = '{}'
-            AND r.checked_at >= now() - INTERVAL 1 DAY
-            {}
+            FROM {db}.results r
+            WHERE r.checker_module = '{network}'
+            AND r.hostname = '{host}'
+            AND r.checked_at >= {time_ref} - INTERVAL 1 DAY
+            {upper_bound}
+            {port_filter}
         )
         SELECT
             hostname,
@@ -2028,10 +2210,12 @@ async fn server_detail(
         WHERE rn = 1
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database,
-        safe_network.0,
-        host,
-        if let Some(port_num) = port {
+        db = worker.clickhouse.database,
+        network = safe_network.0,
+        host = host,
+        time_ref = time_ref,
+        upper_bound = upper_bound,
+        port_filter = if let Some(port_num) = port {
             format!("AND r.port = {}", port_num)
         } else {
             String::new()
@@ -2079,7 +2263,7 @@ async fn server_detail(
     let percentile_height = calculate_percentile(&heights, 90);
 
     // Calculate uptime statistics
-    let uptime_stats = calculate_uptime_stats(&worker, &host, &network, port).await?;
+    let uptime_stats = calculate_uptime_stats(&worker, &host, &network, port, historical_at).await?;
 
     // Create sorted data for alphabetical display
     let mut sorted_data: Vec<(String, Value)> =
@@ -2117,6 +2301,7 @@ async fn server_detail(
         percentile_height,
         uptime_stats,
         results_window_days: worker.config.results_window_days,
+        historical_at: format_historical_timestamp(historical_at),
     };
 
     let html = template.render().map_err(|e| {
@@ -2124,9 +2309,17 @@ async fn server_detail(
         actix_web::error::ErrorInternalServerError("Template rendering failed")
     })?;
 
-    Ok(HttpResponse::Ok()
-        .content_type("text/html; charset=utf-8")
-        .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
+    let mut response = HttpResponse::Ok();
+    response.content_type("text/html; charset=utf-8");
+
+    if historical_at.is_some() {
+        response.insert_header(("X-Historical-At", query_params.at.as_deref().unwrap_or("")));
+        response.insert_header(("Cache-Control", "no-cache"));
+    } else {
+        response.insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"));
+    }
+
+    Ok(response
         .body(html))
 }
 
@@ -2134,17 +2327,40 @@ async fn server_detail(
 struct NetworkApiQuery {
     /// Filter to only show leaderboard-eligible servers (ZEC only)
     leaderboard: Option<bool>,
+    /// Historical timestamp for time-travel queries
+    at: Option<String>,
 }
 
 #[get("/api/v0/{network}.json")]
 async fn network_api(
     worker: web::Data<Worker>,
     network: web::Path<String>,
-    query: web::Query<NetworkApiQuery>,
+    query_params: web::Query<NetworkApiQuery>,
 ) -> Result<HttpResponse> {
     let network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
-    let filter_leaderboard = query.leaderboard.unwrap_or(false) && network.0 == "zec";
+    let filter_leaderboard = query_params.leaderboard.unwrap_or(false) && network.0 == "zec";
+
+    // Parse and validate historical timestamp if provided
+    let historical_at = parse_historical_timestamp(query_params.at.as_deref())
+        .map_err(actix_web::error::ErrorBadRequest)?;
+
+    if let Some(at) = historical_at {
+        validate_timestamp_bounds(at).map_err(actix_web::error::ErrorBadRequest)?;
+    }
+
+    // Generate time reference for SQL queries
+    let time_ref = time_reference_sql(historical_at);
+    let upper_bound = if historical_at.is_some() {
+        format!("AND r.checked_at <= {}", time_ref)
+    } else {
+        String::new()
+    };
+    let uptime_upper_bound = if historical_at.is_some() {
+        format!("AND u.time_bucket <= {}", time_ref)
+    } else {
+        String::new()
+    };
 
     // Query the results table to get all servers for the network
     // uptime = (checks_succeeded / total_checks) * percentage_of_month_announced
@@ -2155,9 +2371,10 @@ async fn network_api(
             SELECT
                 r.*,
                 ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
-            FROM {}.results r
-            WHERE r.checker_module = '{}'
-            AND r.checked_at >= now() - INTERVAL {} DAY
+            FROM {db}.results r
+            WHERE r.checker_module = '{network}'
+            AND r.checked_at >= {time_ref} - INTERVAL {window} DAY
+            {upper_bound}
         ),
         -- Calculate first_seen and percentage of month for each server
         first_seen_per_server AS (
@@ -2165,9 +2382,10 @@ async fn network_api(
                 hostname,
                 toString(port) as port,
                 min(checked_at) as first_seen,
-                least(dateDiff('hour', min(checked_at), now()), 720) / 720.0 as percentage_of_month
-            FROM {}.results
-            WHERE checker_module = '{}'
+                least(dateDiff('hour', min(checked_at), {time_ref}), 720) / 720.0 as percentage_of_month
+            FROM {db}.results
+            WHERE checker_module = '{network}'
+            AND checked_at <= {time_ref}
             GROUP BY hostname, port
         ),
         uptime_30_day AS (
@@ -2176,9 +2394,10 @@ async fn network_api(
                 u.port,
                 -- (checks_succeeded / total_checks) * percentage_of_month_announced
                 (sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1)) * fs.percentage_of_month as uptime_percentage
-            FROM {}.uptime_stats_by_port u
+            FROM {db}.uptime_stats_by_port u
             LEFT JOIN first_seen_per_server fs ON u.hostname = fs.hostname AND u.port = fs.port
-            WHERE u.time_bucket >= now() - INTERVAL 30 DAY
+            WHERE u.time_bucket >= {time_ref} - INTERVAL 30 DAY
+            {uptime_upper_bound}
             GROUP BY u.hostname, u.port, fs.percentage_of_month
         )
         SELECT
@@ -2191,19 +2410,18 @@ async fn network_api(
             t.community
         FROM latest_results lr
         LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
-        LEFT JOIN {}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
+        LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
         WHERE lr.rn = 1
-        {}
+        {leaderboard_filter}
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database,
-        network.0,
-        worker.config.results_window_days,
-        worker.clickhouse.database,
-        network.0,
-        worker.clickhouse.database,
-        worker.clickhouse.database,
-        if filter_leaderboard {
+        db = worker.clickhouse.database,
+        network = network.0,
+        window = worker.config.results_window_days,
+        time_ref = time_ref,
+        upper_bound = upper_bound,
+        uptime_upper_bound = uptime_upper_bound,
+        leaderboard_filter = if filter_leaderboard {
             "AND u30.uptime_percentage IS NOT NULL AND u30.uptime_percentage > 0 ORDER BY u30.uptime_percentage DESC LIMIT 50"
         } else {
             ""
@@ -2661,6 +2879,7 @@ async fn calculate_uptime_stats(
     host: &str,
     _network: &str,
     port: Option<u16>,
+    at: Option<DateTime<Utc>>,
 ) -> Result<UptimeStats, actix_web::Error> {
     // Query for uptime statistics using the port-aware uptime_stats_by_port materialized view
     // port_filter is for uptime_stats_by_port (port is String)
@@ -2674,40 +2893,56 @@ async fn calculate_uptime_stats(
         (String::new(), String::new())
     };
 
+    // Generate time reference for SQL queries
+    let time_ref = time_reference_sql(at);
+    let uptime_upper_bound = if at.is_some() {
+        format!("AND time_bucket <= {}", time_ref)
+    } else {
+        String::new()
+    };
+    let results_upper_bound = if at.is_some() {
+        format!("AND checked_at <= {}", time_ref)
+    } else {
+        String::new()
+    };
+
     let uptime_query = format!(
         r#"
         WITH first_seen_date AS (
             SELECT min(checked_at) as first_seen
-            FROM {}.results
-            WHERE hostname = '{}'
-            {}
+            FROM {db}.results
+            WHERE hostname = '{host}'
+            {port_filter_results}
+            {results_upper_bound}
         ),
         -- Calculate the percentage of the 30-day period that the server has been announced
         -- If first_seen is within the last 30 days, this will be < 1.0
         -- If first_seen is 30+ days ago, this will be 1.0
         hours_announced AS (
             SELECT
-                least(dateDiff('hour', first_seen, now()), 720) as hours_in_period,
-                least(dateDiff('hour', first_seen, now()), 720) / 720.0 as percentage_of_month
+                least(dateDiff('hour', first_seen, {time_ref}), 720) as hours_in_period,
+                least(dateDiff('hour', first_seen, {time_ref}), 720) / 720.0 as percentage_of_month
             FROM first_seen_date
         )
         SELECT
             'day' as period,
             sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
-        FROM {}.uptime_stats_by_port
-        WHERE hostname = '{}'
-        AND time_bucket >= now() - INTERVAL 1 DAY
-        {}
+        FROM {db}.uptime_stats_by_port
+        WHERE hostname = '{host}'
+        AND time_bucket >= {time_ref} - INTERVAL 1 DAY
+        {uptime_upper_bound}
+        {port_filter}
 
         UNION ALL
 
         SELECT
             'week' as period,
             sum(online_count) * 100.0 / greatest(sum(total_checks), 1) as uptime_percentage
-        FROM {}.uptime_stats_by_port
-        WHERE hostname = '{}'
-        AND time_bucket >= now() - INTERVAL 7 DAY
-        {}
+        FROM {db}.uptime_stats_by_port
+        WHERE hostname = '{host}'
+        AND time_bucket >= {time_ref} - INTERVAL 7 DAY
+        {uptime_upper_bound}
+        {port_filter}
 
         UNION ALL
 
@@ -2716,40 +2951,34 @@ async fn calculate_uptime_stats(
         SELECT
             'month' as period,
             (sum(online_count) * 100.0 / greatest(sum(total_checks), 1)) * (SELECT percentage_of_month FROM hours_announced) as uptime_percentage
-        FROM {}.uptime_stats_by_port
-        WHERE hostname = '{}'
-        AND time_bucket >= now() - INTERVAL 30 DAY
-        {}
+        FROM {db}.uptime_stats_by_port
+        WHERE hostname = '{host}'
+        AND time_bucket >= {time_ref} - INTERVAL 30 DAY
+        {uptime_upper_bound}
+        {port_filter}
 
         UNION ALL
 
         SELECT
             'since_launch' as period,
             sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1) as uptime_percentage
-        FROM {}.uptime_stats_by_port u
+        FROM {db}.uptime_stats_by_port u
         CROSS JOIN first_seen_date fs
-        WHERE u.hostname = '{}'
+        WHERE u.hostname = '{host}'
         AND u.time_bucket >= fs.first_seen
-        {}
+        {uptime_upper_bound}
+        {port_filter}
         GROUP BY fs.first_seen
 
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database, // first_seen_date CTE - {}.results
-        host,                       // first_seen_date CTE - hostname = '{}'
-        port_filter_results,        // first_seen_date CTE - port filter (results table uses UInt16)
-        worker.clickhouse.database, // day query - {}.uptime_stats_by_port
-        host,                       // day query - hostname = '{}'
-        port_filter,                // day query - port filter
-        worker.clickhouse.database, // week query - {}.uptime_stats_by_port
-        host,                       // week query - hostname = '{}'
-        port_filter,                // week query - port filter
-        worker.clickhouse.database, // month query - {}.uptime_stats_by_port
-        host,                       // month query - hostname = '{}'
-        port_filter,                // month query - port filter
-        worker.clickhouse.database, // since_launch query - {}.uptime_stats_by_port
-        host,                       // since_launch query - u.hostname = '{}'
-        port_filter                 // since_launch query - port filter
+        db = worker.clickhouse.database,
+        host = host,
+        port_filter_results = port_filter_results,
+        results_upper_bound = results_upper_bound,
+        time_ref = time_ref,
+        uptime_upper_bound = uptime_upper_bound,
+        port_filter = port_filter,
     );
 
     let response = worker
@@ -2809,7 +3038,7 @@ async fn calculate_uptime_stats(
     }
 
     // Get total checks, last check time, last online time, first_seen, and current status
-    let port_filter = if let Some(port_num) = port {
+    let port_filter_stats = if let Some(port_num) = port {
         format!("AND port = {}", port_num)
     } else {
         String::new()
@@ -2819,17 +3048,19 @@ async fn calculate_uptime_stats(
         r#"
         WITH latest_check AS (
             SELECT status, checked_at
-            FROM {}.results
-            WHERE hostname = '{}'
-            {}
+            FROM {db}.results
+            WHERE hostname = '{host}'
+            {port_filter_stats}
+            {results_upper_bound}
             ORDER BY checked_at DESC
             LIMIT 1
         ),
         first_seen_ever AS (
             SELECT min(checked_at) as first_seen
-            FROM {}.results
-            WHERE hostname = '{}'
-            {}
+            FROM {db}.results
+            WHERE hostname = '{host}'
+            {port_filter_stats}
+            {results_upper_bound}
         )
         SELECT
             count(*) as total_checks,
@@ -2839,21 +3070,18 @@ async fn calculate_uptime_stats(
             max(CASE WHEN status = 'online' THEN checked_at END) as last_online,
             (SELECT first_seen FROM first_seen_ever) as first_seen,
             (SELECT status FROM latest_check) as current_status
-        FROM {}.results
-        WHERE hostname = '{}'
-        AND checked_at >= now() - INTERVAL 30 DAY
-        {}
+        FROM {db}.results
+        WHERE hostname = '{host}'
+        AND checked_at >= {time_ref} - INTERVAL 30 DAY
+        {results_upper_bound}
+        {port_filter_stats}
         FORMAT JSONEachRow
         "#,
-        worker.clickhouse.database,
-        host,
-        port_filter,
-        worker.clickhouse.database,
-        host,
-        port_filter,
-        worker.clickhouse.database,
-        host,
-        port_filter
+        db = worker.clickhouse.database,
+        host = host,
+        port_filter_stats = port_filter_stats,
+        results_upper_bound = results_upper_bound,
+        time_ref = time_ref,
     );
 
     // info!("🔍 Stats query for host {}: {}", host, stats_query.replace("\n", " "));
@@ -3457,6 +3685,7 @@ async fn cache_refresh_task(worker: Worker) {
                         &network,
                         hide_community,
                         tor_only,
+                        None, // No historical timestamp for cache refresh
                     )
                     .await;
                     match result {
@@ -3494,7 +3723,7 @@ async fn cache_refresh_task(worker: Worker) {
         let cache_key = "zec-leaderboard".to_string();
         let query_start = std::time::Instant::now();
 
-        let result = fetch_and_render_leaderboard(&worker, &network).await;
+        let result = fetch_and_render_leaderboard(&worker, &network, None).await;
         match result {
             Ok(html) => {
                 let mut cache = worker.cache.write().await;
@@ -3544,6 +3773,7 @@ async fn cache_refresh_task(worker: Worker) {
                             &network,
                             hide_community,
                             tor_only,
+                            None, // No historical timestamp for cache refresh
                         )
                         .await;
                         match result {
@@ -3582,7 +3812,7 @@ async fn cache_refresh_task(worker: Worker) {
             let cache_key = "zec-leaderboard".to_string();
             let query_start = std::time::Instant::now();
 
-            let result = fetch_and_render_leaderboard(&worker, &network).await;
+            let result = fetch_and_render_leaderboard(&worker, &network, None).await;
             match result {
                 Ok(html) => {
                     let mut cache = worker.cache.write().await;

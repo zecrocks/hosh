@@ -31,7 +31,7 @@
                                 <span class="text-muted">#{{ entry.rank }}</span>
                             </td>
                             <td>
-                                <a href="/{{ current_network }}/{{ entry.server.host_with_port() }}">{{ entry.server.host_with_port() }}</a>
+                                <a href="/{{ current_network }}/{{ entry.server.host_with_port() }}{% if historical_at.is_some() %}?at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}">{{ entry.server.host_with_port() }}</a>
                                 {% if entry.server.is_community() %}
                                 <span title="Community server">👥</span>
                                 {% endif %}
@@ -56,7 +56,7 @@
         </div>
         
         <div class="text-center mt-4">
-            <a href="/{{ current_network }}" class="btn btn-outline-secondary">Back to Server List</a>
+            <a href="/{{ current_network }}{% if historical_at.is_some() %}?at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary">Back to Server List</a>
         </div>
     </div>
 </div>

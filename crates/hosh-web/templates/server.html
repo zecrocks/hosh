@@ -3,13 +3,13 @@
 {% block title %}Server Details - {{ host }}{% endblock %}
 
 {% block content %}
-<a href="/{{ network }}" class="btn btn-secondary mb-3">Back to Dashboard</a>
+<a href="/{{ network }}{% if historical_at.is_some() %}?at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-secondary mb-3">Back to Dashboard</a>
 <h2>Server Details: {{ host }} ({{ network|upper }})</h2>
 
 <!-- Uptime Statistics Section -->
 <div class="card shadow-sm mb-4">
     <div class="card-header">
-        <h5 class="mb-0">Uptime Statistics</h5>
+        <h5 class="mb-0">Uptime Statistics{% if historical_at.is_some() %} <small class="text-muted">(as of {{ historical_at.as_ref().unwrap() }})</small>{% endif %}</h5>
     </div>
     <div class="card-body">
         <div class="row">

@@ -38,9 +38,15 @@
                     {% endif %}
                 </small>
             </div>
-            
+
         </div>
       </div>
+      {% if historical_at.is_some() %}
+      <div class="alert alert-warning text-center mb-3" role="alert">
+          <strong>Historical View:</strong> Showing data as of {{ historical_at.as_ref().unwrap() }}
+          <a href="/{{ current_network }}" class="btn btn-sm btn-outline-secondary ms-2">Return to Current</a>
+      </div>
+      {% endif %}
       {% block content %}{% endblock %}
     </div>
 </body>
