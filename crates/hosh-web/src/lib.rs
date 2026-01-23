@@ -1052,9 +1052,9 @@ fn validate_hostname(host: &str) -> Result<String, String> {
         return Err("Hostname too long".to_string());
     }
 
-    let valid = host.chars().all(|c|
-        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'
-    );
+    let valid = host
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_');
 
     if !valid {
         return Err("Invalid hostname: contains disallowed characters".to_string());
@@ -1085,7 +1085,10 @@ fn parse_historical_timestamp(at: Option<&str>) -> Result<Option<DateTime<Utc>>,
     // Try date-only format (YYYY-MM-DD) - interpret as 00:00:00 UTC
     if let Ok(dt) = chrono::NaiveDate::parse_from_str(at_str, "%Y-%m-%d") {
         let naive_datetime = dt.and_hms_opt(0, 0, 0).unwrap();
-        return Ok(Some(DateTime::<Utc>::from_naive_utc_and_offset(naive_datetime, Utc)));
+        return Ok(Some(DateTime::<Utc>::from_naive_utc_and_offset(
+            naive_datetime,
+            Utc,
+        )));
     }
 
     Err("Invalid timestamp format. Accepted formats: RFC3339 (2025-01-15T14:30:00Z) or date (2025-01-15)".to_string())
@@ -1804,10 +1807,14 @@ async fn fetch_and_render_leaderboard(
         )
         SELECT
             lr.hostname,
+            lr.port,
             lr.checked_at,
             lr.status,
             lr.ping_ms as ping,
             lr.response_data,
+            lr.server_version,
+            lr.block_height,
+            lr.error,
             u30.uptime_percentage as uptime_30_day,
             t.community
         FROM latest_results lr
@@ -1884,14 +1891,55 @@ async fn fetch_and_render_leaderboard(
 
             if let Ok(mut server_info) = serde_json::from_str::<ServerInfo>(&cleaned_response_data)
             {
+                // Use extracted columns as fallback when response_data is empty/TTL'd
+                // These columns are permanently stored and available for historical queries
+                if server_info.host.is_empty() {
+                    if let Some(hostname) = result.get("hostname").and_then(|v| v.as_str()) {
+                        server_info.host = hostname.to_string();
+                    }
+                }
+                if server_info.port.is_none() {
+                    server_info.port = result
+                        .get("port")
+                        .and_then(|v| v.as_u64())
+                        .map(|p| p as u16);
+                }
+                if server_info.server_version.is_none() {
+                    server_info.server_version = result
+                        .get("server_version")
+                        .and_then(|v| v.as_str())
+                        .filter(|s| !s.is_empty())
+                        .map(|s| s.to_string());
+                }
+                if server_info.height == 0 {
+                    server_info.height = result
+                        .get("block_height")
+                        .and_then(|v| v.as_u64())
+                        .unwrap_or(0);
+                }
+                if server_info.status.is_empty() {
+                    if let Some(status) = result.get("status").and_then(|v| v.as_str()) {
+                        server_info.status = status.to_string();
+                    }
+                }
+                if server_info.ping.is_none() {
+                    server_info.ping = result.get("ping").and_then(|v| v.as_f64());
+                }
+
                 server_info.uptime_30_day = result.get("uptime_30_day").and_then(|v| v.as_f64());
                 server_info.community = result
                     .get("community")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false);
 
-                // Only include servers that meet the minimum version requirements
-                if !server_info.meets_leaderboard_version_requirements() {
+                // Only apply version requirements for current data, not historical views
+                // (version requirements may have changed since the historical date)
+                if at.is_none() && !server_info.meets_leaderboard_version_requirements() {
+                    continue;
+                }
+
+                // Skip entries with no hostname (shouldn't happen but be safe)
+                if server_info.host.is_empty() {
                     continue;
                 }
 
@@ -1952,11 +2000,15 @@ async fn network_status(
 
     // For historical queries, bypass cache and query ClickHouse directly
     if historical_at.is_some() {
-        info!(
-            "Historical query for {} at {:?}",
-            network.0, historical_at
-        );
-        let html = fetch_and_render_network_status(&worker, &network, hide_community, tor_only, historical_at).await?;
+        info!("Historical query for {} at {:?}", network.0, historical_at);
+        let html = fetch_and_render_network_status(
+            &worker,
+            &network,
+            hide_community,
+            tor_only,
+            historical_at,
+        )
+        .await?;
         return Ok(HttpResponse::Ok()
             .content_type("text/html; charset=utf-8")
             .insert_header(("X-Historical-At", query_params.at.as_deref().unwrap_or("")))
@@ -2114,8 +2166,7 @@ async fn server_detail(
     let safe_network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
 
-    let host = validate_hostname(&host)
-        .map_err(actix_web::error::ErrorBadRequest)?;
+    let host = validate_hostname(&host).map_err(actix_web::error::ErrorBadRequest)?;
 
     // Parse and validate historical timestamp if provided
     let historical_at = parse_historical_timestamp(query_params.at.as_deref())
@@ -2285,7 +2336,8 @@ async fn server_detail(
     let percentile_height = calculate_percentile(&heights, 90);
 
     // Calculate uptime statistics
-    let uptime_stats = calculate_uptime_stats(&worker, &host, &network, port, historical_at).await?;
+    let uptime_stats =
+        calculate_uptime_stats(&worker, &host, &network, port, historical_at).await?;
 
     // Create sorted data for alphabetical display
     let mut sorted_data: Vec<(String, Value)> =
@@ -2341,8 +2393,7 @@ async fn server_detail(
         response.insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"));
     }
 
-    Ok(response
-        .body(html))
+    Ok(response.body(html))
 }
 
 #[derive(Debug, Deserialize)]
