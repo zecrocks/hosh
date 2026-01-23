@@ -1044,6 +1044,25 @@ impl SafeNetwork {
     }
 }
 
+fn validate_hostname(host: &str) -> Result<String, String> {
+    if host.is_empty() {
+        return Err("Hostname cannot be empty".to_string());
+    }
+    if host.len() > 253 {
+        return Err("Hostname too long".to_string());
+    }
+
+    let valid = host.chars().all(|c|
+        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'
+    );
+
+    if !valid {
+        return Err("Invalid hostname: contains disallowed characters".to_string());
+    }
+
+    Ok(host.to_string())
+}
+
 // =============================================================================
 // HISTORICAL TIMESTAMP PARSING
 // =============================================================================
@@ -2094,6 +2113,9 @@ async fn server_detail(
     };
     let safe_network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+
+    let host = validate_hostname(&host)
+        .map_err(actix_web::error::ErrorBadRequest)?;
 
     // Parse and validate historical timestamp if provided
     let historical_at = parse_historical_timestamp(query_params.at.as_deref())
