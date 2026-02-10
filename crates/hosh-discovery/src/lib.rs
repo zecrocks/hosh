@@ -252,8 +252,16 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("node.manyrz.xyz", 443, true),
     ("znodo.edgarlenon.xyz", 443, true),
     ("zec.0xrpc.io", 443, true),
-    ("rqjlg3q7qul4i7ha2je3b4trp4o2xex5kwpxuzw75cltizyiwkh6s4ad.onion", 443, true),
-    ("ivlf2z6aksfi7h5yx2bs3osuppb2g3v5l7okdcvyo7yz3ghi7byw7ryd.onion", 443, true),
+    (
+        "rqjlg3q7qul4i7ha2je3b4trp4o2xex5kwpxuzw75cltizyiwkh6s4ad.onion",
+        443,
+        true,
+    ),
+    (
+        "ivlf2z6aksfi7h5yx2bs3osuppb2g3v5l7okdcvyo7yz3ghi7byw7ryd.onion",
+        443,
+        true,
+    ),
 ];
 
 #[derive(Debug, Deserialize)]

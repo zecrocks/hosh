@@ -37,7 +37,10 @@ impl ClickHouseClient {
     }
 
     /// Execute a query and return the result as a string.
-    pub async fn execute_query(&self, query: &str) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
+    pub async fn execute_query(
+        &self,
+        query: &str,
+    ) -> Result<String, Box<dyn std::error::Error + Send + Sync>> {
         info!("Executing ClickHouse query");
 
         let response = self
