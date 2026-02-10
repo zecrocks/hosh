@@ -28,7 +28,7 @@ use tracing::{error, info, warn};
 // LEADERBOARD VERSION REQUIREMENTS
 // Only servers running these versions (or newer) are included in the leaderboard
 // =============================================================================
-const LEADERBOARD_MIN_ZEBRA_VERSION: &str = "3.1.0";
+const LEADERBOARD_MIN_ZEBRA_VERSION: &str = "4.0.0";
 const LEADERBOARD_MIN_LWD_VERSION: &str = "0.4.18";
 const LEADERBOARD_MIN_ZAINO_VERSION: &str = "0.1.2";
 
