@@ -252,6 +252,8 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("node.manyrz.xyz", 443, true),
     ("znodo.edgarlenon.xyz", 443, true),
     ("zec.0xrpc.io", 443, true),
+    ("lwd.forzcash.online", 9067, true),
+    ("z3.deepikaw.xyz", 443, true),
     (
         "rqjlg3q7qul4i7ha2je3b4trp4o2xex5kwpxuzw75cltizyiwkh6s4ad.onion",
         443,
@@ -259,6 +261,56 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ),
     (
         "ivlf2z6aksfi7h5yx2bs3osuppb2g3v5l7okdcvyo7yz3ghi7byw7ryd.onion",
+        443,
+        true,
+    ),
+    (
+        "dwhlbgfoqklfq4xdzfjsrmnc7ez3tjg2eumqxtagvodyc3mqbbzpasad.onion",
+        443,
+        true,
+    ),
+    (
+        "g6lktvfdemmrpxgcxtnsqsnmnnxgk73tsdaffugfhaery7ez6hiow5qd.onion",
+        443,
+        true,
+    ),
+    (
+        "efpwohliiohcxhhmwpyk4jdikthukq45zzc6ra4zh67744kjr6ggukid.onion",
+        443,
+        true,
+    ),
+    (
+        "eg2eip7gfarwgz6oiktsfhlzfeskxcamylyxar2mcjls3d4ruagtnyqd.onion",
+        443,
+        true,
+    ),
+    (
+        "2j3hrucpqb42ei356v5mvydzy64qsqyq6ouep7fnrusbjehncue6ewqd.onion",
+        9067,
+        true,
+    ),
+    (
+        "f2he6uomeww5leyp7ty5e7rvchbifoi6rqza5wqaf57onsix2mjzb6qd.onion",
+        9067,
+        true,
+    ),
+    (
+        "a37xfcmfhtsmfyrw6a7tf7vkwom5xxowf653xtiftbof4kqyhgdjxfyd.onion",
+        443,
+        true,
+    ),
+    (
+        "zqtk57xiouixon4yqycwbfgjq35xl6fge6yk67x6szqwmb2byyontjad.onion",
+        9067,
+        true,
+    ),
+    (
+        "5dknmiftcqx6splom4bgwk6gkjqlaukootwwbriq4ee5p6liuljd6uid.onion",
+        9067,
+        true,
+    ),
+    (
+        "sw53pam5tttshzjwlu6twehe6p44dytyuzgf5vc2ubj63sclejqctrad.onion",
         443,
         true,
     ),
