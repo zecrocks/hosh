@@ -31,6 +31,8 @@ use tracing::{error, info, warn};
 const LEADERBOARD_MIN_ZEBRA_VERSION: &str = "4.0.0";
 const LEADERBOARD_MIN_LWD_VERSION: &str = "0.4.18";
 const LEADERBOARD_MIN_ZAINO_VERSION: &str = "0.1.2";
+const LEADERBOARD_DISPLAY_LIMIT: usize = 50;
+const LEADERBOARD_QUERY_LIMIT: usize = 200;
 
 mod filters {
     use askama::Result;
@@ -1771,7 +1773,7 @@ async fn fetch_and_render_leaderboard(
         String::new()
     };
 
-    // Query for leaderboard - top 50 servers by 30-day uptime
+    // Query for leaderboard - over-fetch candidates, then filter by version and truncate to LEADERBOARD_DISPLAY_LIMIT
     let query = format!(
         r#"
         WITH latest_results AS (
@@ -1824,7 +1826,7 @@ async fn fetch_and_render_leaderboard(
         AND u30.uptime_percentage IS NOT NULL
         AND u30.uptime_percentage > 0
         ORDER BY u30.uptime_percentage DESC
-        LIMIT 50
+        LIMIT {query_limit}
         FORMAT JSONEachRow
         "#,
         db = worker.clickhouse.database,
@@ -1833,6 +1835,7 @@ async fn fetch_and_render_leaderboard(
         time_ref = time_ref,
         upper_bound = upper_bound,
         uptime_upper_bound = uptime_upper_bound,
+        query_limit = LEADERBOARD_QUERY_LIMIT,
     );
 
     info!(
@@ -1943,6 +1946,11 @@ async fn fetch_and_render_leaderboard(
                     continue;
                 }
 
+                // Exclude infrastructure servers from the leaderboard
+                if server_info.host.ends_with(".zec.rocks") {
+                    continue;
+                }
+
                 entries.push(LeaderboardEntry {
                     rank,
                     server: server_info,
@@ -1951,6 +1959,8 @@ async fn fetch_and_render_leaderboard(
             }
         }
     }
+
+    entries.truncate(LEADERBOARD_DISPLAY_LIMIT);
 
     // Get percentile height for consistency with other pages
     let percentile_height = entries
