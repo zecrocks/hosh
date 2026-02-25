@@ -3,7 +3,7 @@
 {% block content %}
 <div class="row">
     <div class="col">
-        <h2 class="mb-4">Top 50 Servers by Uptime</h2>
+        <h2 class="mb-4">Servers by Uptime</h2>
         <p class="text-muted mb-4">Ranked by 30-day calendar uptime. Only servers that have been online at least once are shown.</p>
         
         <div class="alert alert-info mb-4">
@@ -26,6 +26,13 @@
                     </thead>
                     <tbody>
                         {% for entry in entries %}
+                        {% if entry.rank == 51 %}
+                        <tr class="table-warning">
+                            <td colspan="7" class="text-center py-3">
+                                <strong>Top 50 servers may qualify for the next reward</strong>
+                            </td>
+                        </tr>
+                        {% endif %}
                         <tr>
                             <td>
                                 <span class="text-muted">#{{ entry.rank }}</span>

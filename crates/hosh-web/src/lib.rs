@@ -31,8 +31,7 @@ use tracing::{error, info, warn};
 const LEADERBOARD_MIN_ZEBRA_VERSION: &str = "4.0.0";
 const LEADERBOARD_MIN_LWD_VERSION: &str = "0.4.18";
 const LEADERBOARD_MIN_ZAINO_VERSION: &str = "0.1.2";
-const LEADERBOARD_DISPLAY_LIMIT: usize = 50;
-const LEADERBOARD_QUERY_LIMIT: usize = 200;
+
 
 mod filters {
     use askama::Result;
@@ -1033,6 +1032,17 @@ fn version_meets_minimum(version: &str, minimum: &str) -> bool {
     true // Equal versions
 }
 
+/// Extract primary domain from a hostname (e.g., "zaino.example.com" -> "example.com")
+/// Used to deduplicate servers run by the same operator under different subdomains.
+fn get_primary_domain(hostname: &str) -> String {
+    let parts: Vec<&str> = hostname.split('.').collect();
+    if parts.len() >= 2 {
+        format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
+    } else {
+        hostname.to_string()
+    }
+}
+
 #[derive(Debug)]
 struct SafeNetwork(&'static str);
 
@@ -1773,7 +1783,7 @@ async fn fetch_and_render_leaderboard(
         String::new()
     };
 
-    // Query for leaderboard - over-fetch candidates, then filter by version and truncate to LEADERBOARD_DISPLAY_LIMIT
+    // Query for leaderboard - fetch all candidates, then filter by version and deduplicate
     let query = format!(
         r#"
         WITH latest_results AS (
@@ -1826,7 +1836,6 @@ async fn fetch_and_render_leaderboard(
         AND u30.uptime_percentage IS NOT NULL
         AND u30.uptime_percentage > 0
         ORDER BY u30.uptime_percentage DESC
-        LIMIT {query_limit}
         FORMAT JSONEachRow
         "#,
         db = worker.clickhouse.database,
@@ -1835,7 +1844,6 @@ async fn fetch_and_render_leaderboard(
         time_ref = time_ref,
         upper_bound = upper_bound,
         uptime_upper_bound = uptime_upper_bound,
-        query_limit = LEADERBOARD_QUERY_LIMIT,
     );
 
     info!(
@@ -1876,6 +1884,8 @@ async fn fetch_and_render_leaderboard(
 
     // Parse results and build leaderboard entries
     let mut entries = Vec::new();
+    let mut seen_domains = std::collections::HashSet::new();
+    let mut seen_addresses = std::collections::HashSet::new();
     let mut rank = 1;
 
     for line in body.lines() {
@@ -1953,6 +1963,23 @@ async fn fetch_and_render_leaderboard(
                     continue;
                 }
 
+                // Deduplicate by primary domain (e.g. "zaino.example.com" and "lwd.example.com"
+                // share "example.com") so the same operator only appears once
+                let primary_domain = get_primary_domain(&server_info.host);
+                if !seen_domains.insert(primary_domain) {
+                    continue;
+                }
+
+                // Deduplicate by donation address so the same wallet only appears once
+                if let Some(addr) = server_info.extra.get("donation_address")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                {
+                    if !seen_addresses.insert(addr.to_string()) {
+                        continue;
+                    }
+                }
+
                 entries.push(LeaderboardEntry {
                     rank,
                     server: server_info,
@@ -1962,7 +1989,7 @@ async fn fetch_and_render_leaderboard(
         }
     }
 
-    entries.truncate(LEADERBOARD_DISPLAY_LIMIT);
+    // No truncation - show all deduplicated leaderboard-eligible servers
 
     // Get percentile height for consistency with other pages
     let percentile_height = entries
@@ -2414,6 +2441,8 @@ struct NetworkApiQuery {
     leaderboard: Option<bool>,
     /// Historical timestamp for time-travel queries
     at: Option<String>,
+    /// Optional limit on number of servers returned (unlimited by default for leaderboard)
+    limit: Option<usize>,
 }
 
 #[get("/api/v0/{network}.json")]
@@ -2507,7 +2536,7 @@ async fn network_api(
         upper_bound = upper_bound,
         uptime_upper_bound = uptime_upper_bound,
         leaderboard_filter = if filter_leaderboard {
-            format!("AND u30.uptime_percentage IS NOT NULL AND u30.uptime_percentage > 0 ORDER BY u30.uptime_percentage DESC LIMIT {LEADERBOARD_QUERY_LIMIT}")
+            "AND u30.uptime_percentage IS NOT NULL AND u30.uptime_percentage > 0 ORDER BY u30.uptime_percentage DESC".to_string()
         } else {
             String::new()
         }
@@ -2583,16 +2612,44 @@ async fn network_api(
     }
 
     // Filter for leaderboard-eligible servers if requested (ZEC only)
+    // Deduplicates by primary domain and donation address so each operator appears once
     let servers: Vec<ServerInfo> = if filter_leaderboard {
-        servers
-            .into_iter()
-            .filter(|s| !s.host.is_empty())
-            .filter(|s| !s.host.ends_with(".zec.rocks") && s.host != "zec.rocks")
-            .filter(|s| historical_at.is_some() || s.meets_leaderboard_version_requirements())
-            .take(LEADERBOARD_DISPLAY_LIMIT)
-            .collect()
+        let mut seen_domains = std::collections::HashSet::new();
+        let mut seen_addresses = std::collections::HashSet::new();
+        let mut filtered = Vec::new();
+        for s in servers.into_iter() {
+            if s.host.is_empty() {
+                continue;
+            }
+            if s.host.ends_with(".zec.rocks") || s.host == "zec.rocks" {
+                continue;
+            }
+            if historical_at.is_none() && !s.meets_leaderboard_version_requirements() {
+                continue;
+            }
+            let primary_domain = get_primary_domain(&s.host);
+            if !seen_domains.insert(primary_domain) {
+                continue;
+            }
+            if let Some(addr) = s.extra.get("donation_address")
+                .and_then(|v| v.as_str())
+                .filter(|a| !a.trim().is_empty())
+            {
+                if !seen_addresses.insert(addr.to_string()) {
+                    continue;
+                }
+            }
+            filtered.push(s);
+        }
+        filtered
     } else {
         servers
+    };
+
+    // Apply optional limit
+    let servers: Vec<ServerInfo> = match query_params.limit {
+        Some(limit) => servers.into_iter().take(limit).collect(),
+        None => servers,
     };
 
     let api_servers: Vec<ApiServerInfo> = servers
