@@ -145,20 +145,14 @@ services:
         max-size: "1m"
         max-file: "5"
     healthcheck:
-      test:
-        [
-          "CMD-SHELL",
-          "curl --fail --socks5-hostname localhost:9050 -s https://check.torproject.org/ | grep -qm1 Congratulations",
-        ]
+      test: ["CMD-SHELL", "nc -z localhost 9050"]
       interval: 30s
-      timeout: 10s
+      timeout: 5s
       retries: 3
-      start_period: 10s
+      start_period: 30s
     environment:
       - TOR_NewCircuitPeriod=300
       - TOR_MaxCircuitDirtiness=600
-    ports:
-      - "9050:9050"
     restart: on-failure:5
     deploy:
       restart_policy:
