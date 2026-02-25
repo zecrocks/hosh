@@ -1,5 +1,8 @@
 FROM clickhouse/clickhouse-server:25.1-alpine
 
+# Disable system log tables to prevent disk bloat
+COPY config.d/disable-system-logs.xml /etc/clickhouse-server/config.d/
+
 # Copy migrations to a directory in the container
 COPY migrations/ /docker-entrypoint-initdb.d/migrations/
 
