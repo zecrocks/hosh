@@ -1947,7 +1947,9 @@ async fn fetch_and_render_leaderboard(
                 }
 
                 // Exclude infrastructure servers from the leaderboard
-                if server_info.host.ends_with(".zec.rocks") {
+                if server_info.host.ends_with(".zec.rocks")
+                    || server_info.host == "zec.rocks"
+                {
                     continue;
                 }
 
@@ -2505,9 +2507,9 @@ async fn network_api(
         upper_bound = upper_bound,
         uptime_upper_bound = uptime_upper_bound,
         leaderboard_filter = if filter_leaderboard {
-            "AND u30.uptime_percentage IS NOT NULL AND u30.uptime_percentage > 0 ORDER BY u30.uptime_percentage DESC LIMIT 50"
+            format!("AND u30.uptime_percentage IS NOT NULL AND u30.uptime_percentage > 0 ORDER BY u30.uptime_percentage DESC LIMIT {LEADERBOARD_QUERY_LIMIT}")
         } else {
-            ""
+            String::new()
         }
     );
 
@@ -2584,7 +2586,10 @@ async fn network_api(
     let servers: Vec<ServerInfo> = if filter_leaderboard {
         servers
             .into_iter()
-            .filter(|s| s.meets_leaderboard_version_requirements())
+            .filter(|s| !s.host.is_empty())
+            .filter(|s| !s.host.ends_with(".zec.rocks") && s.host != "zec.rocks")
+            .filter(|s| historical_at.is_some() || s.meets_leaderboard_version_requirements())
+            .take(LEADERBOARD_DISPLAY_LIMIT)
             .collect()
     } else {
         servers
