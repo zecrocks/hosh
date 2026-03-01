@@ -32,7 +32,6 @@ const LEADERBOARD_MIN_ZEBRA_VERSION: &str = "4.0.0";
 const LEADERBOARD_MIN_LWD_VERSION: &str = "0.4.18";
 const LEADERBOARD_MIN_ZAINO_VERSION: &str = "0.1.2";
 
-
 mod filters {
     use askama::Result;
     use serde_json::Value;
@@ -1957,9 +1956,7 @@ async fn fetch_and_render_leaderboard(
                 }
 
                 // Exclude infrastructure servers from the leaderboard
-                if server_info.host.ends_with(".zec.rocks")
-                    || server_info.host == "zec.rocks"
-                {
+                if server_info.host.ends_with(".zec.rocks") || server_info.host == "zec.rocks" {
                     continue;
                 }
 
@@ -1971,7 +1968,9 @@ async fn fetch_and_render_leaderboard(
                 }
 
                 // Deduplicate by donation address so the same wallet only appears once
-                if let Some(addr) = server_info.extra.get("donation_address")
+                if let Some(addr) = server_info
+                    .extra
+                    .get("donation_address")
                     .and_then(|v| v.as_str())
                     .filter(|s| !s.trim().is_empty())
                 {
@@ -2445,24 +2444,14 @@ struct NetworkApiQuery {
     limit: Option<usize>,
 }
 
-#[get("/api/v0/{network}.json")]
-async fn network_api(
-    worker: web::Data<Worker>,
-    network: web::Path<String>,
-    query_params: web::Query<NetworkApiQuery>,
-) -> Result<HttpResponse> {
-    let network = SafeNetwork::from_str(&network)
-        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
-    let filter_leaderboard = query_params.leaderboard.unwrap_or(false) && network.0 == "zec";
-
-    // Parse and validate historical timestamp if provided
-    let historical_at = parse_historical_timestamp(query_params.at.as_deref())
-        .map_err(actix_web::error::ErrorBadRequest)?;
-
-    if let Some(at) = historical_at {
-        validate_timestamp_bounds(at).map_err(actix_web::error::ErrorBadRequest)?;
-    }
-
+/// Fetch and serialize the JSON API response for a network.
+/// Used by both the cache refresh task and direct (historical) requests.
+async fn fetch_api_json(
+    worker: &Worker,
+    network: &SafeNetwork,
+    filter_leaderboard: bool,
+    historical_at: Option<DateTime<Utc>>,
+) -> std::result::Result<String, String> {
     // Generate time reference for SQL queries
     let time_ref = time_reference_sql(historical_at);
     let upper_bound = if historical_at.is_some() {
@@ -2481,53 +2470,57 @@ async fn network_api(
     // where percentage_of_month_announced = min(days_since_first_seen, 30) / 30
     let query = format!(
         r#"
-        WITH latest_results AS (
+        SELECT *
+        FROM (
+            WITH latest_results AS (
+                SELECT
+                    r.*,
+                    ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
+                FROM {db}.results r
+                WHERE r.checker_module = '{network}'
+                AND r.checked_at >= {time_ref} - INTERVAL {window} DAY
+                {upper_bound}
+            ),
+            -- Calculate first_seen and percentage of month for each server
+            first_seen_per_server AS (
+                SELECT
+                    hostname,
+                    toString(port) as port,
+                    min(checked_at) as first_seen,
+                    least(dateDiff('hour', min(checked_at), {time_ref}), 720) / 720.0 as percentage_of_month
+                FROM {db}.results
+                WHERE checker_module = '{network}'
+                AND checked_at <= {time_ref}
+                GROUP BY hostname, port
+            ),
+            uptime_30_day AS (
+                SELECT
+                    u.hostname,
+                    u.port,
+                    -- (checks_succeeded / total_checks) * percentage_of_month_announced
+                    (sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1)) * fs.percentage_of_month as uptime_percentage
+                FROM {db}.uptime_stats_by_port u
+                LEFT JOIN first_seen_per_server fs ON u.hostname = fs.hostname AND u.port = fs.port
+                WHERE u.time_bucket >= {time_ref} - INTERVAL 30 DAY
+                {uptime_upper_bound}
+                GROUP BY u.hostname, u.port, fs.percentage_of_month
+            )
             SELECT
-                r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
-            FROM {db}.results r
-            WHERE r.checker_module = '{network}'
-            AND r.checked_at >= {time_ref} - INTERVAL {window} DAY
-            {upper_bound}
-        ),
-        -- Calculate first_seen and percentage of month for each server
-        first_seen_per_server AS (
-            SELECT
-                hostname,
-                toString(port) as port,
-                min(checked_at) as first_seen,
-                least(dateDiff('hour', min(checked_at), {time_ref}), 720) / 720.0 as percentage_of_month
-            FROM {db}.results
-            WHERE checker_module = '{network}'
-            AND checked_at <= {time_ref}
-            GROUP BY hostname, port
-        ),
-        uptime_30_day AS (
-            SELECT
-                u.hostname,
-                u.port,
-                -- (checks_succeeded / total_checks) * percentage_of_month_announced
-                (sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1)) * fs.percentage_of_month as uptime_percentage
-            FROM {db}.uptime_stats_by_port u
-            LEFT JOIN first_seen_per_server fs ON u.hostname = fs.hostname AND u.port = fs.port
-            WHERE u.time_bucket >= {time_ref} - INTERVAL 30 DAY
-            {uptime_upper_bound}
-            GROUP BY u.hostname, u.port, fs.percentage_of_month
+                lr.hostname,
+                lr.checked_at,
+                lr.status,
+                lr.ping_ms as ping,
+                lr.response_data,
+                u30.uptime_percentage as uptime_30_day,
+                t.community
+            FROM latest_results lr
+            LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
+            LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
+            WHERE lr.rn = 1
+            {leaderboard_filter}
         )
-        SELECT
-            lr.hostname,
-            lr.checked_at,
-            lr.status,
-            lr.ping_ms as ping,
-            lr.response_data,
-            u30.uptime_percentage as uptime_30_day,
-            t.community
-        FROM latest_results lr
-        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
-        LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
-        WHERE lr.rn = 1
-        {leaderboard_filter}
         FORMAT JSONEachRow
+        SETTINGS max_execution_time = 10
         "#,
         db = worker.clickhouse.database,
         network = network.0,
@@ -2542,40 +2535,35 @@ async fn network_api(
         }
     );
 
-    let response = match worker
+    let response = worker
         .http_client
         .post(&worker.clickhouse.url)
         .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
         .header("Content-Type", "text/plain")
-        .body(query.clone())
+        .body(query)
         .send()
         .await
-    {
-        Ok(r) => r,
-        Err(e) => {
-            error!("ClickHouse query error: {}", e);
-            return Ok(HttpResponse::InternalServerError()
-                .content_type("application/json")
-                .json(serde_json::json!({"error": "Database query failed"})));
-        }
-    };
+        .map_err(|e| format!("ClickHouse connection error for {}: {:?}", network.0, e))?;
 
     let status = response.status();
-    let body = match response.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            error!("Failed to read response body: {}", e);
-            return Ok(HttpResponse::InternalServerError()
-                .content_type("application/json")
-                .json(serde_json::json!({"error": "Failed to read database response"})));
-        }
-    };
+    let body = response.text().await.map_err(|e| {
+        format!(
+            "Failed to read ClickHouse response body for {}: {:?}",
+            network.0, e
+        )
+    })?;
 
     if !status.is_success() {
-        error!("ClickHouse query failed with status {}: {}", status, body);
-        return Ok(HttpResponse::InternalServerError()
-            .content_type("application/json")
-            .json(serde_json::json!({"error": "Database query failed"})));
+        return Err(format!(
+            "ClickHouse query failed for {} with status {}: {}",
+            network.0,
+            status,
+            if body.len() > 2000 {
+                &body[..2000]
+            } else {
+                &body
+            }
+        ));
     }
 
     let mut servers = Vec::new();
@@ -2587,16 +2575,13 @@ async fn network_api(
         if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
             if let Some(response_data) = result["response_data"].as_str() {
                 if let Ok(mut server_info) = serde_json::from_str::<ServerInfo>(response_data) {
-                    // Add the uptime_30_day from the query result
                     server_info.uptime_30_day =
                         result.get("uptime_30_day").and_then(|v| v.as_f64());
-                    // Add the community flag from the query result
                     server_info.community = result
                         .get("community")
                         .and_then(|v| v.as_bool())
                         .unwrap_or(false);
 
-                    // Store the first_seen field in the extra HashMap for later use
                     if let Some(first_seen_str) = result.get("first_seen").and_then(|v| v.as_str())
                     {
                         server_info.extra.insert(
@@ -2612,7 +2597,6 @@ async fn network_api(
     }
 
     // Filter for leaderboard-eligible servers if requested (ZEC only)
-    // Deduplicates by primary domain and donation address so each operator appears once
     let servers: Vec<ServerInfo> = if filter_leaderboard {
         let mut seen_domains = std::collections::HashSet::new();
         let mut seen_addresses = std::collections::HashSet::new();
@@ -2631,7 +2615,9 @@ async fn network_api(
             if !seen_domains.insert(primary_domain) {
                 continue;
             }
-            if let Some(addr) = s.extra.get("donation_address")
+            if let Some(addr) = s
+                .extra
+                .get("donation_address")
                 .and_then(|v| v.as_str())
                 .filter(|a| !a.trim().is_empty())
             {
@@ -2644,12 +2630,6 @@ async fn network_api(
         filtered
     } else {
         servers
-    };
-
-    // Apply optional limit
-    let servers: Vec<ServerInfo> = match query_params.limit {
-        Some(limit) => servers.into_iter().take(limit).collect(),
-        None => servers,
     };
 
     let api_servers: Vec<ApiServerInfo> = servers
@@ -2695,12 +2675,105 @@ async fn network_api(
         })
         .collect();
 
-    Ok(HttpResponse::Ok()
-        .content_type("application/json")
-        .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
-        .json(ApiResponse {
-            servers: api_servers,
-        }))
+    serde_json::to_string(&ApiResponse {
+        servers: api_servers,
+    })
+    .map_err(|e| format!("Failed to serialize API response: {}", e))
+}
+
+#[get("/api/v0/{network}.json")]
+async fn network_api(
+    worker: web::Data<Worker>,
+    network: web::Path<String>,
+    query_params: web::Query<NetworkApiQuery>,
+) -> Result<HttpResponse> {
+    let network = SafeNetwork::from_str(&network)
+        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
+    let filter_leaderboard = query_params.leaderboard.unwrap_or(false) && network.0 == "zec";
+
+    // Parse and validate historical timestamp if provided
+    let historical_at = parse_historical_timestamp(query_params.at.as_deref())
+        .map_err(actix_web::error::ErrorBadRequest)?;
+
+    if let Some(at) = historical_at {
+        validate_timestamp_bounds(at).map_err(actix_web::error::ErrorBadRequest)?;
+    }
+
+    // For historical or limited queries, bypass cache and query directly
+    if historical_at.is_some() || query_params.limit.is_some() {
+        let json = fetch_api_json(&worker, &network, filter_leaderboard, historical_at)
+            .await
+            .map_err(|e| {
+                error!("{}", e);
+                actix_web::error::ErrorInternalServerError(
+                    serde_json::json!({"error": "Database query failed"}).to_string(),
+                )
+            })?;
+
+        return Ok(HttpResponse::Ok()
+            .content_type("application/json")
+            .insert_header(("Cache-Control", "no-cache"))
+            .body(json));
+    }
+
+    // For current (non-historical) requests, serve from cache
+    let cache_key = format!(
+        "{}-api{}",
+        network.0,
+        if filter_leaderboard {
+            "-leaderboard"
+        } else {
+            ""
+        }
+    );
+
+    let cache = worker.cache.read().await;
+    if let Some(entry) = cache.get(&cache_key) {
+        let cache_age_secs = entry.timestamp.elapsed().as_secs();
+        info!(
+            "Serving {} from cache (age: {}s)",
+            cache_key, cache_age_secs
+        );
+
+        return Ok(HttpResponse::Ok()
+            .content_type("application/json")
+            .insert_header(("X-Cache-Age", cache_age_secs.to_string()))
+            .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
+            .body(entry.html.clone()));
+    }
+    drop(cache);
+
+    // Cache miss — happens on first startup or for uncached leaderboard variant.
+    // Fall through to direct query so we don't return 503 for the API.
+    warn!(
+        "Cache miss for {} - querying ClickHouse directly",
+        cache_key
+    );
+
+    match fetch_api_json(&worker, &network, filter_leaderboard, None).await {
+        Ok(json) => {
+            // Populate cache for next request
+            let mut cache = worker.cache.write().await;
+            cache.insert(
+                cache_key,
+                CacheEntry {
+                    html: json.clone(),
+                    timestamp: std::time::Instant::now(),
+                },
+            );
+
+            Ok(HttpResponse::Ok()
+                .content_type("application/json")
+                .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
+                .body(json))
+        }
+        Err(e) => {
+            error!("{}", e);
+            Ok(HttpResponse::InternalServerError()
+                .content_type("application/json")
+                .json(serde_json::json!({"error": "Database query failed"})))
+        }
+    }
 }
 
 // Struct for job requests
@@ -3892,6 +3965,64 @@ async fn cache_refresh_task(worker: Worker) {
         tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
+    // Populate API JSON cache for each network
+    for network_str in &networks {
+        if let Some(network) = SafeNetwork::from_str(network_str) {
+            let cache_key = format!("{}-api", network_str);
+            let query_start = std::time::Instant::now();
+
+            match fetch_api_json(&worker, &network, false, None).await {
+                Ok(json) => {
+                    let mut cache = worker.cache.write().await;
+                    cache.insert(
+                        cache_key.clone(),
+                        CacheEntry {
+                            html: json,
+                            timestamp: std::time::Instant::now(),
+                        },
+                    );
+                    info!(
+                        "Cache refreshed for {} in {:?}",
+                        cache_key,
+                        query_start.elapsed()
+                    );
+                }
+                Err(e) => {
+                    error!("Failed to refresh cache for {}: {}", cache_key, e);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+    }
+
+    // Populate ZEC leaderboard API cache
+    if let Some(network) = SafeNetwork::from_str("zec") {
+        let cache_key = "zec-api-leaderboard".to_string();
+        let query_start = std::time::Instant::now();
+
+        match fetch_api_json(&worker, &network, true, None).await {
+            Ok(json) => {
+                let mut cache = worker.cache.write().await;
+                cache.insert(
+                    cache_key.clone(),
+                    CacheEntry {
+                        html: json,
+                        timestamp: std::time::Instant::now(),
+                    },
+                );
+                info!(
+                    "Cache refreshed for {} in {:?}",
+                    cache_key,
+                    query_start.elapsed()
+                );
+            }
+            Err(e) => {
+                error!("Failed to refresh cache for {}: {}", cache_key, e);
+            }
+        }
+        tokio::time::sleep(Duration::from_millis(500)).await;
+    }
+
     info!(
         "Initial cache population completed in {:?}",
         cycle_start.elapsed()
@@ -3965,6 +4096,65 @@ async fn cache_refresh_task(worker: Worker) {
                         cache_key.clone(),
                         CacheEntry {
                             html,
+                            timestamp: std::time::Instant::now(),
+                        },
+                    );
+                    info!(
+                        "Cache refreshed for {} in {:?}",
+                        cache_key,
+                        query_start.elapsed()
+                    );
+                }
+                Err(e) => {
+                    error!("Failed to refresh cache for {}: {}", cache_key, e);
+                }
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+
+        // Refresh API JSON cache for each network
+        for network_str in &networks {
+            if let Some(network) = SafeNetwork::from_str(network_str) {
+                let cache_key = format!("{}-api", network_str);
+                let query_start = std::time::Instant::now();
+
+                match fetch_api_json(&worker, &network, false, None).await {
+                    Ok(json) => {
+                        let mut cache = worker.cache.write().await;
+                        cache.insert(
+                            cache_key.clone(),
+                            CacheEntry {
+                                html: json,
+                                timestamp: std::time::Instant::now(),
+                            },
+                        );
+                        info!(
+                            "Cache refreshed for {} in {:?}",
+                            cache_key,
+                            query_start.elapsed()
+                        );
+                    }
+                    Err(e) => {
+                        error!("Failed to refresh cache for {}: {}", cache_key, e);
+                        // Keep old cache if refresh fails
+                    }
+                }
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+        }
+
+        // Refresh ZEC leaderboard API cache
+        if let Some(network) = SafeNetwork::from_str("zec") {
+            let cache_key = "zec-api-leaderboard".to_string();
+            let query_start = std::time::Instant::now();
+
+            match fetch_api_json(&worker, &network, true, None).await {
+                Ok(json) => {
+                    let mut cache = worker.cache.write().await;
+                    cache.insert(
+                        cache_key.clone(),
+                        CacheEntry {
+                            html: json,
                             timestamp: std::time::Instant::now(),
                         },
                     );

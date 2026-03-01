@@ -10,9 +10,15 @@
             <strong>Qualifying Versions:</strong> Zebra {{ min_zebra_version }}+ &nbsp;|&nbsp; LWD {{ min_lwd_version }}+ &nbsp;|&nbsp; Zaino {{ min_zaino_version }}+
         </div>
         
+        <div class="mb-3">
+            <button class="btn btn-outline-secondary btn-sm" id="copyMarkdownBtn" onclick="copyMarkdown()">
+                📋 Copy Markdown
+            </button>
+        </div>
+
         <div class="card shadow-sm">
             <div class="table-responsive">
-                <table class="table table-hover table-striped mb-0">
+                <table class="table table-hover table-striped mb-0" id="leaderboardTable">
                     <thead class="table-light">
                         <tr>
                             <th style="width: 60px;">Rank</th>
@@ -67,5 +73,35 @@
         </div>
     </div>
 </div>
+
+<script>
+function copyMarkdown() {
+    const rows = document.querySelectorAll('#leaderboardTable tbody tr');
+    let md = '| Server | Version | Uptime | Ping |\n';
+    md += '|--------|---------|--------|------|\n';
+    rows.forEach(row => {
+        // Skip the reward separator row
+        if (row.querySelector('td[colspan]')) return;
+        const cells = row.querySelectorAll('td');
+        if (cells.length < 7) return;
+        const server = cells[1].querySelector('a')?.textContent?.trim() || '';
+        const version = cells[5].textContent.trim().split('\n')[0].trim();
+        const uptime = cells[2].textContent.trim();
+        const ping = cells[6].textContent.trim();
+        md += `| ${server} | ${version} | ${uptime} | ${ping} |\n`;
+    });
+    navigator.clipboard.writeText(md).then(() => {
+        const btn = document.getElementById('copyMarkdownBtn');
+        const orig = btn.innerHTML;
+        btn.innerHTML = '✅ Copied!';
+        btn.classList.replace('btn-outline-secondary', 'btn-success');
+        setTimeout(() => {
+            btn.innerHTML = orig;
+            btn.classList.replace('btn-success', 'btn-outline-secondary');
+        }, 2000);
+    });
+}
+</script>
 {% endblock %}
+
 
