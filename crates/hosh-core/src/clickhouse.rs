@@ -45,7 +45,7 @@ impl ClickHouseClient {
 
         let response = self
             .http_client
-            .post(&self.config.url())
+            .post(self.config.url())
             .basic_auth(&self.config.user, Some(&self.config.password))
             .header("Content-Type", "text/plain")
             .body(query.to_string())

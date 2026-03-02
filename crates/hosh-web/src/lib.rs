@@ -2083,15 +2083,15 @@ async fn network_status(
     );
     Ok(HttpResponse::ServiceUnavailable()
         .content_type("text/html; charset=utf-8")
-        .body(format!(
+        .body(
             r#"<!DOCTYPE html>
             <html>
             <head>
                 <title>Loading...</title>
                 <meta http-equiv="refresh" content="2">
                 <style>
-                    body {{ font-family: sans-serif; text-align: center; padding: 50px; }}
-                    .loading {{ font-size: 24px; color: #666; }}
+                    body { font-family: sans-serif; text-align: center; padding: 50px; }
+                    .loading { font-size: 24px; color: #666; }
                 </style>
             </head>
             <body>
@@ -2100,8 +2100,8 @@ async fn network_status(
                     <p style="font-size: 14px; color: #999;">Cache is warming up. This page will refresh automatically.</p>
                 </div>
             </body>
-            </html>"#
-        )))
+            </html>"#,
+        ))
 }
 
 #[get("/{network}/leaderboard")]
@@ -2160,15 +2160,15 @@ async fn leaderboard(
     );
     Ok(HttpResponse::ServiceUnavailable()
         .content_type("text/html; charset=utf-8")
-        .body(format!(
+        .body(
             r#"<!DOCTYPE html>
             <html>
             <head>
                 <title>Loading...</title>
                 <meta http-equiv="refresh" content="2">
                 <style>
-                    body {{ font-family: sans-serif; text-align: center; padding: 50px; }}
-                    .loading {{ font-size: 24px; color: #666; }}
+                    body { font-family: sans-serif; text-align: center; padding: 50px; }
+                    .loading { font-size: 24px; color: #666; }
                 </style>
             </head>
             <body>
@@ -2177,8 +2177,8 @@ async fn leaderboard(
                     <p style="font-size: 14px; color: #999;">Cache is warming up. This page will refresh automatically.</p>
                 </div>
             </body>
-            </html>"#
-        )))
+            </html>"#,
+        ))
 }
 
 #[get("/{network}/{host}")]

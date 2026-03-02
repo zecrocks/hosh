@@ -1,8 +1,13 @@
--- Migration 012: Truncate existing system log data
+-- Migration 011: Truncate existing system log data
 --
 -- The config.d/disable-system-logs.xml config disables all system log tables
 -- going forward. This migration cleans up any existing data that accumulated
 -- before the config was applied.
+--
+-- max_table_size_to_drop=0 disables the safety limit that blocks dropping
+-- tables larger than 50 GB (trace_log alone can exceed 90 GB).
+
+SET max_table_size_to_drop = 0;
 
 TRUNCATE TABLE IF EXISTS system.trace_log;
 TRUNCATE TABLE IF EXISTS system.text_log;
