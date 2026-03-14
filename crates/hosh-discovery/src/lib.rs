@@ -255,6 +255,10 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zec-node.cakewallet.com", 443, true),
     ("lwd.forzcash.online", 9067, true),
     ("z3.deepikaw.xyz", 443, true),
+    ("zcash.li", 443, true),
+    ("zec-server.vip", 9067, true),
+    ("sup-iz-7-zalup.ovh", 9067, true),
+    ("eto-volosy.hair", 443, true),
     (
         "rqjlg3q7qul4i7ha2je3b4trp4o2xex5kwpxuzw75cltizyiwkh6s4ad.onion",
         443,
@@ -313,6 +317,11 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     (
         "sw53pam5tttshzjwlu6twehe6p44dytyuzgf5vc2ubj63sclejqctrad.onion",
         443,
+        true,
+    ),
+    (
+        "2iryhbkfpkhjblv67zlpqgglqopea7ql5vjxl37kyrn7b7jwuehjtcyd.onion",
+        9067,
         true,
     ),
 ];
