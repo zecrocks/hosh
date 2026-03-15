@@ -325,6 +325,11 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
         9067,
         true,
     ),
+    (
+        "tridbhm5oogy6k55mwcs4gvkewoewrxlzhyez55fkor2d5py3jhfomyd.onion",
+        9067,
+        true,
+    ),
 ];
 
 #[derive(Debug, Deserialize)]
