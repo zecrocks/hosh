@@ -259,7 +259,7 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zec-server.vip", 9067, true),
     ("sup-iz-7-zalup.ovh", 9067, true),
     ("eto-volosy.hair", 443, true),
-    ("80.91.86.13", 443, true),
+    ("38.143.19.98", 443, true),
     ("apizec.boats", 443, true),
     ("zeclight.beauty", 443, true),
     ("185.177.151.111", 443, true),
