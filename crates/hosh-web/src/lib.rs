@@ -1834,7 +1834,7 @@ async fn fetch_and_render_leaderboard(
         WHERE lr.rn = 1
         AND u30.uptime_percentage IS NOT NULL
         AND u30.uptime_percentage > 0
-        ORDER BY u30.uptime_percentage DESC
+        ORDER BY u30.uptime_percentage DESC, lr.ping_ms ASC, lr.hostname ASC
         FORMAT JSONEachRow
         "#,
         db = worker.clickhouse.database,
@@ -2519,6 +2519,7 @@ async fn fetch_api_json(
             WHERE lr.rn = 1
             {leaderboard_filter}
         )
+        {leaderboard_order}
         FORMAT JSONEachRow
         SETTINGS max_execution_time = 10
         "#,
@@ -2529,9 +2530,14 @@ async fn fetch_api_json(
         upper_bound = upper_bound,
         uptime_upper_bound = uptime_upper_bound,
         leaderboard_filter = if filter_leaderboard {
-            "AND u30.uptime_percentage IS NOT NULL AND u30.uptime_percentage > 0 ORDER BY u30.uptime_percentage DESC".to_string()
+            "AND u30.uptime_percentage IS NOT NULL AND u30.uptime_percentage > 0".to_string()
         } else {
             String::new()
+        },
+        leaderboard_order = if filter_leaderboard {
+            "ORDER BY uptime_30_day DESC, ping ASC, hostname ASC"
+        } else {
+            ""
         }
     );
 
