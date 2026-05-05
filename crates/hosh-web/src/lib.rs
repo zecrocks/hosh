@@ -2493,7 +2493,7 @@ async fn fetch_api_json(
                 AND checked_at <= {time_ref}
                 GROUP BY hostname, port
             ),
-            uptime_30_day AS (
+            uptime_window AS (
                 SELECT
                     u.hostname,
                     u.port,
@@ -2506,7 +2506,7 @@ async fn fetch_api_json(
                 GROUP BY u.hostname, u.port, fs.percentage_of_month
             )
             SELECT
-                lr.hostname,
+                lr.hostname as hostname,
                 lr.checked_at,
                 lr.status,
                 lr.ping_ms as ping,
@@ -2514,7 +2514,7 @@ async fn fetch_api_json(
                 u30.uptime_percentage as uptime_30_day,
                 t.community
             FROM latest_results lr
-            LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
+            LEFT JOIN uptime_window u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
             LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
             WHERE lr.rn = 1
             {leaderboard_filter}
