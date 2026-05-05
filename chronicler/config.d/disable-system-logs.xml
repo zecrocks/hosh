@@ -1,46 +1,19 @@
 <clickhouse>
-    <trace_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </trace_log>
-    <text_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </text_log>
-    <query_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </query_log>
-    <query_thread_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </query_thread_log>
-    <query_views_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </query_views_log>
-    <metric_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </metric_log>
-    <asynchronous_metric_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </asynchronous_metric_log>
-    <part_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </part_log>
-    <processors_profile_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </processors_profile_log>
-    <query_metric_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </query_metric_log>
-    <error_log>
-        <engine></engine>
-        <partition_by></partition_by>
-    </error_log>
+    <trace_log remove="1"/>
+    <text_log remove="1"/>
+    <query_log remove="1"/>
+    <query_thread_log remove="1"/>
+    <query_views_log remove="1"/>
+    <metric_log remove="1"/>
+    <asynchronous_metric_log remove="1"/>
+    <asynchronous_insert_log remove="1"/>
+    <part_log remove="1"/>
+    <processors_profile_log remove="1"/>
+    <query_metric_log remove="1"/>
+    <error_log remove="1"/>
+    <opentelemetry_span_log remove="1"/>
+    <crash_log remove="1"/>
+    <backup_log remove="1"/>
+    <blob_storage_log remove="1"/>
+    <s3queue_log remove="1"/>
 </clickhouse>
