@@ -25,14 +25,6 @@ use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};
 
 // =============================================================================
-// LEADERBOARD VERSION REQUIREMENTS
-// Only servers running these versions (or newer) are included in the leaderboard
-// =============================================================================
-const LEADERBOARD_MIN_ZEBRA_VERSION: &str = "4.0.0";
-const LEADERBOARD_MIN_LWD_VERSION: &str = "0.4.18";
-const LEADERBOARD_MIN_ZAINO_VERSION: &str = "0.1.2";
-
-// =============================================================================
 // MINIMUM SUPPORTED NODE VERSIONS
 // ZEC nodes below these are flagged "Outdated" and hidden unless "Show Outdated" is on
 // =============================================================================
@@ -67,24 +59,6 @@ struct IndexTemplate {
     show_outdated: bool,
     outdated_count: usize,
     onion_count: usize,
-    historical_at: Option<String>,
-}
-
-#[derive(Clone)]
-struct LeaderboardEntry {
-    rank: usize,
-    server: ServerInfo,
-}
-
-#[derive(Template)]
-#[template(path = "leaderboard.html")]
-struct LeaderboardTemplate {
-    entries: Vec<LeaderboardEntry>,
-    current_network: &'static str,
-    percentile_height: u64,
-    min_zebra_version: &'static str,
-    min_lwd_version: &'static str,
-    min_zaino_version: &'static str,
     historical_at: Option<String>,
 }
 
@@ -977,53 +951,6 @@ impl ServerInfo {
             true // unrecognized node type → treat as outdated
         }
     }
-
-    /// Check if this server meets the minimum version requirements for the leaderboard
-    fn meets_leaderboard_version_requirements(&self) -> bool {
-        // Check Zebra version from zcashd_subversion (e.g., "/Zebra:3.1.0/")
-        let zebra_ok = if let Some(subversion) = self.extra.get("zcashd_subversion") {
-            if let Some(subversion_str) = subversion.as_str() {
-                // Extract version from format like "/Zebra:3.1.0/"
-                if let Some(version_part) = subversion_str
-                    .strip_prefix("/Zebra:")
-                    .and_then(|s| s.strip_suffix('/'))
-                {
-                    version_meets_minimum(version_part, LEADERBOARD_MIN_ZEBRA_VERSION)
-                } else {
-                    false // Not a Zebra node
-                }
-            } else {
-                false
-            }
-        } else {
-            false // No subversion info, can't verify Zebra
-        };
-
-        if !zebra_ok {
-            return false;
-        }
-
-        // Check LWD version
-        let lwd_version = self.server_version.as_deref().unwrap_or("");
-
-        // Check if this is a Zaino server
-        let is_zaino = self
-            .extra
-            .get("vendor")
-            .and_then(|v| v.as_str())
-            .map(|v| v.contains("Zaino"))
-            .unwrap_or(false);
-
-        if is_zaino {
-            // For Zaino, check against LEADERBOARD_MIN_ZAINO_VERSION
-            let clean_version = lwd_version.trim_start_matches('v');
-            version_meets_minimum(clean_version, LEADERBOARD_MIN_ZAINO_VERSION)
-        } else {
-            // For regular LWD, check against LEADERBOARD_MIN_LWD_VERSION
-            let clean_version = lwd_version.trim_start_matches('v');
-            version_meets_minimum(clean_version, LEADERBOARD_MIN_LWD_VERSION)
-        }
-    }
 }
 
 /// Compare two semantic version strings, returns true if `version` >= `minimum`
@@ -1056,17 +983,6 @@ fn version_meets_minimum(version: &str, minimum: &str) -> bool {
     }
 
     true // Equal versions
-}
-
-/// Extract primary domain from a hostname (e.g., "zaino.example.com" -> "example.com")
-/// Used to deduplicate servers run by the same operator under different subdomains.
-fn get_primary_domain(hostname: &str) -> String {
-    let parts: Vec<&str> = hostname.split('.').collect();
-    if parts.len() >= 2 {
-        format!("{}.{}", parts[parts.len() - 2], parts[parts.len() - 1])
-    } else {
-        hostname.to_string()
-    }
 }
 
 #[derive(Debug)]
@@ -1231,11 +1147,6 @@ struct IndexQuery {
     hide_community: Option<bool>,
     tor_only: Option<bool>,
     show_outdated: Option<bool>,
-    at: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct LeaderboardQuery {
     at: Option<String>,
 }
 
@@ -1803,260 +1714,6 @@ async fn fetch_and_render_network_status(
     Ok(html)
 }
 
-/// Helper function to fetch and render the leaderboard page (top 50 by uptime)
-/// When `at` is provided, queries historical data as of that timestamp.
-async fn fetch_and_render_leaderboard(
-    worker: &Worker,
-    network: &SafeNetwork,
-    at: Option<DateTime<Utc>>,
-) -> Result<String> {
-    // Generate time reference for SQL queries
-    let time_ref = time_reference_sql(at);
-    let upper_bound = if at.is_some() {
-        format!("AND r.checked_at <= {}", time_ref)
-    } else {
-        String::new()
-    };
-    let uptime_upper_bound = if at.is_some() {
-        format!("AND u.time_bucket <= {}", time_ref)
-    } else {
-        String::new()
-    };
-
-    // Query for leaderboard - fetch all candidates, then filter by version and deduplicate
-    let query = format!(
-        r#"
-        WITH latest_results AS (
-            SELECT
-                r.*,
-                ROW_NUMBER() OVER (PARTITION BY r.hostname, r.port ORDER BY r.checked_at DESC) as rn
-            FROM {db}.results r
-            WHERE r.checker_module = '{network}'
-            AND r.checked_at >= {time_ref} - INTERVAL {window} DAY
-            {upper_bound}
-        ),
-        first_seen_per_server AS (
-            SELECT
-                hostname,
-                toString(port) as port,
-                min(checked_at) as first_seen,
-                least(dateDiff('hour', min(checked_at), {time_ref}), 720) / 720.0 as percentage_of_month
-            FROM {db}.results
-            WHERE checker_module = '{network}'
-            AND checked_at <= {time_ref}
-            GROUP BY hostname, port
-        ),
-        uptime_30_day AS (
-            SELECT
-                u.hostname,
-                u.port,
-                (sum(u.online_count) * 100.0 / greatest(sum(u.total_checks), 1)) * fs.percentage_of_month as uptime_percentage
-            FROM {db}.uptime_stats_by_port u
-            LEFT JOIN first_seen_per_server fs ON u.hostname = fs.hostname AND u.port = fs.port
-            WHERE u.time_bucket >= {time_ref} - INTERVAL 30 DAY
-            {uptime_upper_bound}
-            GROUP BY u.hostname, u.port, fs.percentage_of_month
-        )
-        SELECT
-            lr.hostname,
-            lr.port,
-            lr.checked_at,
-            lr.status,
-            lr.ping_ms as ping,
-            lr.response_data,
-            lr.server_version,
-            lr.block_height,
-            lr.error,
-            u30.uptime_percentage as uptime_30_day,
-            t.community
-        FROM latest_results lr
-        LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
-        LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
-        WHERE lr.rn = 1
-        AND u30.uptime_percentage IS NOT NULL
-        AND u30.uptime_percentage > 0
-        ORDER BY u30.uptime_percentage DESC, lr.ping_ms ASC, lr.hostname ASC
-        FORMAT JSONEachRow
-        "#,
-        db = worker.clickhouse.database,
-        network = network.0,
-        window = worker.config.results_window_days,
-        time_ref = time_ref,
-        upper_bound = upper_bound,
-        uptime_upper_bound = uptime_upper_bound,
-    );
-
-    info!(
-        "Executing ClickHouse leaderboard query for network {}",
-        network.0
-    );
-
-    let url_with_params = format!(
-        "{}?max_memory_usage=4000000000&max_bytes_before_external_sort=2000000000",
-        worker.clickhouse.url
-    );
-
-    let response = worker
-        .http_client
-        .post(&url_with_params)
-        .basic_auth(&worker.clickhouse.user, Some(&worker.clickhouse.password))
-        .header("Content-Type", "text/plain")
-        .body(query.clone())
-        .send()
-        .await
-        .map_err(|e| {
-            error!("ClickHouse query error: {}", e);
-            actix_web::error::ErrorInternalServerError("Database query failed")
-        })?;
-
-    let status = response.status();
-    let body = response.text().await.map_err(|e| {
-        error!("Failed to read response body: {}", e);
-        actix_web::error::ErrorInternalServerError("Failed to read database response")
-    })?;
-
-    if !status.is_success() {
-        error!("ClickHouse query failed with status {}: {}", status, body);
-        return Err(actix_web::error::ErrorInternalServerError(
-            "Database query failed",
-        ));
-    }
-
-    // Parse results and build leaderboard entries
-    let mut entries = Vec::new();
-    let mut seen_domains = std::collections::HashSet::new();
-    let mut seen_addresses = std::collections::HashSet::new();
-    let mut rank = 1;
-
-    for line in body.lines() {
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        if let Ok(result) = serde_json::from_str::<serde_json::Value>(line) {
-            let response_data = match result.get("response_data") {
-                Some(Value::String(s)) => s.as_str(),
-                _ => "{}",
-            };
-
-            let cleaned_response_data =
-                validate_and_fix_json(response_data).unwrap_or_else(|| "{}".to_string());
-
-            if let Ok(mut server_info) = serde_json::from_str::<ServerInfo>(&cleaned_response_data)
-            {
-                // Use extracted columns as fallback when response_data is empty/TTL'd
-                // These columns are permanently stored and available for historical queries
-                if server_info.host.is_empty() {
-                    if let Some(hostname) = result.get("hostname").and_then(|v| v.as_str()) {
-                        server_info.host = hostname.to_string();
-                    }
-                }
-                if server_info.port.is_none() {
-                    server_info.port = result
-                        .get("port")
-                        .and_then(|v| v.as_u64())
-                        .map(|p| p as u16);
-                }
-                if server_info.server_version.is_none() {
-                    server_info.server_version = result
-                        .get("server_version")
-                        .and_then(|v| v.as_str())
-                        .filter(|s| !s.is_empty())
-                        .map(|s| s.to_string());
-                }
-                if server_info.height == 0 {
-                    server_info.height = result
-                        .get("block_height")
-                        .and_then(|v| v.as_u64())
-                        .unwrap_or(0);
-                }
-                if server_info.status.is_empty() {
-                    if let Some(status) = result.get("status").and_then(|v| v.as_str()) {
-                        server_info.status = status.to_string();
-                    }
-                }
-                if server_info.ping.is_none() {
-                    server_info.ping = result.get("ping").and_then(|v| v.as_f64());
-                }
-
-                server_info.uptime_30_day = result.get("uptime_30_day").and_then(|v| v.as_f64());
-                server_info.community = result
-                    .get("community")
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(false);
-
-                // Only apply version requirements for current data, not historical views
-                // (version requirements may have changed since the historical date)
-                if at.is_none() && !server_info.meets_leaderboard_version_requirements() {
-                    continue;
-                }
-
-                // Skip entries with no hostname (shouldn't happen but be safe)
-                if server_info.host.is_empty() {
-                    continue;
-                }
-
-                // Exclude infrastructure servers from the leaderboard
-                if server_info.host.ends_with(".zec.rocks") || server_info.host == "zec.rocks" {
-                    continue;
-                }
-
-                // Deduplicate by primary domain (e.g. "zaino.example.com" and "lwd.example.com"
-                // share "example.com") so the same operator only appears once
-                let primary_domain = get_primary_domain(&server_info.host);
-                if !seen_domains.insert(primary_domain) {
-                    continue;
-                }
-
-                // Deduplicate by donation address so the same wallet only appears once
-                if let Some(addr) = server_info
-                    .extra
-                    .get("donation_address")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.trim().is_empty())
-                {
-                    if !seen_addresses.insert(addr.to_string()) {
-                        continue;
-                    }
-                }
-
-                entries.push(LeaderboardEntry {
-                    rank,
-                    server: server_info,
-                });
-                rank += 1;
-            }
-        }
-    }
-
-    // No truncation - show all deduplicated leaderboard-eligible servers
-
-    // Get percentile height for consistency with other pages
-    let percentile_height = entries
-        .iter()
-        .map(|e| e.server.height)
-        .filter(|&h| h > 0)
-        .max()
-        .unwrap_or(0);
-
-    let template = LeaderboardTemplate {
-        entries,
-        current_network: network.0,
-        percentile_height,
-        min_zebra_version: LEADERBOARD_MIN_ZEBRA_VERSION,
-        min_lwd_version: LEADERBOARD_MIN_LWD_VERSION,
-        min_zaino_version: LEADERBOARD_MIN_ZAINO_VERSION,
-        historical_at: format_historical_timestamp(at),
-    };
-
-    let html = template.render().map_err(|e| {
-        error!("Template rendering error: {}", e);
-        actix_web::error::ErrorInternalServerError("Template rendering failed")
-    })?;
-
-    Ok(html)
-}
-
 #[get("/{network}")]
 async fn network_status(
     worker: web::Data<Worker>,
@@ -2143,83 +1800,6 @@ async fn network_status(
             <body>
                 <div class="loading">
                     <p>⏳ Loading network status...</p>
-                    <p style="font-size: 14px; color: #999;">Cache is warming up. This page will refresh automatically.</p>
-                </div>
-            </body>
-            </html>"#,
-        ))
-}
-
-#[get("/{network}/leaderboard")]
-async fn leaderboard(
-    worker: web::Data<Worker>,
-    network: web::Path<String>,
-    query_params: web::Query<LeaderboardQuery>,
-) -> Result<HttpResponse> {
-    let network = SafeNetwork::from_str(&network)
-        .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
-
-    // Parse and validate historical timestamp if provided
-    let historical_at = parse_historical_timestamp(query_params.at.as_deref())
-        .map_err(actix_web::error::ErrorBadRequest)?;
-
-    if let Some(at) = historical_at {
-        validate_timestamp_bounds(at).map_err(actix_web::error::ErrorBadRequest)?;
-    }
-
-    // For historical queries, bypass cache and query ClickHouse directly
-    if historical_at.is_some() {
-        info!(
-            "Historical leaderboard query for {} at {:?}",
-            network.0, historical_at
-        );
-        let html = fetch_and_render_leaderboard(&worker, &network, historical_at).await?;
-        return Ok(HttpResponse::Ok()
-            .content_type("text/html; charset=utf-8")
-            .insert_header(("X-Historical-At", query_params.at.as_deref().unwrap_or("")))
-            .insert_header(("Cache-Control", "no-cache"))
-            .body(html));
-    }
-
-    // Serve from cache
-    let cache_key = format!("{}-leaderboard", network.0);
-
-    let cache = worker.cache.read().await;
-    if let Some(entry) = cache.get(&cache_key) {
-        let cache_age_secs = entry.timestamp.elapsed().as_secs();
-        info!(
-            "Serving {} from cache (age: {}s)",
-            cache_key, cache_age_secs
-        );
-
-        return Ok(HttpResponse::Ok()
-            .content_type("text/html; charset=utf-8")
-            .insert_header(("X-Cache-Age", cache_age_secs.to_string()))
-            .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
-            .body(entry.html.clone()));
-    }
-
-    // Cache miss - waiting for background refresh
-    warn!(
-        "Cache miss for {} - waiting for background refresh",
-        cache_key
-    );
-    Ok(HttpResponse::ServiceUnavailable()
-        .content_type("text/html; charset=utf-8")
-        .body(
-            r#"<!DOCTYPE html>
-            <html>
-            <head>
-                <title>Loading...</title>
-                <meta http-equiv="refresh" content="2">
-                <style>
-                    body { font-family: sans-serif; text-align: center; padding: 50px; }
-                    .loading { font-size: 24px; color: #666; }
-                </style>
-            </head>
-            <body>
-                <div class="loading">
-                    <p>Loading leaderboard...</p>
                     <p style="font-size: 14px; color: #999;">Cache is warming up. This page will refresh automatically.</p>
                 </div>
             </body>
@@ -2482,11 +2062,9 @@ async fn server_detail(
 
 #[derive(Debug, Deserialize)]
 struct NetworkApiQuery {
-    /// Filter to only show leaderboard-eligible servers (ZEC only)
-    leaderboard: Option<bool>,
     /// Historical timestamp for time-travel queries
     at: Option<String>,
-    /// Optional limit on number of servers returned (unlimited by default for leaderboard)
+    /// Optional limit on number of servers returned
     limit: Option<usize>,
 }
 
@@ -2495,7 +2073,6 @@ struct NetworkApiQuery {
 async fn fetch_api_json(
     worker: &Worker,
     network: &SafeNetwork,
-    filter_leaderboard: bool,
     historical_at: Option<DateTime<Utc>>,
 ) -> std::result::Result<String, String> {
     // Generate time reference for SQL queries
@@ -2563,9 +2140,7 @@ async fn fetch_api_json(
             LEFT JOIN uptime_window u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
             LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
             WHERE lr.rn = 1
-            {leaderboard_filter}
         )
-        {leaderboard_order}
         FORMAT JSONEachRow
         SETTINGS max_execution_time = 10
         "#,
@@ -2575,16 +2150,6 @@ async fn fetch_api_json(
         time_ref = time_ref,
         upper_bound = upper_bound,
         uptime_upper_bound = uptime_upper_bound,
-        leaderboard_filter = if filter_leaderboard {
-            "AND u30.uptime_percentage IS NOT NULL AND u30.uptime_percentage > 0".to_string()
-        } else {
-            String::new()
-        },
-        leaderboard_order = if filter_leaderboard {
-            "ORDER BY uptime_30_day DESC, ping ASC, hostname ASC"
-        } else {
-            ""
-        }
     );
 
     let response = worker
@@ -2648,42 +2213,6 @@ async fn fetch_api_json(
         }
     }
 
-    // Filter for leaderboard-eligible servers if requested (ZEC only)
-    let servers: Vec<ServerInfo> = if filter_leaderboard {
-        let mut seen_domains = std::collections::HashSet::new();
-        let mut seen_addresses = std::collections::HashSet::new();
-        let mut filtered = Vec::new();
-        for s in servers.into_iter() {
-            if s.host.is_empty() {
-                continue;
-            }
-            if s.host.ends_with(".zec.rocks") || s.host == "zec.rocks" {
-                continue;
-            }
-            if historical_at.is_none() && !s.meets_leaderboard_version_requirements() {
-                continue;
-            }
-            let primary_domain = get_primary_domain(&s.host);
-            if !seen_domains.insert(primary_domain) {
-                continue;
-            }
-            if let Some(addr) = s
-                .extra
-                .get("donation_address")
-                .and_then(|v| v.as_str())
-                .filter(|a| !a.trim().is_empty())
-            {
-                if !seen_addresses.insert(addr.to_string()) {
-                    continue;
-                }
-            }
-            filtered.push(s);
-        }
-        filtered
-    } else {
-        servers
-    };
-
     let api_servers: Vec<ApiServerInfo> = servers
         .into_iter()
         .map(|server| {
@@ -2741,7 +2270,6 @@ async fn network_api(
 ) -> Result<HttpResponse> {
     let network = SafeNetwork::from_str(&network)
         .ok_or_else(|| actix_web::error::ErrorBadRequest("Invalid network"))?;
-    let filter_leaderboard = query_params.leaderboard.unwrap_or(false) && network.0 == "zec";
 
     // Parse and validate historical timestamp if provided
     let historical_at = parse_historical_timestamp(query_params.at.as_deref())
@@ -2753,7 +2281,7 @@ async fn network_api(
 
     // For historical or limited queries, bypass cache and query directly
     if historical_at.is_some() || query_params.limit.is_some() {
-        let json = fetch_api_json(&worker, &network, filter_leaderboard, historical_at)
+        let json = fetch_api_json(&worker, &network, historical_at)
             .await
             .map_err(|e| {
                 error!("{}", e);
@@ -2769,15 +2297,7 @@ async fn network_api(
     }
 
     // For current (non-historical) requests, serve from cache
-    let cache_key = format!(
-        "{}-api{}",
-        network.0,
-        if filter_leaderboard {
-            "-leaderboard"
-        } else {
-            ""
-        }
-    );
+    let cache_key = format!("{}-api", network.0);
 
     let cache = worker.cache.read().await;
     if let Some(entry) = cache.get(&cache_key) {
@@ -2795,14 +2315,14 @@ async fn network_api(
     }
     drop(cache);
 
-    // Cache miss — happens on first startup or for uncached leaderboard variant.
+    // Cache miss — happens on first startup.
     // Fall through to direct query so we don't return 503 for the API.
     warn!(
         "Cache miss for {} - querying ClickHouse directly",
         cache_key
     );
 
-    match fetch_api_json(&worker, &network, filter_leaderboard, None).await {
+    match fetch_api_json(&worker, &network, None).await {
         Ok(json) => {
             // Populate cache for next request
             let mut cache = worker.cache.write().await;
@@ -3995,42 +3515,13 @@ async fn cache_refresh_task(worker: Worker) {
         }
     }
 
-    // Populate leaderboard cache for ZEC only
-    if let Some(network) = SafeNetwork::from_str("zec") {
-        let cache_key = "zec-leaderboard".to_string();
-        let query_start = std::time::Instant::now();
-
-        let result = fetch_and_render_leaderboard(&worker, &network, None).await;
-        match result {
-            Ok(html) => {
-                let mut cache = worker.cache.write().await;
-                cache.insert(
-                    cache_key.clone(),
-                    CacheEntry {
-                        html,
-                        timestamp: std::time::Instant::now(),
-                    },
-                );
-                info!(
-                    "Cache refreshed for {} in {:?}",
-                    cache_key,
-                    query_start.elapsed()
-                );
-            }
-            Err(e) => {
-                error!("Failed to refresh cache for {}: {}", cache_key, e);
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
-    }
-
     // Populate API JSON cache for each network
     for network_str in &networks {
         if let Some(network) = SafeNetwork::from_str(network_str) {
             let cache_key = format!("{}-api", network_str);
             let query_start = std::time::Instant::now();
 
-            match fetch_api_json(&worker, &network, false, None).await {
+            match fetch_api_json(&worker, &network, None).await {
                 Ok(json) => {
                     let mut cache = worker.cache.write().await;
                     cache.insert(
@@ -4052,34 +3543,6 @@ async fn cache_refresh_task(worker: Worker) {
             }
             tokio::time::sleep(Duration::from_millis(500)).await;
         }
-    }
-
-    // Populate ZEC leaderboard API cache
-    if let Some(network) = SafeNetwork::from_str("zec") {
-        let cache_key = "zec-api-leaderboard".to_string();
-        let query_start = std::time::Instant::now();
-
-        match fetch_api_json(&worker, &network, true, None).await {
-            Ok(json) => {
-                let mut cache = worker.cache.write().await;
-                cache.insert(
-                    cache_key.clone(),
-                    CacheEntry {
-                        html: json,
-                        timestamp: std::time::Instant::now(),
-                    },
-                );
-                info!(
-                    "Cache refreshed for {} in {:?}",
-                    cache_key,
-                    query_start.elapsed()
-                );
-            }
-            Err(e) => {
-                error!("Failed to refresh cache for {}: {}", cache_key, e);
-            }
-        }
-        tokio::time::sleep(Duration::from_millis(500)).await;
     }
 
     info!(
@@ -4148,42 +3611,13 @@ async fn cache_refresh_task(worker: Worker) {
             }
         }
 
-        // Refresh leaderboard cache for ZEC only
-        if let Some(network) = SafeNetwork::from_str("zec") {
-            let cache_key = "zec-leaderboard".to_string();
-            let query_start = std::time::Instant::now();
-
-            let result = fetch_and_render_leaderboard(&worker, &network, None).await;
-            match result {
-                Ok(html) => {
-                    let mut cache = worker.cache.write().await;
-                    cache.insert(
-                        cache_key.clone(),
-                        CacheEntry {
-                            html,
-                            timestamp: std::time::Instant::now(),
-                        },
-                    );
-                    info!(
-                        "Cache refreshed for {} in {:?}",
-                        cache_key,
-                        query_start.elapsed()
-                    );
-                }
-                Err(e) => {
-                    error!("Failed to refresh cache for {}: {}", cache_key, e);
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
-        }
-
         // Refresh API JSON cache for each network
         for network_str in &networks {
             if let Some(network) = SafeNetwork::from_str(network_str) {
                 let cache_key = format!("{}-api", network_str);
                 let query_start = std::time::Instant::now();
 
-                match fetch_api_json(&worker, &network, false, None).await {
+                match fetch_api_json(&worker, &network, None).await {
                     Ok(json) => {
                         let mut cache = worker.cache.write().await;
                         cache.insert(
@@ -4206,34 +3640,6 @@ async fn cache_refresh_task(worker: Worker) {
                 }
                 tokio::time::sleep(Duration::from_millis(500)).await;
             }
-        }
-
-        // Refresh ZEC leaderboard API cache
-        if let Some(network) = SafeNetwork::from_str("zec") {
-            let cache_key = "zec-api-leaderboard".to_string();
-            let query_start = std::time::Instant::now();
-
-            match fetch_api_json(&worker, &network, true, None).await {
-                Ok(json) => {
-                    let mut cache = worker.cache.write().await;
-                    cache.insert(
-                        cache_key.clone(),
-                        CacheEntry {
-                            html: json,
-                            timestamp: std::time::Instant::now(),
-                        },
-                    );
-                    info!(
-                        "Cache refreshed for {} in {:?}",
-                        cache_key,
-                        query_start.elapsed()
-                    );
-                }
-                Err(e) => {
-                    error!("Failed to refresh cache for {}: {}", cache_key, e);
-                }
-            }
-            tokio::time::sleep(Duration::from_millis(500)).await;
         }
 
         info!(
@@ -4296,7 +3702,6 @@ pub async fn run() -> std::io::Result<()> {
             .service(fs::Files::new("/static", "./static"))
             .service(root)
             .service(network_status)
-            .service(leaderboard)
             .service(server_detail)
             .service(network_api)
             .service(get_jobs)
