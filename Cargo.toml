@@ -53,7 +53,7 @@ http = "1.2"
 hyper-util = { version = "0.1", features = ["tokio"] }
 
 # Zcash
-zcash_client_backend = { version = "0.21", features = ["lightwalletd-tonic-tls-webpki-roots", "orchard"] }
+zcash_client_backend = { version = "0.23", features = ["lightwalletd-tonic-tls-webpki-roots", "orchard"] }
 
 # Bitcoin/Electrum
 bdk = { version = "0.30", features = ["electrum"] }
