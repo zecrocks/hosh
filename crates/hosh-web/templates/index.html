@@ -7,21 +7,30 @@
         <div class="mb-3">
             <div class="btn-group me-2" role="group" aria-label="Tor filter">
                 {% if tor_only %}
-                <a href="/{{ current_network }}{% if hide_community %}?hide_community=true{% endif %}{% if historical_at.is_some() %}{% if hide_community %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary">All Servers</a>
-                <a href="/{{ current_network }}?tor_only=true{% if hide_community %}&hide_community=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary active">Tor Only</a>
+                <a href="/{{ current_network }}{% if hide_community %}?hide_community=true{% endif %}{% if show_outdated %}{% if hide_community %}&{% else %}?{% endif %}show_outdated=true{% endif %}{% if historical_at.is_some() %}{% if hide_community || show_outdated %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary">All Servers</a>
+                <a href="/{{ current_network }}?tor_only=true{% if hide_community %}&hide_community=true{% endif %}{% if show_outdated %}&show_outdated=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary active">Tor Only</a>
                 {% else %}
-                <a href="/{{ current_network }}{% if hide_community %}?hide_community=true{% endif %}{% if historical_at.is_some() %}{% if hide_community %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary active">All Servers</a>
-                <a href="/{{ current_network }}?tor_only=true{% if hide_community %}&hide_community=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary">Tor Only</a>
+                <a href="/{{ current_network }}{% if hide_community %}?hide_community=true{% endif %}{% if show_outdated %}{% if hide_community %}&{% else %}?{% endif %}show_outdated=true{% endif %}{% if historical_at.is_some() %}{% if hide_community || show_outdated %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary active">All Servers</a>
+                <a href="/{{ current_network }}?tor_only=true{% if hide_community %}&hide_community=true{% endif %}{% if show_outdated %}&show_outdated=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary">Tor Only</a>
                 {% endif %}
             </div>
             {% if current_network == "zec" %}
             <div class="btn-group" role="group" aria-label="Community filter">
                 {% if hide_community %}
-                <a href="/{{ current_network }}{% if tor_only %}?tor_only=true{% endif %}{% if historical_at.is_some() %}{% if tor_only %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary">Show All</a>
-                <a href="/{{ current_network }}?hide_community=true{% if tor_only %}&tor_only=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary active">Hide Community</a>
+                <a href="/{{ current_network }}{% if tor_only %}?tor_only=true{% endif %}{% if show_outdated %}{% if tor_only %}&{% else %}?{% endif %}show_outdated=true{% endif %}{% if historical_at.is_some() %}{% if tor_only || show_outdated %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary">Show All</a>
+                <a href="/{{ current_network }}?hide_community=true{% if tor_only %}&tor_only=true{% endif %}{% if show_outdated %}&show_outdated=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary active">Hide Community</a>
                 {% else %}
-                <a href="/{{ current_network }}{% if tor_only %}?tor_only=true{% endif %}{% if historical_at.is_some() %}{% if tor_only %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary active">Show All</a>
-                <a href="/{{ current_network }}?hide_community=true{% if tor_only %}&tor_only=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary">Hide Community</a>
+                <a href="/{{ current_network }}{% if tor_only %}?tor_only=true{% endif %}{% if show_outdated %}{% if tor_only %}&{% else %}?{% endif %}show_outdated=true{% endif %}{% if historical_at.is_some() %}{% if tor_only || show_outdated %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary active">Show All</a>
+                <a href="/{{ current_network }}?hide_community=true{% if tor_only %}&tor_only=true{% endif %}{% if show_outdated %}&show_outdated=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary">Hide Community</a>
+                {% endif %}
+            </div>
+            <div class="btn-group" role="group" aria-label="Outdated filter">
+                {% if show_outdated %}
+                <a href="/{{ current_network }}{% if hide_community %}?hide_community=true{% endif %}{% if tor_only %}{% if hide_community %}&{% else %}?{% endif %}tor_only=true{% endif %}{% if historical_at.is_some() %}{% if hide_community || tor_only %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary">Hide Outdated</a>
+                <a href="/{{ current_network }}?show_outdated=true{% if hide_community %}&hide_community=true{% endif %}{% if tor_only %}&tor_only=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary active">Show Outdated</a>
+                {% else %}
+                <a href="/{{ current_network }}{% if hide_community %}?hide_community=true{% endif %}{% if tor_only %}{% if hide_community %}&{% else %}?{% endif %}tor_only=true{% endif %}{% if historical_at.is_some() %}{% if hide_community || tor_only %}&{% else %}?{% endif %}at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-secondary active">Hide Outdated</a>
+                <a href="/{{ current_network }}?show_outdated=true{% if hide_community %}&hide_community=true{% endif %}{% if tor_only %}&tor_only=true{% endif %}{% if historical_at.is_some() %}&at={{ historical_at.as_ref().unwrap()|urlencode }}{% endif %}" class="btn btn-outline-primary">Show Outdated</a>
                 {% endif %}
             </div>
             {% endif %}
@@ -34,6 +43,9 @@
                     Showing {{ total_count }} servers ({{ community_count }} community servers hidden)
                 {% else %}
                     Showing all {{ total_count }} servers
+                {% endif %}
+                {% if current_network == "zec" && !show_outdated && outdated_count > 0 %}
+                    ({{ outdated_count }} outdated servers hidden)
                 {% endif %}
             </span>
         </div>
@@ -78,7 +90,7 @@
                                 {% if server.height > 0 %}Online{% else %}Offline{% endif %}
                             </td>
                             <td>{{ server.formatted_uptime_30_day() }}</td>
-                            <td style="white-space: pre-line">{{ server.formatted_version() }}</td>
+                            <td style="white-space: pre-line">{{ server.formatted_version() }}{% if current_network == "zec" && server.is_outdated() %}<br><span class="badge bg-warning text-dark" title="Below minimum supported version (Zebra ≥ 5.0.0 / zcashd ≥ 6.20.0)">Outdated</span>{% endif %}</td>
                             <td>{{ server.formatted_last_updated() }}</td>
                             <td>{{ server.formatted_ping() }}</td>
                         </tr>
