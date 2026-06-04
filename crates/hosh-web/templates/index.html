@@ -90,7 +90,7 @@
                                 {% if server.height > 0 %}Online{% else %}Offline{% endif %}
                             </td>
                             <td>{{ server.formatted_uptime_30_day() }}</td>
-                            <td style="white-space: pre-line">{{ server.formatted_version() }}{% if current_network == "zec" && server.is_outdated() %}<br><span class="badge bg-warning text-dark" title="Below minimum supported version (Zebra ≥ 5.0.0 / zcashd ≥ 6.20.0)">Outdated</span>{% endif %}</td>
+                            <td style="white-space: pre-line">{{ server.formatted_version() }}{% if current_network == "zec" && server.is_outdated() %}<br><span class="badge bg-secondary-subtle text-secondary-emphasis border border-secondary-subtle" title="Below minimum supported version (Zebra ≥ 5.0.0 / zcashd ≥ 6.20.0)">Outdated</span>{% endif %}</td>
                             <td>{{ server.formatted_last_updated() }}</td>
                             <td>{{ server.formatted_ping() }}</td>
                         </tr>
