@@ -237,8 +237,6 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("lwt.notmyf.art", 9067, true),
     ("zec.indahouse.me", 443, true),
     ("eu.zec.stardust.rest", 443, true),
-    ("eu2.zec.stardust.rest", 443, true),
-    ("jp.zec.stardust.rest", 443, true),
     ("us.zec.stardust.rest", 443, true),
     ("node.zecwhales.online", 443, true),
     ("lwd.zecbhave.uk", 443, true),
