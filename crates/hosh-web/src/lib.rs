@@ -31,6 +31,16 @@ use tracing::{error, info, warn};
 const MIN_SUPPORTED_ZEBRA_VERSION: &str = "5.0.0";
 const MIN_SUPPORTED_ZCASHD_VERSION: &str = "6.20.0";
 
+// Hosts operated by zec.rocks whose hostnames don't match the *.zec.rocks
+// pattern (i.e. Tor hidden services). Clearnet zec.rocks hosts are matched by
+// pattern in ServerInfo::is_zecrocks(); these onions must be listed explicitly.
+// Source of truth: the official (community=false) onion entries in
+// crates/hosh-discovery/src/lib.rs. Keep in sync when those change.
+const ZECROCKS_ONION_HOSTS: &[&str] = &[
+    "kxn4wla7i4rczcpn7ljbtmtq4gd4xhtx6f6hxpze7qbfmu66atwsneqd.onion",
+    "vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion",
+];
+
 mod filters {
     use askama::Result;
     use serde_json::Value;
@@ -934,6 +944,17 @@ impl ServerInfo {
         self.host.ends_with(".onion")
     }
 
+    /// Whether this server is operated by zec.rocks. Matches `zec.rocks` and any
+    /// `*.zec.rocks` subdomain by hostname pattern, plus their Tor hidden
+    /// services (whose `.onion` hostnames carry no operator signal) via the
+    /// explicit ZECROCKS_ONION_HOSTS list. Used by the secret
+    /// `?operator=zecrocks` param.
+    fn is_zecrocks(&self) -> bool {
+        self.host == "zec.rocks"
+            || self.host.ends_with(".zec.rocks")
+            || ZECROCKS_ONION_HOSTS.contains(&self.host.as_str())
+    }
+
     /// Whether this ZEC node is running below the minimum supported version.
     /// Zebra must be >= MIN_SUPPORTED_ZEBRA_VERSION, zcashd (MagicBean) must be
     /// >= MIN_SUPPORTED_ZCASHD_VERSION. Missing or unrecognized subversion → outdated.
@@ -1147,6 +1168,9 @@ struct IndexQuery {
     hide_community: Option<bool>,
     tor_only: Option<bool>,
     show_outdated: Option<bool>,
+    /// Secret operator filter. `operator=zecrocks` shows only zec.rocks-operated
+    /// servers (including their onions and outdated ones).
+    operator: Option<String>,
     at: Option<String>,
 }
 
@@ -1239,6 +1263,7 @@ async fn fetch_and_render_network_status(
     hide_community: bool,
     tor_only: bool,
     show_outdated: bool,
+    operator: Option<&str>,
     at: Option<DateTime<Utc>>,
 ) -> Result<String> {
     // Generate time reference for SQL queries
@@ -1679,10 +1704,18 @@ async fn fetch_and_render_network_status(
         0
     };
 
+    // Secret operator filter: `?operator=zecrocks` shows only zec.rocks-operated
+    // servers (clearnet + onion), including outdated ones (overrides the
+    // show_outdated, hide_community and tor_only filters).
+    let zecrocks_only = matches!(operator, Some("zecrocks"));
+
     // Filter servers based on hide_community, tor_only, and show_outdated flags
     let filtered_servers = servers
         .into_iter()
         .filter(|s| {
+            if zecrocks_only {
+                return s.is_zecrocks();
+            }
             let passes_community_filter = !hide_community || !s.is_community();
             let passes_tor_filter = !tor_only || s.is_onion();
             let passes_outdated_filter = show_outdated || !is_zec || !s.is_outdated();
@@ -1726,6 +1759,7 @@ async fn network_status(
     let hide_community = query_params.hide_community.unwrap_or(false);
     let tor_only = query_params.tor_only.unwrap_or(false);
     let show_outdated = query_params.show_outdated.unwrap_or(false);
+    let operator = query_params.operator.as_deref();
 
     // Parse and validate historical timestamp if provided
     let historical_at = parse_historical_timestamp(query_params.at.as_deref())
@@ -1735,15 +1769,21 @@ async fn network_status(
         validate_timestamp_bounds(at).map_err(actix_web::error::ErrorBadRequest)?;
     }
 
-    // For historical queries, bypass cache and query ClickHouse directly
-    if historical_at.is_some() {
-        info!("Historical query for {} at {:?}", network.0, historical_at);
+    // For historical queries, and secret operator views (e.g. ?operator=zecrocks),
+    // bypass the pre-warmed cache and query ClickHouse directly. These are
+    // low-traffic and not part of the warmed cache key set.
+    if historical_at.is_some() || operator.is_some() {
+        info!(
+            "Direct query for {} at {:?} operator={:?}",
+            network.0, historical_at, operator
+        );
         let html = fetch_and_render_network_status(
             &worker,
             &network,
             hide_community,
             tor_only,
             show_outdated,
+            operator,
             historical_at,
         )
         .await?;
@@ -3481,6 +3521,7 @@ async fn cache_refresh_task(worker: Worker) {
                             hide_community,
                             tor_only,
                             show_outdated,
+                            None, // No operator filter for cache refresh
                             None, // No historical timestamp for cache refresh
                         )
                         .await;
@@ -3576,6 +3617,7 @@ async fn cache_refresh_task(worker: Worker) {
                                 hide_community,
                                 tor_only,
                                 show_outdated,
+                                None, // No operator filter for cache refresh
                                 None, // No historical timestamp for cache refresh
                             )
                             .await;
