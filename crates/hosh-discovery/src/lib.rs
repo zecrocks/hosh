@@ -80,6 +80,33 @@ impl ClickHouseConfig {
         Ok(result.trim().parse::<i64>()? > 0)
     }
 
+    /// Remove ZEC targets that are no longer present in the static `ZEC_SERVERS` list.
+    ///
+    /// This makes the static list authoritative: deleting an entry from `ZEC_SERVERS`
+    /// and redeploying is enough to drop it from the dashboard. User-submitted targets
+    /// (`user_submitted = true`) are preserved, since they don't originate from this list.
+    async fn cleanup_stale_targets(
+        &self,
+        current: &[(&str, u16, bool)],
+    ) -> Result<(), Box<dyn Error>> {
+        // Build the set of (hostname, port) tuples that should remain.
+        let keep = current
+            .iter()
+            .map(|(host, port, _)| format!("('{}', {})", host, port))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        // ClickHouse lightweight delete: remove any zec target not in the current list,
+        // but never touch user-submitted servers.
+        let query = format!(
+            "DELETE FROM {}.targets WHERE module = 'zec' AND user_submitted = false AND (hostname, port) NOT IN ({})",
+            self.database, keep
+        );
+        self.execute_query(&query).await?;
+        info!("Cleaned up stale ZEC targets not in the static list");
+        Ok(())
+    }
+
     async fn insert_target(
         &self,
         module: &str,
@@ -407,6 +434,11 @@ async fn update_servers(
         } else {
             info!("ZEC server {}:{} already exists, skipping", host, port);
         }
+    }
+
+    // Remove any ZEC targets that have been dropped from the static list.
+    if let Err(e) = clickhouse.cleanup_stale_targets(ZEC_SERVERS).await {
+        error!("Failed to clean up stale ZEC targets: {}", e);
     }
 
     // Process BTC servers

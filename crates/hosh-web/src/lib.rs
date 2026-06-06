@@ -1330,7 +1330,9 @@ async fn fetch_and_render_network_status(
         FROM latest_results lr
         LEFT JOIN uptime_30_day u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
         LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
-        WHERE lr.rn = 1
+        -- Only show servers that still have a registered target row, so removing a
+        -- target hides it from the list immediately (results are preserved).
+        WHERE lr.rn = 1 AND t.hostname != ''
         FORMAT JSONEachRow
         "#,
         db = worker.clickhouse.database,
@@ -2179,7 +2181,9 @@ async fn fetch_api_json(
             FROM latest_results lr
             LEFT JOIN uptime_window u30 ON lr.hostname = u30.hostname AND toString(lr.port) = u30.port
             LEFT JOIN {db}.targets t ON lr.hostname = t.hostname AND lr.port = t.port AND lr.checker_module = t.module
-            WHERE lr.rn = 1
+            -- Only show servers that still have a registered target row, so removing a
+            -- target hides it from the list immediately (results are preserved).
+            WHERE lr.rn = 1 AND t.hostname != ''
         )
         FORMAT JSONEachRow
         SETTINGS max_execution_time = 10
