@@ -1147,6 +1147,10 @@ struct ApiServerInfo {
     online: bool,
     community: bool,
     height: u64,
+    /// "main" or "test", as self-reported by the server (lightwalletd
+    /// chain_name). Absent when the server doesn't report one (BTC Electrum).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    chain: Option<String>,
     uptime_30d: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     first_seen: Option<String>,
@@ -1154,6 +1158,10 @@ struct ApiServerInfo {
     lightwallet_server_version: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     node_version: Option<String>,
+    /// Consensus branch ID of the current network upgrade, as reported by
+    /// lightwalletd. Lets clients detect servers stuck on an old upgrade.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    consensus_branch_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     donation_address: Option<String>,
 }
@@ -2108,6 +2116,35 @@ struct NetworkApiQuery {
     at: Option<String>,
     /// Optional limit on number of servers returned
     limit: Option<usize>,
+    /// Filter servers by chain: "main"/"mainnet" or "test"/"testnet"
+    chain: Option<String>,
+}
+
+/// Normalize a `chain` query param to the chain_name values servers report
+/// ("main"/"test"), accepting the common "mainnet"/"testnet" spellings too.
+fn parse_chain_filter(chain: Option<&str>) -> std::result::Result<Option<&'static str>, String> {
+    match chain {
+        None => Ok(None),
+        Some("main") | Some("mainnet") => Ok(Some("main")),
+        Some("test") | Some("testnet") => Ok(Some("test")),
+        Some(other) => Err(format!(
+            "Invalid chain '{}': expected main, mainnet, test, or testnet",
+            other
+        )),
+    }
+}
+
+/// Filter a serialized API response down to servers on the given chain.
+/// Servers that don't report a chain (e.g. BTC Electrum) count as mainnet.
+fn filter_api_json_by_chain(json: &str, chain: &str) -> std::result::Result<String, String> {
+    let mut value: serde_json::Value =
+        serde_json::from_str(json).map_err(|e| format!("Failed to parse API JSON: {}", e))?;
+
+    if let Some(servers) = value.get_mut("servers").and_then(|s| s.as_array_mut()) {
+        servers.retain(|s| s.get("chain").and_then(|c| c.as_str()).unwrap_or("main") == chain);
+    }
+
+    serde_json::to_string(&value).map_err(|e| format!("Failed to serialize API JSON: {}", e))
 }
 
 /// Fetch and serialize the JSON API response for a network.
@@ -2274,6 +2311,12 @@ async fn fetch_api_json(
                 online: server.is_online(),
                 community: server.community,
                 height: server.height,
+                chain: server
+                    .extra
+                    .get("chain_name")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string()),
                 uptime_30d: server.uptime_30_day.map(|p| p / 100.0),
                 first_seen: server
                     .extra
@@ -2290,6 +2333,12 @@ async fn fetch_api_json(
                     "btc" => server.server_version.clone(),
                     _ => None,
                 },
+                consensus_branch_id: server
+                    .extra
+                    .get("consensus_branch_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.trim().is_empty())
+                    .map(|s| s.to_string()),
                 donation_address: server
                     .extra
                     .get("donation_address")
@@ -2323,6 +2372,9 @@ async fn network_api(
         validate_timestamp_bounds(at).map_err(actix_web::error::ErrorBadRequest)?;
     }
 
+    let chain_filter = parse_chain_filter(query_params.chain.as_deref())
+        .map_err(actix_web::error::ErrorBadRequest)?;
+
     // For historical or limited queries, bypass cache and query directly
     if historical_at.is_some() || query_params.limit.is_some() {
         let json = fetch_api_json(&worker, &network, historical_at)
@@ -2333,6 +2385,12 @@ async fn network_api(
                     serde_json::json!({"error": "Database query failed"}).to_string(),
                 )
             })?;
+
+        let json = match chain_filter {
+            Some(chain) => filter_api_json_by_chain(&json, chain)
+                .map_err(actix_web::error::ErrorInternalServerError)?,
+            None => json,
+        };
 
         return Ok(HttpResponse::Ok()
             .content_type("application/json")
@@ -2351,11 +2409,17 @@ async fn network_api(
             cache_key, cache_age_secs
         );
 
+        let json = match chain_filter {
+            Some(chain) => filter_api_json_by_chain(&entry.html, chain)
+                .map_err(actix_web::error::ErrorInternalServerError)?,
+            None => entry.html.clone(),
+        };
+
         return Ok(HttpResponse::Ok()
             .content_type("application/json")
             .insert_header(("X-Cache-Age", cache_age_secs.to_string()))
             .insert_header(("Cache-Control", "public, max-age=10, s-maxage=10"))
-            .body(entry.html.clone()));
+            .body(json));
     }
     drop(cache);
 
@@ -2368,7 +2432,7 @@ async fn network_api(
 
     match fetch_api_json(&worker, &network, None).await {
         Ok(json) => {
-            // Populate cache for next request
+            // Populate cache for next request (always unfiltered)
             let mut cache = worker.cache.write().await;
             cache.insert(
                 cache_key,
@@ -2377,6 +2441,12 @@ async fn network_api(
                     timestamp: std::time::Instant::now(),
                 },
             );
+
+            let json = match chain_filter {
+                Some(chain) => filter_api_json_by_chain(&json, chain)
+                    .map_err(actix_web::error::ErrorInternalServerError)?,
+                None => json,
+            };
 
             Ok(HttpResponse::Ok()
                 .content_type("application/json")
@@ -3132,6 +3202,51 @@ async fn calculate_uptime_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_parse_chain_filter() {
+        assert_eq!(parse_chain_filter(None), Ok(None));
+        assert_eq!(parse_chain_filter(Some("main")), Ok(Some("main")));
+        assert_eq!(parse_chain_filter(Some("mainnet")), Ok(Some("main")));
+        assert_eq!(parse_chain_filter(Some("test")), Ok(Some("test")));
+        assert_eq!(parse_chain_filter(Some("testnet")), Ok(Some("test")));
+        assert!(parse_chain_filter(Some("regtest")).is_err());
+        assert!(parse_chain_filter(Some("")).is_err());
+    }
+
+    #[test]
+    fn test_filter_api_json_by_chain() {
+        let json = r#"{"servers":[
+            {"hostname":"a.example.com","chain":"main"},
+            {"hostname":"b.example.com","chain":"test"},
+            {"hostname":"c.example.com"}
+        ]}"#;
+
+        // Mainnet filter keeps explicit "main" and servers without a chain key
+        let filtered = filter_api_json_by_chain(json, "main").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+        let hosts: Vec<&str> = value["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["hostname"].as_str().unwrap())
+            .collect();
+        assert_eq!(hosts, vec!["a.example.com", "c.example.com"]);
+
+        // Testnet filter keeps only explicit "test"
+        let filtered = filter_api_json_by_chain(json, "test").unwrap();
+        let value: serde_json::Value = serde_json::from_str(&filtered).unwrap();
+        let hosts: Vec<&str> = value["servers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["hostname"].as_str().unwrap())
+            .collect();
+        assert_eq!(hosts, vec!["b.example.com"]);
+
+        // Invalid JSON is an error, not a panic
+        assert!(filter_api_json_by_chain("not json", "main").is_err());
+    }
 
     #[test]
     fn test_clean_error_message() {
