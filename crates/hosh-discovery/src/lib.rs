@@ -341,6 +341,7 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
         443,
         true,
     ),
+    ("marinade.duckdns.org", 443, true),
 ];
 
 #[derive(Debug, Deserialize)]
