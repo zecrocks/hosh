@@ -167,6 +167,7 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zec.bitchat.channel", 8443, true),
     ("zaino.netstable.stream", 443, true),
     ("chmodas.org", 443, true),
+    ("zcash.rotko.net", 443, true), // zidecar (Zebra 6.1.0 + zidecar v0.8.1, --frost-relay + zidecar-rpc + lwd)
     ("lightwallet.netstable.stream", 9067, true),
     ("lwal.podev.name", 443, true),
     ("lwal.podev.name", 9067, true),
