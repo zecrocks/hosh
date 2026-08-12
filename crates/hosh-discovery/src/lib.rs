@@ -281,6 +281,8 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("zec-node.cakewallet.com", 443, true),
     ("lwd.forzcash.online", 9067, true),
     ("z3.deepikaw.xyz", 443, true),
+    ("mainnet.lightwalletd-rs-beta.zecdev.org", 443, true),
+    ("testnet.lightwalletd-rs-beta.zecdev.org", 443, true),
     (
         "rqjlg3q7qul4i7ha2je3b4trp4o2xex5kwpxuzw75cltizyiwkh6s4ad.onion",
         443,
