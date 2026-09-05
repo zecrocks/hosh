@@ -76,6 +76,7 @@ struct IndexTemplate {
     hide_community: bool,
     tor_only: bool,
     show_outdated: bool,
+    testnet_only: bool,
     outdated_count: usize,
     onion_count: usize,
     historical_at: Option<String>,
@@ -1185,6 +1186,9 @@ struct IndexQuery {
     hide_community: Option<bool>,
     tor_only: Option<bool>,
     show_outdated: Option<bool>,
+    /// Show only testnet servers (ZEC only; ignored for other networks since
+    /// they report no chain and are treated as mainnet).
+    testnet_only: Option<bool>,
     /// Secret operator filter. `operator=zecrocks` shows only zec.rocks-operated
     /// servers (including their onions and outdated ones).
     operator: Option<String>,
@@ -1274,12 +1278,16 @@ async fn root() -> Result<Redirect> {
 
 /// Helper function to fetch and render the network status page
 /// When `at` is provided, queries historical data as of that timestamp.
+// The filter flags are passed individually because they mirror the query params
+// and the cache key one-for-one.
+#[allow(clippy::too_many_arguments)]
 async fn fetch_and_render_network_status(
     worker: &Worker,
     network: &SafeNetwork,
     hide_community: bool,
     tor_only: bool,
     show_outdated: bool,
+    testnet_only: bool,
     operator: Option<&str>,
     at: Option<DateTime<Utc>>,
 ) -> Result<String> {
@@ -1409,6 +1417,7 @@ async fn fetch_and_render_network_status(
             hide_community,
             tor_only,
             show_outdated,
+            testnet_only,
             outdated_count: 0,
             onion_count: 0,
             historical_at: format_historical_timestamp(at),
@@ -1738,7 +1747,11 @@ async fn fetch_and_render_network_status(
             let passes_community_filter = !hide_community || !s.is_community();
             let passes_tor_filter = !tor_only || s.is_onion();
             let passes_outdated_filter = show_outdated || !is_zec || !s.is_outdated();
-            passes_community_filter && passes_tor_filter && passes_outdated_filter
+            let passes_testnet_filter = !testnet_only || s.is_testnet();
+            passes_community_filter
+                && passes_tor_filter
+                && passes_outdated_filter
+                && passes_testnet_filter
         })
         .collect::<Vec<_>>();
 
@@ -1753,6 +1766,7 @@ async fn fetch_and_render_network_status(
         hide_community,
         tor_only,
         show_outdated,
+        testnet_only,
         outdated_count,
         onion_count,
         historical_at: format_historical_timestamp(at),
@@ -1778,6 +1792,10 @@ async fn network_status(
     let hide_community = query_params.hide_community.unwrap_or(false);
     let tor_only = query_params.tor_only.unwrap_or(false);
     let show_outdated = query_params.show_outdated.unwrap_or(false);
+    // Testnet is a ZEC-only concept (other networks report no chain and are
+    // treated as mainnet), so normalize the flag to false elsewhere. This keeps
+    // the cache key aligned with the combinations warmed in cache_refresh_task.
+    let testnet_only = query_params.testnet_only.unwrap_or(false) && network.0 == "zec";
     let operator = query_params.operator.as_deref();
 
     // Parse and validate historical timestamp if provided
@@ -1802,6 +1820,7 @@ async fn network_status(
             hide_community,
             tor_only,
             show_outdated,
+            testnet_only,
             operator,
             historical_at,
         )
@@ -1816,8 +1835,8 @@ async fn network_status(
     // ONLY serve from cache - never trigger ClickHouse queries from user requests
     // This prevents traffic spikes from overwhelming ClickHouse
     let cache_key = format!(
-        "{}-{}-{}-{}",
-        network.0, hide_community, tor_only, show_outdated
+        "{}-{}-{}-{}-{}",
+        network.0, hide_community, tor_only, show_outdated, testnet_only
     );
 
     let cache = worker.cache.read().await;
@@ -3559,6 +3578,54 @@ mod tests {
     }
 
     #[test]
+    fn test_is_testnet_and_toggle_filter() {
+        let make = |chain: Option<&str>| {
+            let mut extra = HashMap::new();
+            if let Some(c) = chain {
+                extra.insert("chain_name".to_string(), Value::String(c.to_string()));
+            }
+            ServerInfo {
+                host: "example.com".to_string(),
+                port: Some(50002),
+                height: 1,
+                status: "online".to_string(),
+                error: None,
+                error_type: None,
+                error_message: None,
+                ping: None,
+                server_version: None,
+                user_submitted: false,
+                community: false,
+                check_id: None,
+                extra,
+                last_updated: None,
+                uptime_30_day: None,
+            }
+        };
+
+        let testnet = make(Some("test"));
+        let mainnet = make(Some("main"));
+        let no_chain = make(None); // e.g. BTC Electrum -> treated as mainnet
+
+        assert!(testnet.is_testnet());
+        assert!(!mainnet.is_testnet());
+        assert!(!no_chain.is_testnet());
+
+        // The dashboard toggle applies `!testnet_only || s.is_testnet()`.
+        let passes = |testnet_only: bool, s: &ServerInfo| !testnet_only || s.is_testnet();
+
+        // Toggle off: everything shows.
+        assert!(passes(false, &testnet));
+        assert!(passes(false, &mainnet));
+        assert!(passes(false, &no_chain));
+
+        // Toggle on: only testnet shows.
+        assert!(passes(true, &testnet));
+        assert!(!passes(true, &mainnet));
+        assert!(!passes(true, &no_chain));
+    }
+
+    #[test]
     fn test_parse_rfc3339_with_nanos() {
         // Test the custom parsing function
         let timestamp = "2025-07-31T21:11:21.472525544Z";
@@ -3632,52 +3699,62 @@ async fn cache_refresh_task(worker: Worker) {
     let cycle_start = std::time::Instant::now();
 
     for network_str in &networks {
+        // Testnet only exists for ZEC; skip warming the extra combination for
+        // networks that never have testnet servers.
+        let testnet_only_options: &[bool] = if *network_str == "zec" {
+            &[false, true]
+        } else {
+            &[false]
+        };
         for &hide_community in &hide_community_options {
             for &tor_only in &tor_only_options {
                 for &show_outdated in &show_outdated_options {
-                    let cache_key = format!(
-                        "{}-{}-{}-{}",
-                        network_str, hide_community, tor_only, show_outdated
-                    );
+                    for &testnet_only in testnet_only_options {
+                        let cache_key = format!(
+                            "{}-{}-{}-{}-{}",
+                            network_str, hide_community, tor_only, show_outdated, testnet_only
+                        );
 
-                    if let Some(network) = SafeNetwork::from_str(network_str) {
-                        let query_start = std::time::Instant::now();
+                        if let Some(network) = SafeNetwork::from_str(network_str) {
+                            let query_start = std::time::Instant::now();
 
-                        let result = fetch_and_render_network_status(
-                            &worker,
-                            &network,
-                            hide_community,
-                            tor_only,
-                            show_outdated,
-                            None, // No operator filter for cache refresh
-                            None, // No historical timestamp for cache refresh
-                        )
-                        .await;
-                        match result {
-                            Ok(html) => {
-                                let mut cache = worker.cache.write().await;
-                                cache.insert(
-                                    cache_key.clone(),
-                                    CacheEntry {
-                                        html,
-                                        timestamp: std::time::Instant::now(),
-                                    },
-                                );
-                                info!(
-                                    "Cache refreshed for {} in {:?}",
-                                    cache_key,
-                                    query_start.elapsed()
-                                );
+                            let result = fetch_and_render_network_status(
+                                &worker,
+                                &network,
+                                hide_community,
+                                tor_only,
+                                show_outdated,
+                                testnet_only,
+                                None, // No operator filter for cache refresh
+                                None, // No historical timestamp for cache refresh
+                            )
+                            .await;
+                            match result {
+                                Ok(html) => {
+                                    let mut cache = worker.cache.write().await;
+                                    cache.insert(
+                                        cache_key.clone(),
+                                        CacheEntry {
+                                            html,
+                                            timestamp: std::time::Instant::now(),
+                                        },
+                                    );
+                                    info!(
+                                        "Cache refreshed for {} in {:?}",
+                                        cache_key,
+                                        query_start.elapsed()
+                                    );
+                                }
+                                Err(e) => {
+                                    error!("Failed to refresh cache for {}: {}", cache_key, e);
+                                }
                             }
-                            Err(e) => {
-                                error!("Failed to refresh cache for {}: {}", cache_key, e);
-                            }
+
+                            // Add a small delay between queries to prevent memory spikes
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        } else {
+                            error!("Invalid network: {}", network_str);
                         }
-
-                        // Add a small delay between queries to prevent memory spikes
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                    } else {
-                        error!("Invalid network: {}", network_str);
                     }
                 }
             }
@@ -3728,53 +3805,63 @@ async fn cache_refresh_task(worker: Worker) {
         let cycle_start = std::time::Instant::now();
 
         for network_str in &networks {
+            // Testnet only exists for ZEC; skip warming the extra combination
+            // for networks that never have testnet servers.
+            let testnet_only_options: &[bool] = if *network_str == "zec" {
+                &[false, true]
+            } else {
+                &[false]
+            };
             for &hide_community in &hide_community_options {
                 for &tor_only in &tor_only_options {
                     for &show_outdated in &show_outdated_options {
-                        let cache_key = format!(
-                            "{}-{}-{}-{}",
-                            network_str, hide_community, tor_only, show_outdated
-                        );
+                        for &testnet_only in testnet_only_options {
+                            let cache_key = format!(
+                                "{}-{}-{}-{}-{}",
+                                network_str, hide_community, tor_only, show_outdated, testnet_only
+                            );
 
-                        if let Some(network) = SafeNetwork::from_str(network_str) {
-                            let query_start = std::time::Instant::now();
+                            if let Some(network) = SafeNetwork::from_str(network_str) {
+                                let query_start = std::time::Instant::now();
 
-                            let result = fetch_and_render_network_status(
-                                &worker,
-                                &network,
-                                hide_community,
-                                tor_only,
-                                show_outdated,
-                                None, // No operator filter for cache refresh
-                                None, // No historical timestamp for cache refresh
-                            )
-                            .await;
-                            match result {
-                                Ok(html) => {
-                                    let mut cache = worker.cache.write().await;
-                                    cache.insert(
-                                        cache_key.clone(),
-                                        CacheEntry {
-                                            html,
-                                            timestamp: std::time::Instant::now(),
-                                        },
-                                    );
-                                    info!(
-                                        "Cache refreshed for {} in {:?}",
-                                        cache_key,
-                                        query_start.elapsed()
-                                    );
+                                let result = fetch_and_render_network_status(
+                                    &worker,
+                                    &network,
+                                    hide_community,
+                                    tor_only,
+                                    show_outdated,
+                                    testnet_only,
+                                    None, // No operator filter for cache refresh
+                                    None, // No historical timestamp for cache refresh
+                                )
+                                .await;
+                                match result {
+                                    Ok(html) => {
+                                        let mut cache = worker.cache.write().await;
+                                        cache.insert(
+                                            cache_key.clone(),
+                                            CacheEntry {
+                                                html,
+                                                timestamp: std::time::Instant::now(),
+                                            },
+                                        );
+                                        info!(
+                                            "Cache refreshed for {} in {:?}",
+                                            cache_key,
+                                            query_start.elapsed()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to refresh cache for {}: {}", cache_key, e);
+                                        // Keep old cache if refresh fails - don't remove it
+                                    }
                                 }
-                                Err(e) => {
-                                    error!("Failed to refresh cache for {}: {}", cache_key, e);
-                                    // Keep old cache if refresh fails - don't remove it
-                                }
+
+                                // Add a small delay between queries to prevent memory spikes
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                            } else {
+                                error!("Invalid network: {}", network_str);
                             }
-
-                            // Add a small delay between queries to prevent memory spikes
-                            tokio::time::sleep(Duration::from_millis(500)).await;
-                        } else {
-                            error!("Invalid network: {}", network_str);
                         }
                     }
                 }
