@@ -30,6 +30,11 @@ use tracing::{error, info, warn};
 // =============================================================================
 const MIN_SUPPORTED_ZEBRA_VERSION: &str = "5.0.0";
 const MIN_SUPPORTED_ZCASHD_VERSION: &str = "6.20.0";
+// Zakura is a fork of Zebra with its own 1.x version line, so it needs its own
+// minimum rather than being compared against Zebra's. Specified as the minor
+// line rather than an exact patch: any 1.3.x is supported, as is anything
+// newer. version_meets_minimum() treats the absent patch component as 0.
+const MIN_SUPPORTED_ZAKURA_VERSION: &str = "1.3";
 
 // Hosts operated by zec.rocks whose hostnames don't match the *.zec.rocks
 // pattern (i.e. Tor hidden services). Clearnet zec.rocks hosts are matched by
@@ -966,8 +971,9 @@ impl ServerInfo {
     }
 
     /// Whether this ZEC node is running below the minimum supported version.
-    /// Zebra must be >= MIN_SUPPORTED_ZEBRA_VERSION, zcashd (MagicBean) must be
-    /// >= MIN_SUPPORTED_ZCASHD_VERSION. Missing or unrecognized subversion → outdated.
+    /// Zebra must be >= MIN_SUPPORTED_ZEBRA_VERSION, Zakura must be >=
+    /// MIN_SUPPORTED_ZAKURA_VERSION, zcashd (MagicBean) must be >=
+    /// MIN_SUPPORTED_ZCASHD_VERSION. Missing or unrecognized subversion → outdated.
     fn is_outdated(&self) -> bool {
         let subversion = match self.extra.get("zcashd_subversion").and_then(|v| v.as_str()) {
             Some(s) => s,
@@ -976,6 +982,8 @@ impl ServerInfo {
         let cleaned = subversion.trim_matches('/');
         if let Some(version) = cleaned.strip_prefix("Zebra:") {
             !version_meets_minimum(version, MIN_SUPPORTED_ZEBRA_VERSION)
+        } else if let Some(version) = cleaned.strip_prefix("Zakura:") {
+            !version_meets_minimum(version, MIN_SUPPORTED_ZAKURA_VERSION)
         } else if let Some(version) = cleaned.strip_prefix("MagicBean:") {
             !version_meets_minimum(version, MIN_SUPPORTED_ZCASHD_VERSION)
         } else {
@@ -3623,6 +3631,60 @@ mod tests {
         assert!(passes(true, &testnet));
         assert!(!passes(true, &mainnet));
         assert!(!passes(true, &no_chain));
+    }
+
+    #[test]
+    fn test_is_outdated_by_node_type() {
+        let make = |subversion: Option<&str>| {
+            let mut extra = HashMap::new();
+            if let Some(s) = subversion {
+                extra.insert(
+                    "zcashd_subversion".to_string(),
+                    Value::String(s.to_string()),
+                );
+            }
+            ServerInfo {
+                host: "example.com".to_string(),
+                port: Some(443),
+                height: 1,
+                status: "online".to_string(),
+                error: None,
+                error_type: None,
+                error_message: None,
+                ping: None,
+                server_version: None,
+                user_submitted: false,
+                community: false,
+                check_id: None,
+                extra,
+                last_updated: None,
+                uptime_30_day: None,
+            }
+        };
+
+        // Zakura is a Zebra fork on its own 1.x line, so it must not be measured
+        // against Zebra's minimum (which would flag every release as outdated).
+        // The floor is the 1.3 line, so every 1.3.x patch qualifies...
+        assert!(!make(Some("Zakura:1.3")).is_outdated());
+        assert!(!make(Some("Zakura:1.3.0")).is_outdated());
+        assert!(!make(Some("Zakura:1.3.1")).is_outdated());
+        assert!(!make(Some("Zakura:1.3.17")).is_outdated());
+        // ...as does anything newer, so future releases aren't flagged.
+        assert!(!make(Some("/Zakura:1.4.0/")).is_outdated());
+        assert!(!make(Some("Zakura:2.0.0")).is_outdated());
+        // Anything below the 1.3 line is outdated.
+        assert!(make(Some("Zakura:1.2.9")).is_outdated());
+        assert!(make(Some("Zakura:1.2")).is_outdated());
+        assert!(make(Some("Zakura:0.9.0")).is_outdated());
+
+        assert!(!make(Some("Zebra:6.3.0")).is_outdated());
+        assert!(make(Some("Zebra:4.9.0")).is_outdated());
+
+        assert!(!make(Some("MagicBean:6.20.0")).is_outdated());
+        assert!(make(Some("MagicBean:5.4.2")).is_outdated());
+
+        assert!(make(Some("SomeOtherNode:9.9.9")).is_outdated());
+        assert!(make(None).is_outdated());
     }
 
     #[test]
