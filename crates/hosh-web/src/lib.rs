@@ -37,8 +37,17 @@ const MIN_SUPPORTED_ZCASHD_VERSION: &str = "6.20.0";
 // Source of truth: the official (community=false) onion entries in
 // crates/hosh-discovery/src/lib.rs. Keep in sync when those change.
 const ZECROCKS_ONION_HOSTS: &[&str] = &[
-    "kxn4wla7i4rczcpn7ljbtmtq4gd4xhtx6f6hxpze7qbfmu66atwsneqd.onion",
-    "vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion",
+    // Mainnet (Zebra + Zaino)
+    "kxn4wla7i4rczcpn7ljbtmtq4gd4xhtx6f6hxpze7qbfmu66atwsneqd.onion", // na-iah
+    "lzzfytqg24a7v6ejqh2q4ecaop6mf62gupvdimc4ryxeixtdtzxxjmad.onion", // na-jfk
+    "vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion", // eu-ams
+    "6fiyttjv3awhv6afdqeeerfxckdqlt6vejjsadeiqawnt7e3hxdcaxqd.onion", // sa-gru
+    // Mainnet (Zcashd + Lightwalletd)
+    "ltefw7pqlslcst5n465kxwgqmb4wxwp7djvhzqlfwhh3wx53xzuwr2ad.onion", // na-lax
+    // Testnet
+    "gnsujqzqaepdmxjq4ixm74kapd7grp3j5selm7nsejz6ctxa3yx4q3yd.onion", // eu-ams testnet
+    "ti64zsaj6w66um42o4nyjtstzg4zryqkph2c45x4bwfqhydxeznrfgad.onion", // na-lax testnet
+    "wu7vfvfd5bhdlnmzszr4axtdibrlbby5pdaszqnwuwnprzvt6ce4jmqd.onion", // eu-fra
 ];
 
 mod filters {

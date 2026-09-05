@@ -159,23 +159,57 @@ const ZEC_SERVERS: &[(&str, u16, bool)] = &[
     ("lightwalletd.testnet.electriccoin.co", 9067, false),
     ("zcash.mysideoftheweb.com", 19067, false), // eZcash (Testnet)
     //// Tor nodes
-    // Zec.rocks Mainnet (Zebra + Zaino)
+    // Zec.rocks Mainnet (Zebra + Zaino, hidden service -> lightwalletd)
+    // na-iah
     (
         "kxn4wla7i4rczcpn7ljbtmtq4gd4xhtx6f6hxpze7qbfmu66atwsneqd.onion",
         443,
         false,
     ),
-    // ("lzzfytqg24a7v6ejqh2q4ecaop6mf62gupvdimc4ryxeixtdtzxxjmad.onion", 443, false),
+    // na-jfk
+    (
+        "lzzfytqg24a7v6ejqh2q4ecaop6mf62gupvdimc4ryxeixtdtzxxjmad.onion",
+        443,
+        false,
+    ),
+    // eu-ams
     (
         "vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion",
         443,
         false,
     ),
+    // sa-gru
+    (
+        "6fiyttjv3awhv6afdqeeerfxckdqlt6vejjsadeiqawnt7e3hxdcaxqd.onion",
+        443,
+        false,
+    ),
     // Zec.rocks Mainnet (Zcashd + Lightwalletd)
-    // ("ltefw7pqlslcst5n465kxwgqmb4wxwp7djvhzqlfwhh3wx53xzuwr2ad.onion", 443, false),
-    // Zec.rocks Testnet (Zebra + Zaino)
-    // ("gnsujqzqaepdmxjq4ixm74kapd7grp3j5selm7nsejz6ctxa3yx4q3yd.onion", 443, false),
-    // ("ti64zsaj6w66um42o4nyjtstzg4zryqkph2c45x4bwfqhydxeznrfgad.onion", 443, false),
+    // na-lax
+    (
+        "ltefw7pqlslcst5n465kxwgqmb4wxwp7djvhzqlfwhh3wx53xzuwr2ad.onion",
+        443,
+        false,
+    ),
+    // Zec.rocks Testnet
+    // eu-ams testnet
+    (
+        "gnsujqzqaepdmxjq4ixm74kapd7grp3j5selm7nsejz6ctxa3yx4q3yd.onion",
+        443,
+        false,
+    ),
+    // na-lax testnet
+    (
+        "ti64zsaj6w66um42o4nyjtstzg4zryqkph2c45x4bwfqhydxeznrfgad.onion",
+        443,
+        false,
+    ),
+    // eu-fra
+    (
+        "wu7vfvfd5bhdlnmzszr4axtdibrlbby5pdaszqnwuwnprzvt6ce4jmqd.onion",
+        443,
+        false,
+    ),
     //// Community nodes
     // ("zaino.stakehold.rs", 443, true), // disabled for now because it's not responding
     // ("lightwalletd.stakehold.rs", 443, true), // disabled for now because it's not responding
