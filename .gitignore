@@ -100,3 +100,11 @@ pytestdebug.log
 # Mac stuff
 *.DS_Store
 
+
+# Claude Code local settings
+.claude/settings.local.json
+.claude/worktrees/
+
+# Symlinks created inside the dev container
+/static
+/templates

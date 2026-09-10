@@ -30,6 +30,11 @@ use tracing::{error, info, warn};
 // =============================================================================
 const MIN_SUPPORTED_ZEBRA_VERSION: &str = "5.0.0";
 const MIN_SUPPORTED_ZCASHD_VERSION: &str = "6.20.0";
+// Zakura is a fork of Zebra with its own 1.x version line, so it needs its own
+// minimum rather than being compared against Zebra's. Specified as the minor
+// line rather than an exact patch: any 1.3.x is supported, as is anything
+// newer. version_meets_minimum() treats the absent patch component as 0.
+const MIN_SUPPORTED_ZAKURA_VERSION: &str = "1.3";
 
 // Hosts operated by zec.rocks whose hostnames don't match the *.zec.rocks
 // pattern (i.e. Tor hidden services). Clearnet zec.rocks hosts are matched by
@@ -37,8 +42,17 @@ const MIN_SUPPORTED_ZCASHD_VERSION: &str = "6.20.0";
 // Source of truth: the official (community=false) onion entries in
 // crates/hosh-discovery/src/lib.rs. Keep in sync when those change.
 const ZECROCKS_ONION_HOSTS: &[&str] = &[
-    "kxn4wla7i4rczcpn7ljbtmtq4gd4xhtx6f6hxpze7qbfmu66atwsneqd.onion",
-    "vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion",
+    // Mainnet (Zebra + Zaino)
+    "kxn4wla7i4rczcpn7ljbtmtq4gd4xhtx6f6hxpze7qbfmu66atwsneqd.onion", // na-iah
+    "lzzfytqg24a7v6ejqh2q4ecaop6mf62gupvdimc4ryxeixtdtzxxjmad.onion", // na-jfk
+    "vzzwzsmru5ybxkfqxefojbmkh5gefzeixvquyonleujiemhr3dypzoid.onion", // eu-ams
+    "6fiyttjv3awhv6afdqeeerfxckdqlt6vejjsadeiqawnt7e3hxdcaxqd.onion", // sa-gru
+    // Mainnet (Zcashd + Lightwalletd)
+    "ltefw7pqlslcst5n465kxwgqmb4wxwp7djvhzqlfwhh3wx53xzuwr2ad.onion", // na-lax
+    // Testnet
+    "gnsujqzqaepdmxjq4ixm74kapd7grp3j5selm7nsejz6ctxa3yx4q3yd.onion", // eu-ams testnet
+    "ti64zsaj6w66um42o4nyjtstzg4zryqkph2c45x4bwfqhydxeznrfgad.onion", // na-lax testnet
+    "wu7vfvfd5bhdlnmzszr4axtdibrlbby5pdaszqnwuwnprzvt6ce4jmqd.onion", // eu-fra
 ];
 
 mod filters {
@@ -67,6 +81,7 @@ struct IndexTemplate {
     hide_community: bool,
     tor_only: bool,
     show_outdated: bool,
+    testnet_only: bool,
     outdated_count: usize,
     onion_count: usize,
     historical_at: Option<String>,
@@ -956,8 +971,9 @@ impl ServerInfo {
     }
 
     /// Whether this ZEC node is running below the minimum supported version.
-    /// Zebra must be >= MIN_SUPPORTED_ZEBRA_VERSION, zcashd (MagicBean) must be
-    /// >= MIN_SUPPORTED_ZCASHD_VERSION. Missing or unrecognized subversion → outdated.
+    /// Zebra must be >= MIN_SUPPORTED_ZEBRA_VERSION, Zakura must be >=
+    /// MIN_SUPPORTED_ZAKURA_VERSION, zcashd (MagicBean) must be >=
+    /// MIN_SUPPORTED_ZCASHD_VERSION. Missing or unrecognized subversion → outdated.
     fn is_outdated(&self) -> bool {
         let subversion = match self.extra.get("zcashd_subversion").and_then(|v| v.as_str()) {
             Some(s) => s,
@@ -966,6 +982,8 @@ impl ServerInfo {
         let cleaned = subversion.trim_matches('/');
         if let Some(version) = cleaned.strip_prefix("Zebra:") {
             !version_meets_minimum(version, MIN_SUPPORTED_ZEBRA_VERSION)
+        } else if let Some(version) = cleaned.strip_prefix("Zakura:") {
+            !version_meets_minimum(version, MIN_SUPPORTED_ZAKURA_VERSION)
         } else if let Some(version) = cleaned.strip_prefix("MagicBean:") {
             !version_meets_minimum(version, MIN_SUPPORTED_ZCASHD_VERSION)
         } else {
@@ -1176,6 +1194,9 @@ struct IndexQuery {
     hide_community: Option<bool>,
     tor_only: Option<bool>,
     show_outdated: Option<bool>,
+    /// Show only testnet servers (ZEC only; ignored for other networks since
+    /// they report no chain and are treated as mainnet).
+    testnet_only: Option<bool>,
     /// Secret operator filter. `operator=zecrocks` shows only zec.rocks-operated
     /// servers (including their onions and outdated ones).
     operator: Option<String>,
@@ -1265,12 +1286,16 @@ async fn root() -> Result<Redirect> {
 
 /// Helper function to fetch and render the network status page
 /// When `at` is provided, queries historical data as of that timestamp.
+// The filter flags are passed individually because they mirror the query params
+// and the cache key one-for-one.
+#[allow(clippy::too_many_arguments)]
 async fn fetch_and_render_network_status(
     worker: &Worker,
     network: &SafeNetwork,
     hide_community: bool,
     tor_only: bool,
     show_outdated: bool,
+    testnet_only: bool,
     operator: Option<&str>,
     at: Option<DateTime<Utc>>,
 ) -> Result<String> {
@@ -1400,6 +1425,7 @@ async fn fetch_and_render_network_status(
             hide_community,
             tor_only,
             show_outdated,
+            testnet_only,
             outdated_count: 0,
             onion_count: 0,
             historical_at: format_historical_timestamp(at),
@@ -1729,7 +1755,11 @@ async fn fetch_and_render_network_status(
             let passes_community_filter = !hide_community || !s.is_community();
             let passes_tor_filter = !tor_only || s.is_onion();
             let passes_outdated_filter = show_outdated || !is_zec || !s.is_outdated();
-            passes_community_filter && passes_tor_filter && passes_outdated_filter
+            let passes_testnet_filter = !testnet_only || s.is_testnet();
+            passes_community_filter
+                && passes_tor_filter
+                && passes_outdated_filter
+                && passes_testnet_filter
         })
         .collect::<Vec<_>>();
 
@@ -1744,6 +1774,7 @@ async fn fetch_and_render_network_status(
         hide_community,
         tor_only,
         show_outdated,
+        testnet_only,
         outdated_count,
         onion_count,
         historical_at: format_historical_timestamp(at),
@@ -1769,6 +1800,10 @@ async fn network_status(
     let hide_community = query_params.hide_community.unwrap_or(false);
     let tor_only = query_params.tor_only.unwrap_or(false);
     let show_outdated = query_params.show_outdated.unwrap_or(false);
+    // Testnet is a ZEC-only concept (other networks report no chain and are
+    // treated as mainnet), so normalize the flag to false elsewhere. This keeps
+    // the cache key aligned with the combinations warmed in cache_refresh_task.
+    let testnet_only = query_params.testnet_only.unwrap_or(false) && network.0 == "zec";
     let operator = query_params.operator.as_deref();
 
     // Parse and validate historical timestamp if provided
@@ -1793,6 +1828,7 @@ async fn network_status(
             hide_community,
             tor_only,
             show_outdated,
+            testnet_only,
             operator,
             historical_at,
         )
@@ -1807,8 +1843,8 @@ async fn network_status(
     // ONLY serve from cache - never trigger ClickHouse queries from user requests
     // This prevents traffic spikes from overwhelming ClickHouse
     let cache_key = format!(
-        "{}-{}-{}-{}",
-        network.0, hide_community, tor_only, show_outdated
+        "{}-{}-{}-{}-{}",
+        network.0, hide_community, tor_only, show_outdated, testnet_only
     );
 
     let cache = worker.cache.read().await;
@@ -3550,6 +3586,108 @@ mod tests {
     }
 
     #[test]
+    fn test_is_testnet_and_toggle_filter() {
+        let make = |chain: Option<&str>| {
+            let mut extra = HashMap::new();
+            if let Some(c) = chain {
+                extra.insert("chain_name".to_string(), Value::String(c.to_string()));
+            }
+            ServerInfo {
+                host: "example.com".to_string(),
+                port: Some(50002),
+                height: 1,
+                status: "online".to_string(),
+                error: None,
+                error_type: None,
+                error_message: None,
+                ping: None,
+                server_version: None,
+                user_submitted: false,
+                community: false,
+                check_id: None,
+                extra,
+                last_updated: None,
+                uptime_30_day: None,
+            }
+        };
+
+        let testnet = make(Some("test"));
+        let mainnet = make(Some("main"));
+        let no_chain = make(None); // e.g. BTC Electrum -> treated as mainnet
+
+        assert!(testnet.is_testnet());
+        assert!(!mainnet.is_testnet());
+        assert!(!no_chain.is_testnet());
+
+        // The dashboard toggle applies `!testnet_only || s.is_testnet()`.
+        let passes = |testnet_only: bool, s: &ServerInfo| !testnet_only || s.is_testnet();
+
+        // Toggle off: everything shows.
+        assert!(passes(false, &testnet));
+        assert!(passes(false, &mainnet));
+        assert!(passes(false, &no_chain));
+
+        // Toggle on: only testnet shows.
+        assert!(passes(true, &testnet));
+        assert!(!passes(true, &mainnet));
+        assert!(!passes(true, &no_chain));
+    }
+
+    #[test]
+    fn test_is_outdated_by_node_type() {
+        let make = |subversion: Option<&str>| {
+            let mut extra = HashMap::new();
+            if let Some(s) = subversion {
+                extra.insert(
+                    "zcashd_subversion".to_string(),
+                    Value::String(s.to_string()),
+                );
+            }
+            ServerInfo {
+                host: "example.com".to_string(),
+                port: Some(443),
+                height: 1,
+                status: "online".to_string(),
+                error: None,
+                error_type: None,
+                error_message: None,
+                ping: None,
+                server_version: None,
+                user_submitted: false,
+                community: false,
+                check_id: None,
+                extra,
+                last_updated: None,
+                uptime_30_day: None,
+            }
+        };
+
+        // Zakura is a Zebra fork on its own 1.x line, so it must not be measured
+        // against Zebra's minimum (which would flag every release as outdated).
+        // The floor is the 1.3 line, so every 1.3.x patch qualifies...
+        assert!(!make(Some("Zakura:1.3")).is_outdated());
+        assert!(!make(Some("Zakura:1.3.0")).is_outdated());
+        assert!(!make(Some("Zakura:1.3.1")).is_outdated());
+        assert!(!make(Some("Zakura:1.3.17")).is_outdated());
+        // ...as does anything newer, so future releases aren't flagged.
+        assert!(!make(Some("/Zakura:1.4.0/")).is_outdated());
+        assert!(!make(Some("Zakura:2.0.0")).is_outdated());
+        // Anything below the 1.3 line is outdated.
+        assert!(make(Some("Zakura:1.2.9")).is_outdated());
+        assert!(make(Some("Zakura:1.2")).is_outdated());
+        assert!(make(Some("Zakura:0.9.0")).is_outdated());
+
+        assert!(!make(Some("Zebra:6.3.0")).is_outdated());
+        assert!(make(Some("Zebra:4.9.0")).is_outdated());
+
+        assert!(!make(Some("MagicBean:6.20.0")).is_outdated());
+        assert!(make(Some("MagicBean:5.4.2")).is_outdated());
+
+        assert!(make(Some("SomeOtherNode:9.9.9")).is_outdated());
+        assert!(make(None).is_outdated());
+    }
+
+    #[test]
     fn test_parse_rfc3339_with_nanos() {
         // Test the custom parsing function
         let timestamp = "2025-07-31T21:11:21.472525544Z";
@@ -3623,52 +3761,62 @@ async fn cache_refresh_task(worker: Worker) {
     let cycle_start = std::time::Instant::now();
 
     for network_str in &networks {
+        // Testnet only exists for ZEC; skip warming the extra combination for
+        // networks that never have testnet servers.
+        let testnet_only_options: &[bool] = if *network_str == "zec" {
+            &[false, true]
+        } else {
+            &[false]
+        };
         for &hide_community in &hide_community_options {
             for &tor_only in &tor_only_options {
                 for &show_outdated in &show_outdated_options {
-                    let cache_key = format!(
-                        "{}-{}-{}-{}",
-                        network_str, hide_community, tor_only, show_outdated
-                    );
+                    for &testnet_only in testnet_only_options {
+                        let cache_key = format!(
+                            "{}-{}-{}-{}-{}",
+                            network_str, hide_community, tor_only, show_outdated, testnet_only
+                        );
 
-                    if let Some(network) = SafeNetwork::from_str(network_str) {
-                        let query_start = std::time::Instant::now();
+                        if let Some(network) = SafeNetwork::from_str(network_str) {
+                            let query_start = std::time::Instant::now();
 
-                        let result = fetch_and_render_network_status(
-                            &worker,
-                            &network,
-                            hide_community,
-                            tor_only,
-                            show_outdated,
-                            None, // No operator filter for cache refresh
-                            None, // No historical timestamp for cache refresh
-                        )
-                        .await;
-                        match result {
-                            Ok(html) => {
-                                let mut cache = worker.cache.write().await;
-                                cache.insert(
-                                    cache_key.clone(),
-                                    CacheEntry {
-                                        html,
-                                        timestamp: std::time::Instant::now(),
-                                    },
-                                );
-                                info!(
-                                    "Cache refreshed for {} in {:?}",
-                                    cache_key,
-                                    query_start.elapsed()
-                                );
+                            let result = fetch_and_render_network_status(
+                                &worker,
+                                &network,
+                                hide_community,
+                                tor_only,
+                                show_outdated,
+                                testnet_only,
+                                None, // No operator filter for cache refresh
+                                None, // No historical timestamp for cache refresh
+                            )
+                            .await;
+                            match result {
+                                Ok(html) => {
+                                    let mut cache = worker.cache.write().await;
+                                    cache.insert(
+                                        cache_key.clone(),
+                                        CacheEntry {
+                                            html,
+                                            timestamp: std::time::Instant::now(),
+                                        },
+                                    );
+                                    info!(
+                                        "Cache refreshed for {} in {:?}",
+                                        cache_key,
+                                        query_start.elapsed()
+                                    );
+                                }
+                                Err(e) => {
+                                    error!("Failed to refresh cache for {}: {}", cache_key, e);
+                                }
                             }
-                            Err(e) => {
-                                error!("Failed to refresh cache for {}: {}", cache_key, e);
-                            }
+
+                            // Add a small delay between queries to prevent memory spikes
+                            tokio::time::sleep(Duration::from_millis(500)).await;
+                        } else {
+                            error!("Invalid network: {}", network_str);
                         }
-
-                        // Add a small delay between queries to prevent memory spikes
-                        tokio::time::sleep(Duration::from_millis(500)).await;
-                    } else {
-                        error!("Invalid network: {}", network_str);
                     }
                 }
             }
@@ -3719,53 +3867,63 @@ async fn cache_refresh_task(worker: Worker) {
         let cycle_start = std::time::Instant::now();
 
         for network_str in &networks {
+            // Testnet only exists for ZEC; skip warming the extra combination
+            // for networks that never have testnet servers.
+            let testnet_only_options: &[bool] = if *network_str == "zec" {
+                &[false, true]
+            } else {
+                &[false]
+            };
             for &hide_community in &hide_community_options {
                 for &tor_only in &tor_only_options {
                     for &show_outdated in &show_outdated_options {
-                        let cache_key = format!(
-                            "{}-{}-{}-{}",
-                            network_str, hide_community, tor_only, show_outdated
-                        );
+                        for &testnet_only in testnet_only_options {
+                            let cache_key = format!(
+                                "{}-{}-{}-{}-{}",
+                                network_str, hide_community, tor_only, show_outdated, testnet_only
+                            );
 
-                        if let Some(network) = SafeNetwork::from_str(network_str) {
-                            let query_start = std::time::Instant::now();
+                            if let Some(network) = SafeNetwork::from_str(network_str) {
+                                let query_start = std::time::Instant::now();
 
-                            let result = fetch_and_render_network_status(
-                                &worker,
-                                &network,
-                                hide_community,
-                                tor_only,
-                                show_outdated,
-                                None, // No operator filter for cache refresh
-                                None, // No historical timestamp for cache refresh
-                            )
-                            .await;
-                            match result {
-                                Ok(html) => {
-                                    let mut cache = worker.cache.write().await;
-                                    cache.insert(
-                                        cache_key.clone(),
-                                        CacheEntry {
-                                            html,
-                                            timestamp: std::time::Instant::now(),
-                                        },
-                                    );
-                                    info!(
-                                        "Cache refreshed for {} in {:?}",
-                                        cache_key,
-                                        query_start.elapsed()
-                                    );
+                                let result = fetch_and_render_network_status(
+                                    &worker,
+                                    &network,
+                                    hide_community,
+                                    tor_only,
+                                    show_outdated,
+                                    testnet_only,
+                                    None, // No operator filter for cache refresh
+                                    None, // No historical timestamp for cache refresh
+                                )
+                                .await;
+                                match result {
+                                    Ok(html) => {
+                                        let mut cache = worker.cache.write().await;
+                                        cache.insert(
+                                            cache_key.clone(),
+                                            CacheEntry {
+                                                html,
+                                                timestamp: std::time::Instant::now(),
+                                            },
+                                        );
+                                        info!(
+                                            "Cache refreshed for {} in {:?}",
+                                            cache_key,
+                                            query_start.elapsed()
+                                        );
+                                    }
+                                    Err(e) => {
+                                        error!("Failed to refresh cache for {}: {}", cache_key, e);
+                                        // Keep old cache if refresh fails - don't remove it
+                                    }
                                 }
-                                Err(e) => {
-                                    error!("Failed to refresh cache for {}: {}", cache_key, e);
-                                    // Keep old cache if refresh fails - don't remove it
-                                }
+
+                                // Add a small delay between queries to prevent memory spikes
+                                tokio::time::sleep(Duration::from_millis(500)).await;
+                            } else {
+                                error!("Invalid network: {}", network_str);
                             }
-
-                            // Add a small delay between queries to prevent memory spikes
-                            tokio::time::sleep(Duration::from_millis(500)).await;
-                        } else {
-                            error!("Invalid network: {}", network_str);
                         }
                     }
                 }
